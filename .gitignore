@@ -3,4 +3,8 @@ install/
 log/
 vscode/
 tmp/
+.venv/
 AGENTS.md
+__pycache__/
+*.py[cod]
+.reasonix/

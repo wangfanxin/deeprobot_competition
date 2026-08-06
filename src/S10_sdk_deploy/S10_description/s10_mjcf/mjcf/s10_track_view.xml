@@ -1,0 +1,18 @@
+<mujoco model="S10_track_view">
+  <visual>
+    <global offwidth="1280" offheight="720"/>
+  </visual>
+  <include file="./S10.xml"/>
+  <include file="./scene.xml"/>
+  <include file="./track_overlay.xml"/>
+  <worldbody>
+    <geom name="ref_plane_0_14" type="box" pos="0 0 0.14" size="2.0 0.8 0.004"
+          rgba="1 0 0 0.22" contype="0" conaffinity="0"/>
+    <geom name="ref_plane_0_20" type="box" pos="0 0 0.20" size="2.0 0.8 0.004"
+          rgba="0 1 0 0.30" contype="0" conaffinity="0"/>
+    <geom name="ref_plane_0_24" type="box" pos="0 0 0.24" size="2.0 0.8 0.004"
+          rgba="0 0 1 0.22" contype="0" conaffinity="0"/>
+    <geom name="ref_ruler" type="cylinder" pos="1.6 0.6 0.25" size="0.006 0.25 0"
+          rgba="1 1 1 0.9" contype="0" conaffinity="0"/>
+  </worldbody>
+</mujoco>

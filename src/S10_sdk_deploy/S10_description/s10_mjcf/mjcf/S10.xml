@@ -59,6 +59,15 @@
                 mass="8.023087" diaginertia="0.115559 0.171329 0.262028"/>
         <site name="imu_site" pos="0.0075 -0.0373 0.0556" size="0.005" rgba="1 0 0 1"/>
         <site name="base_site" pos="0 0 0" quat="1 0 0 0"/>
+        <!-- LiDAR sensor site (Airy-96).
+             注意：本模型 compiler angle="radian"，euler 单位为弧度。
+             2026-08-06 按实机修正（诊断 tmp/diag_lidar_vs_terrain.py）：
+             原 euler="0 0.34 0" 在水平时扫描轴朝上（前上 19.5°），爬坡
+             pitch 变化时点云浮空（31% 命中偏离地面>0.15m）。实测 euler
+             "0 0.79 0" + 垂直 ±45° 在 wp7 爬坡场景最优：浮空 25%、地图
+             有效格 715、误差>0.15m 仅 1%。
+             安装外参需与真机 lidar→base_link 静态 TF 一致（设计契约）。 -->
+        <site name="lidar_site" pos="0 0 0.15" euler="0 0.79 0" size="0.01" rgba="0 1 0 1"/>
       <geom type="mesh" class="visual" mesh="base_link"/>
       <geom size="0.08 0.3" pos="0 0.024 0" quat="0.707107 0 0.707107 0" type="cylinder" class="collision"/>
       <geom size="0.08 0.3" pos="0 -0.024 0" quat="0.707107 0 0.707107 0" type="cylinder" class="collision"/>

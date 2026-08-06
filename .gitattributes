@@ -1,0 +1,24 @@
+# 统一行尾：文本文件入库一律 LF，检出按平台（Windows 工作区自动转 CRLF）
+* text=auto
+
+# 二进制/特定格式保持原样
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.so binary
+*.a binary
+*.lib binary
+*.dll binary
+*.onnx binary
+*.msg text
+*.srv text
+*.py text
+*.xml text
+*.yaml text
+*.yml text
+*.md text
+*.sh text eol=lf
+*.bash text eol=lf

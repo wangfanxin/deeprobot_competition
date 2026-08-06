@@ -1,0 +1,782 @@
+"""S10 轮足 dial-mpc 控制器（嵌入仿真进程）。
+
+职责：
+- 读部署 yaml（hardware_profile 决定 Nsample 等、mode 决定目标来源）
+- 构建 S10WheeledEnv + MBDPI（dial-mpc 采样 MPC 核心）
+- plan_once(): 用真仿真 qpos/qvel 初始化 MPC 状态 → 注入目标指令 → 扩散采样 → 返回当前 action
+- action 经 act2tau 转 16 维力矩，供仿真侧施加
+
+用法（仿真节点内）：
+    ctrl = MPCController(yaml_path)
+    ctrl.init_state(qpos, qvel)
+    # 每 dt（50Hz）：
+    action = ctrl.plan_once(qpos, qvel, sim_time)
+    tau = ctrl.env.act2tau(action, ctrl.state.pipeline_state)  # 或 ctrl.get_tau(action)
+"""
+import time
+import os
+from dataclasses import dataclass
+from typing import Optional
+
+import yaml
+import numpy as np
+import jax
+import jax.numpy as jnp
+from functools import partial
+
+from dial_mpc.core.dial_core import DialConfig, MBDPI
+from dial_mpc.utils.io_utils import load_dataclass_from_dict
+from dial_mpc.envs.s10_env import S10WheeledEnv, S10WheeledEnvConfig
+
+# ---- JAX 持久化编译缓存：首次 plan_once 的 JIT（~16s）离线预编译一次，
+#      之后每次启动直接从磁盘加载（实测 16.7s → 4.3s，2026-08-06）。
+#      根因：mpc_controller import 时 update 太晚（dial_core 的 import 链
+#      先初始化 compilation_cache，update 无效）→ 必须用**环境变量**
+#      JAX_COMPILATION_CACHE_DIR（jax import 时读取）在启动脚本里设置。
+#      这里只在环境变量未设置时兜底 update（可能无效，但无害）。
+#      代码改动后首次运行会自动重建缓存。----
+_JAX_CACHE_DIR = (
+    os.environ.get("JAX_COMPILATION_CACHE_DIR")
+    or os.environ.get("S10_JAX_CACHE_DIR")
+    or os.path.expanduser("~/.cache/s10_dial_mpc"))
+_JAX_CACHE_ENABLED = False
+if not os.environ.get("JAX_COMPILATION_CACHE_DIR"):
+    try:
+        jax.config.update("jax_compilation_cache_dir", _JAX_CACHE_DIR)
+        jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+        jax.config.update(
+            "jax_persistent_cache_min_compile_time_secs", 0.0)
+        _JAX_CACHE_ENABLED = True
+    except Exception:
+        _JAX_CACHE_ENABLED = False
+
+# hardware_profile → dial-mpc 参数覆盖
+HARDWARE_PROFILES = {
+    "desktop_4090": dict(Nsample=2048, Hsample=14, Hnode=4, Ndiffuse=1,
+                         dt=0.02, jax_platform="cuda"),
+    "orin_agx": dict(Nsample=1024, Hsample=10, Hnode=4, Ndiffuse=1,
+                     dt=0.025, jax_platform="cpu"),
+}
+
+
+class MPCController:
+    def __init__(self, yaml_path: str):
+        with open(yaml_path) as f:
+            cfg = yaml.safe_load(f)
+        self.cfg = cfg
+
+        hw = cfg.get("hardware_profile", "desktop_4090")
+        hw_ov = HARDWARE_PROFILES.get(hw, HARDWARE_PROFILES["desktop_4090"])
+        # yaml hardware 节优先（单源配置；代码 HARDWARE_PROFILES 为兜底默认）
+        yaml_hw = (cfg.get("hardware") or {}).get(hw) or {}
+        hw_ov = {**hw_ov, **yaml_hw}
+        # 合并 dial-mpc 参数（yaml 顶层 + hardware 覆盖）
+        dial_kw = dict(Nsample=1024, Hsample=25, Hnode=5, Ndiffuse=4,
+                       Ndiffuse_init=10, temp_sample=0.05,
+                       horizon_diffuse_factor=1.0, traj_diffuse_factor=0.5,
+                       update_method="mppi", sigma_scale=1.0)
+        for k in ("Nsample", "Hsample", "Hnode", "Ndiffuse", "Ndiffuse_init",
+                  "temp_sample", "horizon_diffuse_factor",
+                  "traj_diffuse_factor", "update_method", "sigma_scale"):
+            if k in cfg:
+                dial_kw[k] = cfg[k]
+        dial_kw.update({k: v for k, v in hw_ov.items()
+                        if k in dial_kw})  # hardware_profile 档位优先（yaml 顶层为示例默认）
+        # 环境变量硬覆盖（最高优先级；不写 yaml 即可临时切换）
+        if os.environ.get("S10_MPC_NDIFFUSE"):
+            dial_kw["Ndiffuse"] = int(os.environ["S10_MPC_NDIFFUSE"])
+        if os.environ.get("S10_MPC_NSAMPLE"):
+            dial_kw["Nsample"] = int(os.environ["S10_MPC_NSAMPLE"])
+        if os.environ.get("S10_MPC_HSAMPLE"):
+            dial_kw["Hsample"] = int(os.environ["S10_MPC_HSAMPLE"])
+        # 定向增大抬腿维度采样噪声（0806 §3.5）：腿 12 维 × leg_scale、轮 4 维 × wheel_scale。
+        # S10 动作布局固定为 12 腿 + 4 轮；默认 1.0（各向同性），实验用
+        # S10_LEG_SIGMA_SCALE=1.5~2.0 提高采样搜到抬腿轨迹的概率。
+        leg_sigma = float(os.environ.get("S10_LEG_SIGMA_SCALE", "1.0"))
+        wheel_sigma = float(os.environ.get("S10_WHEEL_SIGMA_SCALE", "1.0"))
+        dial_kw["sigma_dim"] = [leg_sigma] * 12 + [wheel_sigma] * 4
+        self.dt = hw_ov.get("dt", cfg.get("dt", 0.02))   # MPC 控制周期（dt 属 env，非 DialConfig）
+        dial_kw["env_name"] = cfg.get("env_name", "s10_wheeled")
+        dial_kw["n_steps"] = int(cfg.get("n_steps", 100000))
+        self.dial_config = DialConfig(**dial_kw)
+
+        # env 配置（yaml + hardware）
+        env_kw = dict(kp=cfg.get("kp", 80.0), kd=cfg.get("kd", 2.0),
+                      leg_action_scale=float(os.environ.get(
+                          "S10_LEG_ACTION_SCALE",
+                          str(cfg.get("leg_action_scale", 0.25)))),
+                      leg_damping=cfg.get("leg_damping", 0.5),
+                      wheel_damping=cfg.get("wheel_damping", 0.05),
+                      vel_scale=float(os.environ.get(
+                          "S10_MPC_VEL_SCALE",
+                          str(cfg.get("vel_scale", 50.0)))),
+                      kd_wheel=cfg.get("kd_wheel", 0.3),
+                      wheel_tau_scale=cfg.get("wheel_tau_scale", 14.0),
+                      ang_vel_weight=cfg.get("ang_vel_weight", 10.0),
+                      vel_weight=cfg.get("vel_weight", 25.0),
+                      height_tar=cfg.get("height_tar", 0.20),
+                      base_z_init=cfg.get("base_z_init", 0.20),
+                      height_weight=float(os.environ.get(
+                          "S10_MPC_HEIGHT_WEIGHT",
+                          str(cfg.get("height_weight", 0.1)))),
+                      height_lookahead=float(os.environ.get(
+                          "S10_HEIGHT_LOOKAHEAD",
+                          str(((cfg.get("perception") or {})
+                               .get("lift") or {}).get("height_lookahead", 0.35)))),
+                      height_lift_cap=float(os.environ.get(
+                          "S10_HEIGHT_LIFT_CAP",
+                          str(((cfg.get("perception") or {})
+                               .get("lift") or {}).get("height_lift_cap", 0.15)))),
+                      terrain_w_slope=float(os.environ.get(
+                          "S10_TERRAIN_W_SLOPE",
+                          str(((cfg.get("perception") or {})
+                               .get("cost_weights") or {}).get("slope", 2.0)))),
+                      terrain_w_rough=float(os.environ.get(
+                          "S10_TERRAIN_W_ROUGH",
+                          str(((cfg.get("perception") or {})
+                               .get("cost_weights") or {}).get("roughness", 1.0)))),
+                      terrain_w_step=float(os.environ.get(
+                          "S10_TERRAIN_W_STEP",
+                          str(((cfg.get("perception") or {})
+                               .get("cost_weights") or {}).get("step", 5.0)))),
+                      terrain_w_ground=float(os.environ.get(
+                          "S10_TERRAIN_W_GROUND",
+                          str(((cfg.get("perception") or {})
+                               .get("cost_weights") or {}).get("ground", 120.0)))),
+                      terrain_w_overlift=float(os.environ.get(
+                          "S10_TERRAIN_W_OVERLIFT",
+                          str(((cfg.get("perception") or {})
+                               .get("cost_weights") or {}).get("overlift", 200.0)))),
+                      terrain_w_leg=float(os.environ.get(
+                          "S10_TERRAIN_W_LEG",
+                          str(((cfg.get("perception") or {})
+                               .get("cost_weights") or {}).get("leg", 1.0)))),
+                      terrain_w_upright=float(os.environ.get(
+                          "S10_TERRAIN_W_UPRIGHT",
+                          str(((cfg.get("perception") or {})
+                               .get("cost_weights") or {}).get("upright", 25.0)))),
+                      terrain_w_attdamp=float(os.environ.get(
+                          "S10_TERRAIN_W_ATTDAMP",
+                          str(((cfg.get("perception") or {})
+                               .get("cost_weights") or {}).get("attdamp", 0.8)))),
+                      # 前瞻抬轮 + 撞阶（0806 §2.4/§3.2）：yaml perception 段 + env 覆盖
+                      terrain_w_stumble=float(os.environ.get(
+                          "S10_TERRAIN_W_STUMBLE",
+                          str(((cfg.get("perception") or {})
+                               .get("cost_weights") or {}).get("stumble", 0.5)))),
+                      leg_relax_on_step=float(os.environ.get(
+                          "S10_LEG_RELAX_STEP",
+                          str(((cfg.get("perception") or {})
+                               .get("cost_weights") or {}).get("leg_relax_on_step", 0.2)))),
+                      lift_lookahead=float(os.environ.get(
+                          "S10_LIFT_LOOKAHEAD",
+                          str(((cfg.get("perception") or {})
+                               .get("lift") or {}).get("lookahead", 0.4)))),
+                      lift_max=float(os.environ.get(
+                          "S10_LIFT_MAX",
+                          str(((cfg.get("perception") or {})
+                               .get("lift") or {}).get("max_lift", 0.15)))),
+                      lift_threshold=float(os.environ.get(
+                          "S10_LIFT_THRESHOLD",
+                          str(((cfg.get("perception") or {})
+                               .get("lift") or {}).get("threshold", 0.05)))),
+                      lift_step_gate=float(os.environ.get(
+                          "S10_LIFT_STEP_GATE",
+                          str(((cfg.get("perception") or {})
+                               .get("lift") or {}).get("step_gate", 0.3)))),
+                      lift_steep_gate=float(os.environ.get(
+                          "S10_LIFT_STEEP_GATE",
+                          str(((cfg.get("perception") or {})
+                               .get("lift") or {}).get("steep_gate", 0.6)))),
+                      contact_lift_ratio=float(os.environ.get(
+                          "S10_CONTACT_LIFT_RATIO",
+                          str(((cfg.get("perception") or {})
+                               .get("lift") or {}).get("contact_lift_ratio", 2.0)))),
+                      stumble_ratio=float(os.environ.get(
+                          "S10_STUMBLE_RATIO",
+                          str(((cfg.get("perception") or {})
+                               .get("lift") or {}).get("stumble_ratio", 4.0)))),
+                      terrain_w_wheel_air=float(os.environ.get(
+                          "S10_TERRAIN_W_WHEEL_AIR",
+                          str(((cfg.get("perception") or {})
+                               .get("cost_weights") or {}).get("wheel_air", 15.0)))),
+                      wheel_ref_force=float(os.environ.get(
+                          "S10_WHEEL_REF_FORCE",
+                          str(((cfg.get("perception") or {})
+                               .get("lift") or {}).get("wheel_ref_force", 20.0)))),
+                      # E3：地形自适应姿态目标（上坡仰头/下坡低头/过弯压弯）
+                      pose_w_pitch=float(os.environ.get(
+                          "S10_MPC_POSE_W_PITCH",
+                          str(cfg.get("pose_w_pitch", 0.0)))),
+                      pose_w_roll=float(os.environ.get(
+                          "S10_MPC_POSE_W_ROLL",
+                          str(cfg.get("pose_w_roll", 0.0)))),
+                      pose_lookahead=float(os.environ.get(
+                          "S10_MPC_POSE_LOOKAHEAD",
+                          str(cfg.get("pose_lookahead", 0.4)))),
+                      pose_roll_gain=float(os.environ.get(
+                          "S10_MPC_POSE_ROLL_GAIN",
+                          str(cfg.get("pose_roll_gain", 0.06)))),
+                      pose_roll_max=float(os.environ.get(
+                          "S10_MPC_POSE_ROLL_MAX",
+                          str(cfg.get("pose_roll_max", 0.25)))),
+                      lift_rear=os.environ.get(
+                          "S10_LIFT_REAR", "0") == "1",
+                      # E4：参考路径跟踪（world 系路径点，固定 (REF_N,2)）
+                      ref_n=int(os.environ.get(
+                          "S10_MPC_REF_N", str(cfg.get("ref_n", 10)))),
+                      w_path=float(os.environ.get(
+                          "S10_MPC_W_PATH",
+                          str(cfg.get("w_path", 0.0)))),
+                      w_path_head=float(os.environ.get(
+                          "S10_MPC_W_PATH_HEAD",
+                          str(cfg.get("w_path_head", 0.0)))),
+                      w_path_z=float(os.environ.get(
+                          "S10_MPC_W_PATH_Z",
+                          str(cfg.get("w_path_z", 0.0)))),
+                      w_clear=float(os.environ.get(
+                          "S10_MPC_W_CLEAR",
+                          str(cfg.get("w_clear", 0.0)))),
+                      leg_ext_w=float(os.environ.get(
+                          "S10_LEG_EXT_W",
+                          str(cfg.get("leg_ext_w", 0.0)))),
+                      lockpush_w=float(os.environ.get(
+                          "S10_LOCKPUSH_W",
+                          str(cfg.get("lockpush_w", 0.0)))),
+                      solver_iterations=int(os.environ.get(
+                          "S10_MPC_SOLVER_IT",
+                          str(cfg.get("solver_iterations", 6)))),
+                      solver_ls_iterations=int(os.environ.get(
+                          "S10_MPC_SOLVER_IT",
+                          str(cfg.get("solver_iterations", 6)))),
+                      dt=self.dt, timestep=self.dt)
+        self.env_config = S10WheeledEnvConfig(**env_kw)
+
+        print(f"[MPC] JAX 编译缓存: {_JAX_CACHE_DIR} "
+              f"(enabled={_JAX_CACHE_ENABLED})")
+        print(f"[MPC] 构建 env (dt={self.env_config.dt}) ...")
+        self.env = S10WheeledEnv(self.env_config)
+        print(f"[MPC] 构建 MBDPI (Nsample={self.dial_config.Nsample}, "
+              f"Hsample={self.dial_config.Hsample}) ...")
+        # 双视界 MBDPI（用户方案模式化 H）：CRUISE H=14（0.28s 横脊动量、
+        # chain 44 3/3 验证）、STAIR H=20（0.4s 长视界爬梯）。Hnode 相同
+        # （4）→ Y 状态 (5,16) 可直接复用，切换无重映射。
+        _h_cruise = int(os.environ.get("S10_MPC_H_CRUISE", "14"))
+        _h_stair = int(os.environ.get("S10_MPC_H_STAIR", "20"))
+        import dataclasses as _dc
+        _cfg14 = _dc.replace(self.dial_config, Hsample=_h_cruise)
+        _cfg20 = _dc.replace(self.dial_config, Hsample=_h_stair)
+        self.mbdpi_h14 = MBDPI(_cfg14, self.env, ctx=self.env._ctx)
+        self.mbdpi_h20 = MBDPI(_cfg20, self.env, ctx=self.env._ctx)
+        self.mbdpi = self.mbdpi_h14
+        self.rng = jax.random.PRNGKey(seed=self.dial_config.seed)
+
+        self.Y = jnp.zeros([self.dial_config.Hnode + 1, self.mbdpi.nu])
+        self.state = None
+        self._last_plan_t = -1.0
+        self._first = True
+        self._last_vx = 0.0
+        self._last_vyaw = 0.0
+        # 前进轮速前馈斜率限制状态：起步渐进防翘头；刹车快速回落；差速转向不斜坡
+        self._ff_fwd = 0.0
+        # yaw 前馈增益覆盖：自动导航用 1:1 增益（15）避免反馈过冲；
+        # 遥控保留大增益（50）支持超快原地转。None = 用环境变量/默认。
+        self._yaw_gain_lo_override = None
+        # 感知-voxel 世界对齐高程瓦片（默认空瓦片：valid=False → 地形代价恒 0，
+        # 保证 info 结构固定、首次 trace 后不 retrace；set_elevation_map 只换数值）
+        _n = 60
+        _zero = np.zeros((_n, _n), dtype=np.float32)
+        _zero_z = np.zeros((_n, _n), dtype=np.float32)
+        _invalid = np.zeros((_n, _n), dtype=np.bool_)
+        self._elev_np = {
+            "heightmap": _zero_z,
+            "features": {
+                "valid": _invalid,
+                "slope": _zero,
+                "roughness": _zero,
+                "step": _zero,
+                "step_flag": _zero,
+            },
+            "origin": np.zeros(2, dtype=np.float32),
+            "resolution": 0.1,
+        }
+
+        def _scan_body(rng_Y0_state, factor):
+            rng, Y0, state = rng_Y0_state
+            mbdpi = self.mbdpi
+            rng, Y0, info = mbdpi.reverse_once(
+                state, rng, Y0, factor, mbdpi.sigma_dim)
+            return (rng, Y0, state), info
+
+        self._scan_body = _scan_body
+
+        # 遥控/导航目标指令
+        self.cmd_vel = jnp.array([0.0, 0.0, 0.0])
+        self.cmd_ang = jnp.array([0.0, 0.0, 0.0])
+        # E4：参考路径（世界系，固定 (REF_N,3) = x,y,z；set_ref_path 注入）
+        self._ref_path = np.zeros((self.env_config.ref_n, 3), dtype=np.float32)
+        self._ref_valid = False
+        # 主线程规划模式：latest_tau 由主循环每步更新；初始化防首帧崩溃
+        self.latest_tau = np.zeros(16, dtype=np.float32)
+        self.latest_action = np.zeros(16, dtype=np.float32)
+
+    # ---- 状态注入 ----
+    def _set_state(self, st, q, qd, t=None):
+        """mjx Data 更新 qpos/qvel 并重新包装 MjxLikeState。"""
+        d = st.pipeline_state.data.replace(
+            qpos=jnp.asarray(q, dtype=jnp.float32),
+            qvel=jnp.asarray(qd, dtype=jnp.float32))
+        info = dict(st.info)
+        if t is not None:
+            info["step"] = int(t / self.env_config.dt)
+        return st.replace(pipeline_state=self.env._make_state(d), info=info)
+
+    def init_state(self, q: np.ndarray, qd: np.ndarray):
+        """用真仿真初始状态初始化 MPC state。"""
+        st = self.env.reset(jax.random.PRNGKey(0))
+        self.state = self._set_state(st, q, qd, t=0.0)
+        self.Y = jnp.zeros([self.dial_config.Hnode + 1, self.mbdpi.nu])
+        self._ff_fwd = 0.0
+
+    def set_elevation_map(self, elev: dict):
+        """注入感知层世界对齐高程瓦片（get_local_map() 输出，8Hz 更新）。
+        仅存 numpy（线程安全，无 JAX dispatch）；update_state 在主线程转 jnp。
+        固定形状 (60,60) + origin(2,) + res，仅替换数值，不触发 retrace。"""
+        if elev is None:
+            return
+        # 契约桥接：local_map.get_tile() 的 valid 在瓦片顶层、features 内无 valid，
+        # 而 elevation_lookup.terrain_cost 期望 features["valid"]。
+        f = dict(elev["features"])
+        f["valid"] = elev["valid"]
+        self._elev_np = {
+            "heightmap": np.asarray(elev["heightmap"], dtype=np.float32),
+            "features": {
+                "valid": np.asarray(f["valid"], dtype=np.bool_),
+                "slope": np.asarray(f["slope"], dtype=np.float32),
+                "roughness": np.asarray(f["roughness"], dtype=np.float32),
+                "step": np.asarray(f["step"], dtype=np.float32),
+                "step_flag": np.asarray(f["step_flag"], dtype=np.float32),
+            },
+            "origin": np.asarray(elev["origin"], dtype=np.float32),
+            "resolution": float(elev["resolution"]),
+        }
+
+    def set_ref_path(self, pts, valid=True):
+        """注入参考路径（世界系 (N,2) 或 (N,3)），固定形状填充/截断到 REF_N。"""
+        pts = np.asarray(pts, dtype=np.float32)
+        if pts.size == 0 or not valid:
+            self._ref_path[:] = 0.0
+            self._ref_valid = False
+            return
+        pts = pts.reshape(-1, 2) if pts.shape[-1] == 2 else pts.reshape(-1, 3)
+        if pts.shape[1] == 2:
+            p3 = np.zeros((pts.shape[0], 3), dtype=np.float32)
+            p3[:, :2] = pts
+            pts = p3
+        if pts.shape[0] >= self.env_config.ref_n:
+            self._ref_path[:] = pts[:self.env_config.ref_n]
+        else:
+            self._ref_path[:] = 0.0
+            self._ref_path[:pts.shape[0]] = pts
+            # 末尾补齐为最后一个有效点（让"最近点"距离不为零噪声）
+            self._ref_path[pts.shape[0]:] = pts[-1]
+        self._ref_valid = True
+
+    def _elev_jnp(self):
+        """把 numpy 瓦片转 jnp（仅在主线程 plan_once 路径调用，规避并发 dispatch）。"""
+        f = self._elev_np["features"]
+        f = dict(f)
+        f["valid"] = np.asarray(f["valid"], dtype=np.bool_)
+        return {
+            "heightmap": jnp.asarray(self._elev_np["heightmap"]),
+            "features": {
+                "valid": jnp.asarray(f["valid"]),
+                "slope": jnp.asarray(f["slope"]),
+                "roughness": jnp.asarray(f["roughness"]),
+                "step": jnp.asarray(f["step"]),
+                "step_flag": jnp.asarray(f["step_flag"]),
+            },
+            "origin": jnp.asarray(self._elev_np["origin"]),
+            "resolution": self._elev_np["resolution"],
+        }
+
+    def _ramped_ff_fwd(self, target):
+        """前进轮速前馈斜坡：向上限速 S10_MPC_WHEEL_RAMP（默认 0.25 act/plan，
+        0→1.0 约 1s，防起步满矩翘头）；向下 S10_MPC_WHEEL_RAMP_DOWN（默认 0.5，
+        刹车响应快）。差速转向分量不斜坡，保持瞬时响应。"""
+        ramp_up = float(os.environ.get("S10_MPC_WHEEL_RAMP", "0.25"))
+        ramp_down = float(os.environ.get("S10_MPC_WHEEL_RAMP_DOWN", "0.5"))
+        cur = self._ff_fwd
+        d = float(target) - cur
+        d = float(np.clip(d, -ramp_down, ramp_up))
+        cur = cur + d
+        self._ff_fwd = cur
+        return cur
+
+    def update_state(self, q: np.ndarray, qd: np.ndarray, t: float):
+        self.state = self._set_state(self.state, q, qd, t)
+        # 注入目标指令（遥控/导航共用）
+        info = dict(self.state.info)
+        info["vel_tar"] = jnp.concatenate([self.cmd_vel, jnp.array([0.0])])[:3]
+        info["ang_vel_tar"] = jnp.concatenate([self.cmd_ang, jnp.array([0.0])])[:3]
+        info["elevation_map"] = self._elev_jnp()
+        # E3：地形自适应姿态目标（上坡仰头/下坡低头/过弯压弯）
+        p_tar, r_tar = self._terrain_pose_targets()
+        info["pitch_tar"] = jnp.array(p_tar, dtype=jnp.float32)
+        info["roll_tar"] = jnp.array(r_tar, dtype=jnp.float32)
+        # E4：参考路径
+        info["ref_path"] = jnp.asarray(self._ref_path)
+        info["ref_valid"] = jnp.array(bool(self._ref_valid))
+        # 地形跟随高度目标（0806 §3.6）：目标 = 机下地形 + 站姿高 + clip(前方高差)。
+        # 让 r_height 把机身"拉"向即将到达的地形高度，过楼梯/台阶（不依赖抬轮机制）。
+        info["pos_tar"] = jnp.array([0.0, 0.0, self._terrain_follow_z()],
+                                    dtype=jnp.float32)
+        self.state = self.state.replace(info=info)
+
+    def _terrain_pose_targets(self):
+        """E3：从高程瓦片算 pitch 目标（前方坡度），从指令算 roll 目标（压弯）。
+        返回 (pitch_tar, roll_tar)，numpy 路径（update_state 调用，无 JAX）。"""
+        e = self._elev_np
+        hm = e["heightmap"]
+        valid = e["features"]["valid"]
+        ox, oy = float(e["origin"][0]), float(e["origin"][1])
+        res = e["resolution"]
+        d = self.state.pipeline_state.data
+        bx, by = float(d.xpos[1][0]), float(d.xpos[1][1])
+        xm = np.asarray(d.xmat[1]).reshape(3, 3)
+        fx, fy = float(xm[0, 0]), float(xm[1, 0])
+        fn = np.hypot(fx, fy) + 1e-9
+        fx, fy = fx / fn, fy / fn
+
+        def _h(x, y):
+            i = int(np.floor((y - oy) / res))
+            j = int(np.floor((x - ox) / res))
+            if (0 <= i < hm.shape[0] and 0 <= j < hm.shape[1]
+                    and valid[i, j]):
+                return float(hm[i, j])
+            return None
+
+        pitch_tar = 0.0
+        la = self.env_config.pose_lookahead
+        h_a = _h(bx + fx * la, by + fy * la)
+        h_b = _h(bx - fx * la, by - fy * la)
+        if h_a is not None and h_b is not None:
+            pitch_tar = float(np.clip(
+                np.arctan2(h_a - h_b, 2.0 * la), -0.4, 0.4))
+        vx = float(self.cmd_vel[0])
+        vyaw = float(self.cmd_ang[2])
+        roll_tar = float(np.clip(
+            self.env_config.pose_roll_gain * vyaw * abs(vx),
+            -self.env_config.pose_roll_max, self.env_config.pose_roll_max))
+        return pitch_tar, roll_tar
+
+    def _terrain_follow_z(self) -> float:
+        """从 numpy 高程瓦片算地形跟随目标高度（update_state 调用，无 JAX）。"""
+        e = self._elev_np
+        hm = e["heightmap"]
+        valid = e["features"]["valid"]
+        ox, oy = float(e["origin"][0]), float(e["origin"][1])
+        res = e["resolution"]
+        d = self.state.pipeline_state.data
+        bx, by = float(d.xpos[1][0]), float(d.xpos[1][1])
+        xm = np.asarray(d.xmat[1]).reshape(3, 3)
+        fx, fy = float(xm[0, 0]), float(xm[1, 0])   # 前向 = xmat 第一列
+        fn = np.hypot(fx, fy) + 1e-9
+        fx, fy = fx / fn, fy / fn                   # 水平归一化（抗俯仰缩短）
+
+        def _h(x, y):
+            i = int(np.floor((y - oy) / res))
+            j = int(np.floor((x - ox) / res))
+            if (0 <= i < hm.shape[0] and 0 <= j < hm.shape[1]
+                    and valid[i, j]):
+                return float(hm[i, j])
+            return None
+
+        h_now = _h(bx, by)
+        if h_now is None:
+            return float(self.env_config.height_tar)
+        la = self.env_config.height_lookahead
+        h_ahead = _h(bx + fx * la, by + fy * la)
+        if h_ahead is None:
+            h_ahead = h_now
+        lift = float(np.clip(h_ahead - h_now, 0.0,
+                             self.env_config.height_lift_cap))
+        return h_now + self.env_config.height_tar + lift
+
+    def set_cmd(self, vx: float, vy: float, vyaw: float):
+        """遥控：目标线速度 (vx,vy) 与偏航角速度 vyaw。"""
+        self.cmd_vel = jnp.array([vx, vy, 0.0])
+        self.cmd_ang = jnp.array([0.0, 0.0, vyaw])
+        # 命令阶跃时把轮速度解预热到前馈值（vx 前进 + vyaw 差速转向）：
+        #   act_vx = vx / (vel_scale * r_wheel)
+        #   act_ya = vyaw * half_track / (vel_scale * r_wheel)
+        # 轮 action[12:] = [fl, fr, hl, hr]；左轮(+y)减差速、右轮加差速
+        ff_vx = float(np.clip(
+            vx / (self.env_config.vel_scale * 0.081), -1.0, 1.0))
+        # yaw 前馈放大：物理公式给的是稳态轮速差，但轮矩滞后导致实测转向
+        # 低于理论值。放大增益补偿滞后。
+        # 速度自适应增益（竞速）：低速/原地转向用大增益（实测 4.5 rad/s），
+        # 高速时减小（实测高速大差速会触发 MPC 防侧翻拒转 + 物理 LTR 极限），
+        # 以 vx_cmd 线性过渡：0.5m/s→40，3m/s→15。
+        yaw_gain_lo = float(
+            self._yaw_gain_lo_override
+            if self._yaw_gain_lo_override is not None
+            else os.environ.get("S10_MPC_YAW_FF_GAIN", "50.0"))
+        yaw_gain_hi = float(os.environ.get("S10_MPC_YAW_FF_GAIN_HI_SPD", "15.0"))
+        vx_cmd = abs(float(vx))
+        if vx_cmd >= 3.0:
+            yaw_gain = yaw_gain_hi
+        elif vx_cmd > 0.5:
+            t = (vx_cmd - 0.5) / 2.5
+            yaw_gain = yaw_gain_lo * (1.0 - t) + yaw_gain_hi * t
+        else:
+            yaw_gain = yaw_gain_lo
+        ff_yaw = float(np.clip(
+            yaw_gain * vyaw * 0.05 / (self.env_config.vel_scale * 0.081),
+            -1.0, 1.0))
+        if (self.state is not None
+                and (abs(vx - self._last_vx) > 0.1
+                     or abs(vyaw - self._last_vyaw) > 0.1)):
+            # 回退到 Mode B e2e 实测有效的差速符号（act_w=[-0.37,0.37] → CCW）
+            ff_vx_r = self._ramped_ff_fwd(ff_vx)
+            self.Y = self.Y.at[:, 12:].set(
+                jnp.array([ff_vx_r - ff_yaw, ff_vx_r + ff_yaw,
+                           ff_vx_r - ff_yaw, ff_vx_r + ff_yaw],
+                          dtype=jnp.float32))
+        self._last_vx = float(vx)
+        self._last_vyaw = float(vyaw)
+
+    def set_mode(self, mode: str):
+        """CRUISE / STAIR_SEQUENCE 双模式 reward 权重切换（用户方案 2.3/2.4）。
+
+        ctx["cfg"] 是 jit 动态输入（参数化后），改值不 retrace——reward 权重
+        随模式切换：CRUISE 防趴低+轻蹲姿、STAIR 放开屈膝+抬腿引导+做功奖励。
+        """
+        if mode == getattr(self, "_mode", None):
+            return
+        self._mode = mode
+        # 模式化视界（用户方案）：STAIR 用长视界 MBDPI（H=20），
+        # CRUISE 用短视界（H=14）。Hnode 相同，Y 状态直接复用。
+        self.mbdpi = (self.mbdpi_h20 if mode == "STAIR"
+                      else self.mbdpi_h14)
+        cfg = self.env._ctx["cfg"]
+        # 恒定项（chain 64 验证基线，两种模式共用）：轮-地形贴合 300、
+        # 机身净高 60——避免 CRUISE 退化（chain 68 r1 东漂复现：
+        # ground 120/clear 10 削弱横脊通过能力）。
+        cfg["terrain_w_ground"] = 300.0
+        cfg["w_clear"] = 60.0
+        # 模式化采样 σ（用户方案 6"退火 z 向关节 sigma 放大"）：STAIR 腿维
+        # 噪声放大让 MPC 探索到大幅抬腿；CRUISE 小 σ 保平地/横脊稳定。
+        # sigma_dim 已参数化（reverse_once 动态参数），切换无 retrace。
+        _leg_sigma_default = 2.0 if mode == "STAIR" else 0.3
+        leg_sigma = float(os.environ.get(
+            "S10_STAIR_LEG_SIGMA", str(_leg_sigma_default)))
+        self.mbdpi.sigma_dim = jnp.asarray(
+            [leg_sigma] * 12 + [1.0] * 4, dtype=jnp.float32)
+        if mode == "STAIR":
+            overrides = {
+                # 放开屈膝（w_crouch=0 同义）：腿自由伸展爬梯
+                "terrain_w_leg": 0.0,
+                "w_crouch": 0.0,
+                # 抬腿引导 + 做功奖励（用户 A/B 方案）
+                "leg_ext_w": 30.0,
+                "lockpush_w": 8.0,
+                "w_swing_ok": 2.0,
+                "w_push": 0.3,
+                "w_z_smooth": 2.0,
+                "terrain_w_attdamp": 2.0,
+            }
+        else:  # CRUISE
+            overrides = {
+                "terrain_w_leg": 0.3,
+                "w_crouch": 15.0,
+                "leg_ext_w": 0.0,
+                "lockpush_w": 0.0,
+                "w_swing_ok": 0.0,
+                "w_push": 0.0,
+                "w_z_smooth": 0.0,
+                "terrain_w_attdamp": 0.8,
+            }
+        cfg.update(overrides)
+
+    def set_yaw_gain_lo(self, gain):
+        """覆盖低速 yaw 前馈增益（自动导航用 15 防过冲；None 恢复默认 50）。"""
+        self._yaw_gain_lo_override = gain
+
+    def _reinject_wheel_ff(self):
+        """每轮规划前把轮速前馈重新写入 Y（对抗 MPPI 的轮速衰减）。
+
+        实测：采样 MPC 在短视界内会把轮速指令逐轮砍低（0.99->0.3），
+        导致实际速度远低于指令。这里把轮速按命令前馈固定（开环轮速），
+        腿部仍由扩散采样优化（保持姿态/稳定性）；开环实测 knee=2.30
+        满轮速可稳定 4 m/s。
+        """
+        if self.state is None:
+            return
+        vx = float(self.cmd_vel[0])
+        vyaw = float(self.cmd_ang[2])
+        if abs(vx) < 0.05 and abs(vyaw) < 0.05:
+            # 空闲：让前馈平滑归零（刹车由速度伺服完成）
+            self._ramped_ff_fwd(0.0)
+            return
+        ff_vx = float(np.clip(
+            vx / (self.env_config.vel_scale * 0.081), -1.0, 1.0))
+        # yaw 前馈放大（与 set_cmd 一致）：速度自适应增益，见 set_cmd 注释
+        yaw_gain_lo = float(
+            self._yaw_gain_lo_override
+            if self._yaw_gain_lo_override is not None
+            else os.environ.get("S10_MPC_YAW_FF_GAIN", "50.0"))
+        yaw_gain_hi = float(os.environ.get("S10_MPC_YAW_FF_GAIN_HI_SPD", "15.0"))
+        vx_cmd = abs(float(vx))
+        if vx_cmd >= 3.0:
+            yaw_gain = yaw_gain_hi
+        elif vx_cmd > 0.5:
+            t = (vx_cmd - 0.5) / 2.5
+            yaw_gain = yaw_gain_lo * (1.0 - t) + yaw_gain_hi * t
+        else:
+            yaw_gain = yaw_gain_lo
+        ff_yaw = float(np.clip(
+            yaw_gain * vyaw * 0.05 / (self.env_config.vel_scale * 0.081),
+            -1.0, 1.0))
+        ff_vx_r = self._ramped_ff_fwd(ff_vx)
+        self.Y = self.Y.at[:, 12:].set(
+            jnp.array([ff_vx_r - ff_yaw, ff_vx_r + ff_yaw,
+                       ff_vx_r - ff_yaw, ff_vx_r + ff_yaw],
+                      dtype=jnp.float32))
+
+    # ---- 单步规划（扩散采样）----
+    def plan_once(self, q: np.ndarray, qd: np.ndarray, t: float) -> jnp.ndarray:
+        """返回当前最优 action（16 维，供 act2tau 转力矩）。
+
+        dial-mpc 主循环是 shift+reverse：先时间平移（把上次优化过的控制推进到
+        第一个节点），再扩散采样优化未来节点。缺 shift 会导致 Y[0] 恒为初始 0。
+        """
+        if self.state is None:       # 防御：任何路径进入规划时确保 state 已初始化
+            self.init_state(q, qd)
+        self.update_state(q, qd, t)
+        # 1) shift：时间平移（末位补 0），使优化过的控制进入 Y[0]
+        self.Y = self.mbdpi.shift(self.Y)
+        # 轮速前馈持续注入（对抗优化器衰减；见 _reinject_wheel_ff）
+        self._reinject_wheel_ff()
+
+        n_diffuse = self.dial_config.Ndiffuse
+        if self._first:
+            print("[MPC] 首次 JIT 扩散采样 ...")
+            n_diffuse = self.dial_config.Ndiffuse_init
+            self._first = False
+        factors = (
+            self.mbdpi.sigma_control
+            * self.dial_config.traj_diffuse_factor
+            ** (jnp.arange(n_diffuse))[:, None]
+        )
+        rng, Y0, st = self.rng, self.Y, self.state
+        (rng, Y0, st), info = jax.lax.scan(
+            self._scan_body, (rng, Y0, st), factors)
+        if os.environ.get("S10_MPC_DEBUG"):
+            import numpy as _np
+            rew = _np.asarray(info["rews"])
+            d0 = self.state.pipeline_state.data
+            v_real = _np.linalg.norm(_np.asarray(d0.cvel[1, 3:]))
+            print(f"[DBG] v_real={v_real:.2f} "
+                  f"frac_bad={(rew < -1e5).mean():.2f} "
+                  f"max|rew|={_np.abs(rew).max():.1e} "
+                  f"Yw_in={_np.asarray(self.Y[0, 12]):.2f} "
+                  f"Yw_out={_np.asarray(Y0[0, 12]):.2f} "
+                  f"Yw1={_np.asarray(Y0[1, 12]):.2f} "
+                  f"rew_mean={float(rew.mean()):.0f}",
+                  flush=True)
+        self.rng, self.Y, self.state = rng, Y0, st
+        self.Y = self.Y.block_until_ready()
+        self._last_plan_t = t
+        return self.Y[0]
+
+    # ---- 控制输出 ----
+    def get_tau(self, action: jnp.ndarray) -> np.ndarray:
+        """action → 16 维关节力矩（leg PD + wheel 直接力矩）。"""
+        tau = self.env.act2tau(action, self.state.pipeline_state)
+        return np.asarray(tau)
+
+    def compute_tau(self, action, q: np.ndarray, qd: np.ndarray) -> np.ndarray:
+        """用当前仿真状态 numpy 重算力矩（不触发 JAX，可在 200Hz 主循环每步调用）。
+
+        action = 12 腿位置残差 + 4 轮速度目标；与 env.act2tau 语义一致，
+        但直接从仿真 mj_data 的 qpos/qvel 计算，避免 MPC 状态过期。
+        """
+        import numpy as _np
+
+        from dial_mpc.envs.s10_env import LEG_IDX_NP, WHEEL_IDX_NP
+
+        a = _np.asarray(action, dtype=_np.float32)
+        q = _np.asarray(q, dtype=_np.float32)
+        qd = _np.asarray(qd, dtype=_np.float32)
+        leg_target = (
+            _np.asarray(self.env._default_leg)
+            + a[:12] * self.env_config.leg_action_scale
+        )
+        q_leg = q[7:][LEG_IDX_NP]
+        qd_leg = qd[6:][LEG_IDX_NP]
+        tau_leg = self.env_config.kp * (leg_target - q_leg) - self.env_config.kd * qd_leg
+        qd_wheel = qd[6:][WHEEL_IDX_NP]
+        if self.env_config.wheel_control == "velocity":
+            vel_ref = -a[12:] * self.env_config.vel_scale
+            tau_wheel = self.env_config.kd_wheel * (vel_ref - qd_wheel)
+        else:
+            tau_wheel = -a[12:] * self.env_config.wheel_tau_scale
+        tau = _np.zeros(16, dtype=_np.float32)
+        tau[LEG_IDX_NP] = tau_leg
+        tau[WHEEL_IDX_NP] = tau_wheel
+        ctrl = _np.asarray(self.env.joint_torque_range)
+        return _np.clip(tau, ctrl[:, 0], ctrl[:, 1])
+
+    # ---- 异步规划线程（仿真不阻塞；~2s/次更新指令）----
+    def start_planning(self, q: np.ndarray, qd: np.ndarray):
+        """后台线程持续规划：不断更新 latest_action / latest_tau。
+        仿真主循环每步读取 latest_tau 施加，无需等待 MPC。"""
+        import threading
+        if self.state is None:
+            self.init_state(q, qd)
+        self._plan_lock = threading.Lock()
+        self.latest_tau = np.zeros(16, dtype=np.float32)
+        self.latest_action = np.zeros(16, dtype=np.float32)
+        self._plan_q = np.asarray(q, dtype=np.float32)
+        self._plan_qd = np.asarray(qd, dtype=np.float32)
+        self._plan_t = 0.0
+        self._plan_stop = threading.Event()
+        self._plan_thread = threading.Thread(
+            target=self._plan_loop, daemon=True)
+        self._plan_thread.start()
+
+    def update_plan_state(self, q: np.ndarray, qd: np.ndarray, t: float):
+        """仿真线程每步调用：更新最新状态快照供规划线程读取。"""
+        with self._plan_lock:
+            self._plan_q = np.asarray(q, dtype=np.float32)
+            self._plan_qd = np.asarray(qd, dtype=np.float32)
+            self._plan_t = float(t)
+
+    def _plan_loop(self):
+        """规划线程：每轮用最新状态快照做一次 plan_once，更新输出。"""
+        first = True
+        while not self._plan_stop.is_set():
+            with self._plan_lock:
+                q = self._plan_q.copy()
+                qd = self._plan_qd.copy()
+                t = self._plan_t
+            try:
+                act = self.plan_once(q, qd, t)
+                tau = self.get_tau(act)
+                if np.any(np.isnan(tau)) or np.any(np.isinf(tau)):
+                    continue   # NaN 防护：保留上次有效 tau
+                with self._plan_lock:
+                    self.latest_action = np.asarray(act)
+                    self.latest_tau = tau
+                if first:
+                    print(f"[MPC] 规划线程就绪（首次 {t:.2f}s）", flush=True)
+                    first = False
+            except Exception as e:
+                import traceback
+                print(f"[MPC] 规划线程异常: {e}", flush=True)
+                traceback.print_exc()
+
+    def stop_planning(self):
+        if hasattr(self, "_plan_stop"):
+            self._plan_stop.set()
