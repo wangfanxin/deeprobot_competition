@@ -1,16 +1,23 @@
-# S10 Perception Racing Contest
+# S10 巡逻赛题 · 感知-MPC 工程仓库
 
-[![Discord](https://img.shields.io/badge/-Discord-5865F2?style=flat&logo=Discord&logoColor=white)](https://discord.gg/gdM9mQutC8)
+基于山猫 S10 四足轮式机器人的**巡逻赛题**参赛方案：LiDAR 感知 + 高程地形建模 +
+dial-mpc 采样 MPC 控制，在 MuJoCo 仿真中完成 33 航点全程巡检。
 
-## Overview
+> 完整工程文档见 [doc/0806.md](doc/0806.md)；参数唯一来源为
+> [doc/s10_mpc_deploy.yaml](doc/s10_mpc_deploy.yaml)。
 
-This repository provides the ROS 2 and MuJoCo simulation environment for a contest focused on racing the S10 robot around a waypoint track using perception. Participants train their own perception-based locomotion policy to control the S10 robot in the provided track scene.
+## 赛题与计分
 
-The default MuJoCo scene is `S10_track.xml`, which includes:
+- 仿真环境（官方提供）：`S10_track.xml` 场景 + `track_overlay.xml` 33 个航点
+  （000_start ~ 032_end），base 进入 wp0 的 0.2 m 水平半径开始计时，逐点推进，
+  到达终点停止计时并打印耗时。
+- 计分：总成绩 = 完成时间 ÷ 模式系数，得分越低排名越靠前，30 个定位点须全部
+  完成。模式系数以官方 PDF 为准：**遥控 ÷1.0 / 自主跟随 ÷1.3 / 自主导航 ÷1.4**
+  （本仓库早期 README 中"导航 ÷1.2"为旧表述，已废弃）。
+- 申报模式：**自主跟随（÷1.3）**——航点跟随 + 感知地形限速/爬坡 + roll 安全，
+  不强制全局 A\*。
 
-- the unscaled S10 robot model from `S10.xml`. The corresponding URDF of S10 is `S10.urdf`.
-- the scaled environment from `scene.xml`
-- the visual waypoint track from `track_overlay.xml`
+## 已实现（2026-08-06）
 
 ```mermaid
 graph LR
@@ -19,84 +26,97 @@ graph LR
     B -->|/JOINTS_DATA| A
 ```
 
-## Competition Task
+- **感知**：Airy-96 LiDAR 仿真（120×48 线 @10Hz，前下 45° 安装）→ 世界对齐
+  高程瓦片 `perception/local_map.py`（8×8m 锚定 / 输出 60×60@0.1m，跨帧累积 +
+  空洞填补 + 运动学地面注入）→ 纯 jnp 查图 `elevation_lookup.py`（零 retrace）。
+- **控制**：dial-mpc MBDPI（Nsample 2048 / H14 / Ndiffuse 1，≈17Hz on RTX 4090），
+  CRUISE/STAIR 双模式；模式 B 遥控（4.5 m/s 竞速档）+ 模式 A 自动导航
+  （pursuit + 弯道/坡度/台阶限速 + 脱困）。
+- **爬坡**：reward 层前瞻抬轮 + MARG stumble + 抬腿伸展引导（r_ext）+ 锁轮推身
+  （lockpush）+ 机身逐级抬升（r_clear），wp7 连续台阶可爬 3~4 级（实验链 64）。
+- **工程**：JAX 编译缓存（冷启动 ≈4.3s）、文档化环境变量覆盖、`doc/0806.md`
+  完整记录赛程/规则/参数/实验链。
 
-The goal is to complete the waypoint course as quickly as possible. During the track scene, waypoint progress is checked in order. When the robot base enters a `0.2 m` horizontal radius of waypoint 0, the timer starts and that waypoint disappears. Each following waypoint disappears only after the previous one has been reached. When the final waypoint is reached, the timer stops and the elapsed simulation time is printed in the terminal.
+## 目录结构
 
-Participants are expected to train their own policy with perception. This policy should serve as the locomotion policy for controlling the S10 robot. Participants will need to implement a simulated lidar or depth camera in MuJoCo and use that sensor input as part of their policy pipeline.
+```
+DR_competition/
+├── .venv/                       # 项目虚拟环境（Python 3.12.3）
+├── dial-mpc/                    # dial-mpc 采样 MPC 库（含 S10 补丁）
+├── deeprobot_competition/       # 本仓库：ROS2 工作空间
+│   ├── src/S10_sdk_deploy/      # 仿真节点/感知/控制器/模型
+│   └── doc/                     # 0806.md + 部署 yaml + 官方材料
+└── refs/                        # 参考仓库（go2w_rl_gym、unitree_mujoco）
+```
 
-For simulation, participants are not required to build a SLAM algorithm. You may directly use the ground truth robot position from MuJoCo. Navigation is optional; if you implement navigation, the final elapsed time will be divided by `1.2` for scoring.
+## 环境与快速开始
 
-## Setup
-
-Use Ubuntu 24.04 with ROS 2 Jazzy. Source ROS before building:
+要求：**Ubuntu 24.04 + ROS 2 Jazzy + NVIDIA GPU（可选，CPU 可跑但慢）**。
+完整环境配置（含包版本）见 `doc/0806.md` §3。
 
 ```bash
-pip install "numpy < 2.0" mujoco
-git clone https://github.com/DeepRoboticsLab/goai_embodied_future_material.git
+# 1) 虚拟环境（仓库根目录，注意在 deeprobot_competition 上一级）
+cd ~/DR_competition
+/usr/bin/python3 -m venv .venv
+./.venv/bin/pip install "numpy<2" mujoco mujoco-lidar jax[cuda12]==0.4.38
 
-cd goai_embodied_future_material
+# 2) 构建 ROS2 工作空间
+cd ~/DR_competition/deeprobot_competition
 source /opt/ros/jazzy/setup.bash
 colcon build --packages-up-to s10_sdk_deploy --cmake-args -DBUILD_PLATFORM=x86
-```
-
-Use `-DBUILD_PLATFORM=arm` when building for the S10 robot target.
-
-## Run Simulation
-
-Open two terminals.
-
-Terminal 1:
-
-```bash
-export ROS_DOMAIN_ID=1
 source install/setup.bash
-ros2 run s10_sdk_deploy rl_deploy
+
+# 3) 模式 B 遥控（窗口内 z 站起 / c 进入 MPC / wasd 移动 / qe 转向）
+export JAX_COMPILATION_CACHE_DIR=$HOME/.cache/s10_dial_mpc
+S10_MPC_ENABLE=1 ~/DR_competition/.venv/bin/python \
+  src/S10_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
+
+# 4) 模式 A 自动导航（无头加 S10_USE_VIEWER=0）
+S10_MPC_ENABLE=1 S10_MODE=auto_nav ~/DR_competition/.venv/bin/python \
+  src/S10_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
 ```
 
-Terminal 2:
-
-```bash
-export ROS_DOMAIN_ID=1
-source install/setup.bash
-python3 src/S10_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
-```
-
-To load a custom MJCF, for example after adding a lidar or depth camera:
+加载自定义 MJCF（如加装传感器）：
 
 ```bash
 S10_MUJOCO_XML=/absolute/path/to/model.xml \
-python3 src/S10_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
+  ~/DR_competition/.venv/bin/python \
+  src/S10_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
 ```
 
-## Simulator Parameters
+## 仿真器常用参数
 
-The following parameters are defined near the top of
-`src/S10_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py`.
-Restart the simulator after changing them.
-
-| Parameter | Default | Description |
+| 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `USE_VIEWER` | `True` | Enables or disables the MuJoCo viewer. |
-| `TRACK_VIEWER` | `False` | Makes the viewer camera follow `TRACK_BODY_NAME` when the simulator starts. |
-| `CAMERA_AZIMUTH` | `90` | Initial horizontal camera angle in degrees. |
-| `CAMERA_ELEVATION` | `-25` | Initial vertical camera angle in degrees. |
-| `CAMERA_DISTANCE` | `18.0` | Initial camera distance from the robot. |
-| `TRACK_START_BASE_POS` | `[0.0, -2.5, 0.2]` | Initial robot base position in `[x, y, z]` order. |
-| `TRACK_BODY_NAME` | `"base_link"` | MuJoCo body used for waypoint progress and startup camera tracking. |
+| `S10_USE_VIEWER` | `1` | 0 = 无头运行 |
+| `S10_MODE` | `remote` | `auto_nav` = 模式 A 自动导航 |
+| `S10_MPC_ENABLE` | `0` | `1` 启用 MPC 控制 |
+| `S10_MUJOCO_SCENE` | `track` | 场景（S10_track.xml） |
+| `S10_LIDAR_BACKEND` | `cpu` | WSL 下勿用 taichi（core dump） |
+| `S10_LIDAR_FREQ` | `10` | LiDAR 频率 (Hz) |
 
-## Hardware Spec (Lidar)
-Please refer to the files inside this doc: /home/pb/goai_embodied_future_material/doc.
+完整环境变量表见 `doc/0806.md` §7；手动键盘控制见下文。
 
-## Manual Controls
+## 手动控制（仿真窗口）
 
-In the simulator window:
+- `z`：默认位置 / `c`：RL 控制默认位置
+- `w/a/s/d`：前后左右平移 / `q/e`：逆/顺时针旋转
+- `Ctrl` + 右键双击 body：跟踪该 body；`Esc`：停止跟踪
+- 仿真窗口失焦时可右键选择 "always on top"
 
-- `z`: default position
-- `c`: RL control default position
-- `w/a/s/d`: forward, leftward, backward, rightward
-- `q/e`: rotate counterclockwise or clockwise
-- `Ctrl` + right-double-click a body: start camera tracking for that body
-- `Esc`: stop camera tracking and return to the free camera
+## 当前进度与待办
 
-Right-click the simulator window and select "always on top" if it loses focus during testing.
+- 模式 B（遥控）：稳定，4.5 m/s 竞速档已调优。
+- 模式 A（自动导航）：wp0→wp6 稳定（34~38s）；**阻塞点 = wp7 连续台阶区**
+  （4~5 级 0.13m 台阶），实验链 64 已可爬 3~4 级，稳定性收敛中。
+- 待办：wp7 台阶区收敛、33 航点全程跑通、真机迁移（vel_scale 回退 50、
+  IMU 闭环、Orin 实测）、A\* 全局规划（可选）。
+
+详细实验记录与参数演进见 `doc/0806.md`（链 1~67）。
+
+## 相关文档
+
+- [doc/0806.md](doc/0806.md) —— 工程总文档（环境配置/架构/参数/进度/待办）
+- [doc/s10_mpc_deploy.yaml](doc/s10_mpc_deploy.yaml) —— 部署配置
+- `doc/比赛规则_赛道四_具身未来.md`、`doc/赛道四_具身未来.pdf` —— 官方规则
+- `doc/Airy雷达用户手册.pdf`、`doc/hardware spec.pdf` —— 真机硬件资料
