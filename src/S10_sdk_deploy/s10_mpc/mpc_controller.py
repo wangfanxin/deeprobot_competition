@@ -578,12 +578,13 @@ class MPCController:
                 # 放开屈膝（w_crouch=0 同义）：腿自由伸展爬梯
                 "terrain_w_leg": 0.0,
                 "w_crouch": 0.0,
-                # 抬腿引导 + 做功奖励（用户 A/B 方案）
+                # 抬腿引导（chain 64 验证基线）；push/swing/z_smooth
+                # 临时关（chain 75 A/B：新 reward 可能干扰爬梯）
                 "leg_ext_w": 30.0,
                 "lockpush_w": 8.0,
-                "w_swing_ok": 2.0,
-                "w_push": 0.3,
-                "w_z_smooth": 2.0,
+                "w_swing_ok": 0.0,
+                "w_push": 0.0,
+                "w_z_smooth": 0.0,
                 "terrain_w_attdamp": 2.0,
             }
         else:  # CRUISE

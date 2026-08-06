@@ -51,6 +51,12 @@ class AutoNavFollower:
         self.mode = "CRUISE"
         self.stair_mode_dist = float(os.environ.get(
             "S10_STAIR_MODE_DIST", "3.0"))
+        # 全局平滑路径（2026-08-06 用户方向 1.1/1.2）：航点折线 → 圆角
+        # 折线（弯道圆弧过渡）→ 密集弧长参数化路径 + 曲率/速度剖面。
+        # dial-mpc 只做 locomotion，导航层（本类）负责"平滑全局路径 +
+        # 局部滚动 ref_path + 速度参考"。圆角外偏 < 判点半径（0.5m 模拟器）。
+        self.fillet_r = float(os.environ.get("S10_GLOBAL_FILLET_R", "1.0"))
+        self.path_res = float(os.environ.get("S10_GLOBAL_PATH_RES", "0.05"))
         # vyaw 变化率限制（rad/s 每 0.05s 更新，S10_AUTO_VYAW_SLEW 默认 0.8）：
         # 反馈 ±1.28 瞬跳 + 轮 FF 放大 → yaw 打转（全航点 #7 wp2 处 ±3rad 振荡），
         # 限制指令变化率可消振荡（2026-08-05）。
@@ -59,6 +65,7 @@ class AutoNavFollower:
         self._last_vyaw_out = 0.0
         self._ref_dbg_cnt = 0
         self._precompute()
+        self._build_smooth_path()
 
     def _precompute(self):
         wp = self.wp
@@ -105,7 +112,18 @@ class AutoNavFollower:
             self.speed_limit[i] = min(self.max_speed, v_curve, v_grade)
 
     def _path_point_at(self, dist):
-        """沿路径取距起点 dist 处的点（线性插值）。"""
+        """沿**平滑路径**取距起点 dist 处的点（线性插值，弧长参数化）。"""
+        if hasattr(self, "path_cum") and self.path_cum is not None:
+            cum = self.path_cum
+            pts = self.path_pts
+            if dist <= 0:
+                return pts[0].copy()
+            if dist >= cum[-1]:
+                return pts[-1].copy()
+            k = int(np.searchsorted(cum, dist, side="right") - 1)
+            k = max(0, min(k, len(pts) - 2))
+            t = (dist - cum[k]) / max(cum[k + 1] - cum[k], 1e-6)
+            return pts[k] + t * (pts[k + 1] - pts[k])
         if dist <= 0:
             return self.wp[0].copy()
         if dist >= self.cum_len[-1]:
@@ -115,6 +133,93 @@ class AutoNavFollower:
         t = (dist - self.cum_len[k]) / max(self.seg_len[k], 1e-6)
         return self.wp[k] + t * (self.wp[k + 1] - self.wp[k])
 
+    def _build_smooth_path(self):
+        """Catmull-Rom 样条过航点 → 均匀弧长采样 + 数值曲率/速度剖面。
+
+        Catmull-Rom：三次 Hermite 插值，**严格经过每个航点**（判点 0.2m
+        半径保证），C1 连续平滑转弯；实现简单无几何 bug（替代圆弧/切角，
+        2026-08-06 圆弧两个几何 bug 导致绕圈/变长/外偏 0.5m 已弃用）。
+        速度剖面：数值曲率 κ=|dθ/ds| 平滑后 v=min(v_max, √(a_lat/κ))，
+        曲率 clamp（R_min=0.8m → v_min≈2.2m/s）防过冲造成过慢。
+        """
+        wp = self.wp
+        n = len(wp)
+        res = self.path_res
+        n_per = int(os.environ.get("S10_GLOBAL_NPER_SEG", "24"))
+        xy = wp[:, :2]
+        raw = [xy[0].copy()]
+        for i in range(n - 1):
+            p0 = xy[max(i - 1, 0)]
+            p1 = xy[i]
+            p2 = xy[i + 1]
+            p3 = xy[min(i + 2, n - 1)]
+            m1 = (p2 - p0) / 2.0
+            m2 = (p3 - p1) / 2.0
+            for k in range(1, n_per):
+                t = k / n_per
+                t2 = t * t
+                t3 = t2 * t
+                h00 = 2 * t3 - 3 * t2 + 1
+                h10 = t3 - 2 * t2 + t
+                h01 = -2 * t3 + 3 * t2
+                h11 = t3 - t2
+                raw.append(h00 * p1 + h10 * m1 + h01 * p2 + h11 * m2)
+            raw.append(xy[i + 1].copy())
+        raw = np.asarray(raw, dtype=np.float64)
+
+        # 均匀弧长重采样（path_res）
+        cum_raw = np.concatenate([[0.0], np.cumsum(
+            np.linalg.norm(np.diff(raw, axis=0), axis=1))])
+        n_out = max(int(cum_raw[-1] / res), 2)
+        s_uniform = np.linspace(0.0, cum_raw[-1], n_out)
+        pts = np.column_stack([
+            np.interp(s_uniform, cum_raw, raw[:, 0]),
+            np.interp(s_uniform, cum_raw, raw[:, 1]),
+            np.interp(s_uniform, self.cum_len, self.wp[:, 2]),
+        ])
+
+        # 弧长累积 + 数值曲率（|dθ/ds|，平滑 5 点）
+        seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        cum = np.concatenate([[0.0], np.cumsum(seg)])
+        heading = np.arctan2(np.diff(pts[:, 1]), np.diff(pts[:, 0]))
+        self.path_pts = pts
+        self.path_cum = cum
+        self.path_heading = np.append(heading, heading[-1])
+        dh = np.abs(np.diff(heading)) % (2.0 * np.pi)
+        dh = np.minimum(dh, 2.0 * np.pi - dh)
+        ds = seg[:-1]
+        kappa = np.append(dh / np.maximum(ds, 1e-4), 0.0)
+        kappa = np.convolve(kappa, np.ones(5) / 5.0, mode="same")
+        # 曲率 clamp：R_min=0.8m（过冲点曲率虚高，限速不应无限低）
+        kappa = np.minimum(kappa, 1.0 / 0.8)
+        self.path_curv = np.asarray(kappa, dtype=np.float64)
+
+        # 速度剖面：v(s) = min(v_max, √(a_lat·R))，圆角处按曲率限速
+        vlim = np.full(len(pts), self.max_speed, dtype=np.float64)
+        for k, c in enumerate(self.path_curv):
+            if c > 1e-6:
+                vlim[k] = min(vlim[k], np.sqrt(
+                    self.lat_accel_max / max(c, 1e-4)))
+        # 弯道减速前向传播（2026-08-06 用户 1.1）：曲率大的点往前 3m
+        # 线性压低 vlim——4m/s 冲进 71° 弯转向不及（wp3→4 北偏复现），
+        # 弯道前必须提前减速（距离前瞻而非瞬时曲率）。
+        _decel_ahead = int(3.0 / res)
+        for k in range(len(vlim)):
+            if vlim[k] < self.max_speed - 0.5:
+                for j in range(max(0, k - _decel_ahead), k):
+                    vlim[j] = min(vlim[j], vlim[k])
+        # 台阶/楼梯段限速映射到路径弧长（按航点区间）
+        for i in range(n - 1):
+            if not (self.step_zone[i] or self.stair_zone[i]):
+                continue
+            s0 = self.cum_len[i]
+            s1 = self.cum_len[i + 1]
+            v_zone = (self.stair_vx if self.stair_zone[i] else self.step_vx)
+            mask = (cum >= s0 - 2.0) & (cum <= s1 + 2.0)
+            vlim[mask] = np.minimum(vlim[mask], v_zone)
+        self.path_vlim = vlim
+        self.path_total = float(cum[-1])
+
     def compute_cmd(self, robot_xy, yaw, next_idx, robot_z=None, yaw_rate=0.0):
         """返回 (vx, vyaw)。robot_xy: (2,) 全局位置；next_idx: 下一个未到达航点。"""
         if next_idx >= len(self.wp):
@@ -122,13 +227,13 @@ class AutoNavFollower:
         wp_next = self.wp[next_idx]
         d_wp = float(np.linalg.norm(robot_xy - wp_next[:2]))
 
-        # 纯 pursuit：机器人在当前航段上的投影进度（弧长基准）
-        seg_a = self.wp[max(next_idx - 1, 0)]
-        seg_b = self.wp[next_idx]
-        d = seg_b[:2] - seg_a[:2]
-        L2 = max(float(np.dot(d, d)), 1e-6)
-        t = float(np.clip(np.dot(robot_xy - seg_a[:2], d) / L2, 0.0, 1.0))
-        s_proj = self.cum_len[max(next_idx - 1, 0)] + t * np.sqrt(L2)
+        # 纯 pursuit（全局导航层，2026-08-06）：机器人到**平滑圆角路径**
+        # 最近点的弧长（避免折线切弦绕路）——dial-mpc 只做 locomotion，
+        # 本层输出平滑全局路径 + 速度剖面 + 局部滚动 ref_path。
+        _d2 = np.sum(
+            (self.path_pts[:, :2] - robot_xy[None, :]) ** 2, axis=1)
+        self._k_near = int(np.argmin(_d2))
+        s_proj = float(self.path_cum[self._k_near])
 
         # 目标点：视距内或已越过航点平面 → 瞄准航点本身（保证 0.2m 判点）；
         # 否则 → 路径前视点（平滑跟线，不切弦离轨）
@@ -185,11 +290,11 @@ class AutoNavFollower:
             self._last_vyaw_out + self.vyaw_slew))
         self._last_vyaw_out = vyaw
 
-        # 限速：前方 speed_window 个航点的最小限速
-        v_lim = self.max_speed
-        for j in range(self.speed_window):
-            if next_idx + j < len(self.wp):
-                v_lim = min(v_lim, self.speed_limit[next_idx + j])
+        # 限速：平滑路径速度剖面（全局导航层，曲率/坡度/台阶已编码；
+        # 8m 前瞻 = 4m/s 下提前 2s 减速，弯道转向跟得上）
+        _k_far = min(self._k_near + int(8.0 / self.path_res),
+                     len(self.path_vlim) - 1)
+        v_lim = float(np.min(self.path_vlim[self._k_near:_k_far + 1]))
         # 转向速度分级：|err|>0.3 时——
         #   近点（d_wp<3m，如起步/航点大转角）：0.4 m/s 原地转向，避免冲过航点；
         #   远点（如爬坡段）：1.5 m/s 慢速转弯，保持推力爬台阶。
@@ -235,8 +340,12 @@ class AutoNavFollower:
             return 0.0
         return float(self.speed_limit[idx])
 
-    def update_mode(self, robot_xy, next_idx):
-        """按当前航段 stair_zone 判定 CRUISE/STAIR_SEQUENCE（已知地图，无感知滞后）。"""
+    def update_mode(self, robot_xy, next_idx, yaw=None, local_map=None):
+        """双模式判定：已知航段 z 大升（>0.25）**且感知确认离散台阶** →
+        STAIR_SEQUENCE。2026-08-06 修复：仅按航点 z 升会把大坡度（wp0→1
+        缓坡 +0.47m）误判为楼梯（STAIR σ=2.0 在坡上乱伸腿）；感知 step_flag
+        只认离散台阶，陡坡/缓坡无 flag → 保持 CRUISE 轮子爬坡。
+        """
         _dbg = os.environ.get("S10_MODE_DEBUG")
         _sz = None
         _d = None
@@ -246,16 +355,40 @@ class AutoNavFollower:
             d_wp = float(np.linalg.norm(
                 robot_xy - self.wp[next_idx, :2]))
             _d = d_wp
-            if d_wp < self.stair_mode_dist:
+            if d_wp < self.stair_mode_dist \
+                    and self._stair_confirmed(robot_xy, yaw, local_map):
                 self.mode = "STAIR"
                 if _dbg:
                     print(f"[MODE] STAIR next={next_idx} sz={_sz} "
-                          f"d={d_wp:.1f}", flush=True)
+                          f"d={d_wp:.1f} confirm=1", flush=True)
                 return
         if _dbg and int(robot_xy[1] * 2) % 10 == 0:
             print(f"[MODE] CRUISE next={next_idx} sz={_sz} d={_d} "
                   f"y={robot_xy[1]:.1f}", flush=True)
         self.mode = "CRUISE"
+
+    def _stair_confirmed(self, robot_xy, yaw, local_map):
+        """感知确认：机器人前方 0.3~1.5m 窗口内高程图 step_flag ≥1 处
+        （离散台阶）才算连续楼梯；陡坡/缓坡无 step_flag → False。"""
+        if local_map is None or yaw is None:
+            return False
+        hm = local_map.get("heightmap")
+        valid = local_map.get("valid")
+        stepf = (local_map.get("features") or {}).get("step_flag")
+        if hm is None or valid is None or stepf is None:
+            return False
+        ox = float(local_map["origin"][0])
+        oy = float(local_map["origin"][1])
+        res = float(local_map["resolution"])
+        fwd = np.array([np.cos(yaw), np.sin(yaw)])
+        for d in (0.3, 0.6, 0.9, 1.2, 1.5):
+            p = np.asarray(robot_xy) + fwd * d
+            i = int(np.floor((p[1] - oy) / res))
+            j = int(np.floor((p[0] - ox) / res))
+            if (0 <= i < hm.shape[0] and 0 <= j < hm.shape[1]
+                    and valid[i, j] and float(stepf[i, j]) > 0.3):
+                return True
+        return False
 
     def ref_path(self, robot_xy, next_idx, n_pts=10, spacing=0.5,
                  smooth=2):

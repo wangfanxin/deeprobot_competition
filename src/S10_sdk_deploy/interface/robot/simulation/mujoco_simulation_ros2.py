@@ -541,12 +541,18 @@ class MuJoCoSimulationNode(Node):
                 self.get_logger().info("[AUTO] 到达终点，停车")
             return
         pos = self.data.xpos[self.track_body_id][:2]
+        q = self.data.xquat[self.track_body_id]
         # 双模式仲裁（用户方案 2.3）：CRUISE / STAIR_SEQUENCE → MPC 权重集
         if (hasattr(self, "follower") and self.follower is not None
                 and hasattr(self.mpc, "set_mode")):
             try:
                 _prev_mode = getattr(self, "_last_auto_mode", None)
-                self.follower.update_mode(pos, self.track_next_index)
+                _yaw = float(np.arctan2(
+                    2.0 * (q[3] * q[0] + q[1] * q[2]),
+                    1.0 - 2.0 * (q[2] ** 2 + q[3] ** 2)))
+                self.follower.update_mode(
+                    pos, self.track_next_index, yaw=_yaw,
+                    local_map=self.get_local_map())
                 self.mpc.set_mode(self.follower.mode)
                 if _prev_mode != self.follower.mode:
                     self._last_auto_mode = self.follower.mode
@@ -556,7 +562,6 @@ class MuJoCoSimulationNode(Node):
             except Exception as _e:
                 import traceback
                 traceback.print_exc()
-        q = self.data.xquat[self.track_body_id]
         yaw = float(np.arctan2(
             2.0 * (q[3] * q[0] + q[1] * q[2]),
             1.0 - 2.0 * (q[2] ** 2 + q[3] ** 2)))
