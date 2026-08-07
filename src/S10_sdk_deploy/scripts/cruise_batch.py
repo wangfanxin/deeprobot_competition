@@ -59,12 +59,12 @@ def wait_gpu_free(max_wait=60):
 
 # 每个版本的 nav 参数（env 覆盖）。MPC 层参数固定（真实一致）。
 VERSIONS = [
-    dict(ver='nr74', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '3.0', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_INIT_YAW': '1.624'}),
-    dict(ver='nr74b', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.2', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.8', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_INIT_YAW': '1.624'}),
-    dict(ver='nr75', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.8', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.72', 'S10_INIT_YAW': '1.624'}),
-    dict(ver='nr75b', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '2.0', 'S10_AUTO_TURN_VX': '2.8', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_INIT_YAW': '1.624'}),
-    dict(ver='nr73_x1', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.8', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_INIT_YAW': '1.624'}),
-    dict(ver='nr73_x2', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.8', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_INIT_YAW': '1.624'}),
+    dict(ver='nr81', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.5', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_DT': '0.04'}),
+    dict(ver='nr81b', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.5', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_DT': '0.05'}),
+    dict(ver='nr82', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.8', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_DT': '0.04'}),
+    dict(ver='nr82b', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.5', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.5', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_DT': '0.04'}),
+    dict(ver='nr83', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.5', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_DT': '0.03'}),
+    dict(ver='nr83b', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.5', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_DT': '0.04'}),
 ]
 
 _mpc_ref = {}
@@ -157,6 +157,18 @@ def run_version(m, d, mpc, ver, env, waypoints):
             dq = d.qvel[6:22].reshape(-1, 1)
             tau = (80.0 * (STAND_TARGET.reshape(-1, 1) - q) - 2.0 * dq).flatten()
             tau[3::4] = -0.3 * dq[3::4].flatten()
+            # 站起阶段 base yaw 预转向（S10_STAND_TURN=1，真实力矩驱动：
+            # 轮子差速让身体转到 wp0→1 方向，可移植到真实节点）
+            if os.environ.get('S10_STAND_TURN', '0') == '1':
+                _q = d.xquat[track_body]
+                _yaw = float(np.arctan2(
+                    2.0*(_q[3]*_q[0]+_q[1]*_q[2]),
+                    1.0-2.0*(_q[2]**2+_q[3]**2)))
+                _yt = float(os.environ.get('S10_STAND_TURN_YAW', '1.624'))
+                _err = float(np.arctan2(np.sin(_yt-_yaw), np.cos(_yt-_yaw)))
+                _k = float(os.environ.get('S10_STAND_TURN_K', '5.0'))
+                _turn = float(np.clip(_k*_err, -40.0, 40.0))
+                tau[3::4] += np.array([_turn, _turn, -_turn, -_turn])
             d.ctrl[:] = tau
             if t >= 3.0:
                 qq = np.asarray(d.qpos[:23], dtype=np.float32)

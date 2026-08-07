@@ -108,7 +108,9 @@ class MPCController:
         self._top_sigma_scale = float(os.environ.get(
             "S10_STAIR_TOP_SIGMA", "1.0"))
         self._base_sigma_dim = None
-        self.dt = hw_ov.get("dt", cfg.get("dt", 0.02))   # MPC 控制周期（dt 属 env，非 DialConfig）
+        self.dt = float(os.environ.get(
+            "S10_MPC_DT",
+            str(hw_ov.get("dt", cfg.get("dt", 0.02)))))   # MPC 控制周期（dt 属 env，非 DialConfig）
         dial_kw["env_name"] = cfg.get("env_name", "s10_wheeled")
         dial_kw["n_steps"] = int(cfg.get("n_steps", 100000))
         self.dial_config = DialConfig(**dial_kw)
