@@ -515,14 +515,109 @@ class MuJoCoSimulationNode(Node):
         self.follower = AutoNavFollower(
             self.track_waypoint_positions,
             max_speed=float(os.environ.get("S10_AUTO_VMAX", "4.5")),
-            vyaw_max=float(os.environ.get("S10_AUTO_VYAW_MAX", "1.0")),
+            vyaw_max=float(os.environ.get("S10_AUTO_VYAW_MAX", "1.5")),
             yaw_gain=float(os.environ.get("S10_AUTO_YAW_GAIN", "3.0")),
             lookahead=float(os.environ.get("S10_AUTO_LOOKAHEAD", "1.5")),
         )
+        if os.environ.get("S10_SKIP_RIDGE_SCAN") != "1":
+            self._scan_ridge_zones()
         self.auto_nav_active = True
+        # 测试快捷起点（2026-08-07 用户）：S10_AUTO_START_WP>0 时直接从
+        # 楼梯前航点开始（跳过巡航段，加快爬梯迭代）。瞬移机器人、前置
+        # 航点索引与路径弧长游标。
+        start_wp = int(os.environ.get("S10_AUTO_START_WP", "0"))
+        if start_wp > 0 and start_wp + 1 < len(self.track_waypoint_positions):
+            wp_xy = self.track_waypoint_positions[start_wp]
+            # 地面高度：垂直下扫 mj_ray（航点 z≈地形高但坡上不精确，
+            # 直接瞬移悬空/嵌入会摔趴）。站姿高取 nominal 0.205。
+            gid = np.array([-1], dtype=np.int32)
+            dist = mujoco.mj_ray(
+                self.model, self.data,
+                np.array([float(wp_xy[0]), float(wp_xy[1]), 8.0]),
+                np.array([0.0, 0.0, -1.0]),
+                None, False, -1, gid)
+            if dist > 0.0:
+                h_ground = 8.0 - float(dist)
+            else:
+                h_ground = float(wp_xy[2])
+            self.data.qpos[0] = float(wp_xy[0])
+            self.data.qpos[1] = float(wp_xy[1])
+            self.data.qpos[2] = h_ground + 0.205
+            mujoco.mj_forward(self.model, self.data)
+            # 起点航点视为已到达，目标 = 下一个航点（否则机器人就在
+            # 起点半径内会被 _update_track_progress 立即推进）。
+            self.track_next_index = start_wp + 1
+            f = self.follower
+            if f is not None and hasattr(f, "path_wp_s"):
+                try:
+                    f._s_cur = float(f.path_wp_s[min(
+                        start_wp, len(f.path_wp_s) - 1)])
+                except Exception:
+                    pass
+            self.get_logger().info(
+                f"[AUTO] 测试起点 wp{start_wp} @ "
+                f"({wp_xy[0]:.1f},{wp_xy[1]:.1f}) "
+                f"ground={h_ground:.2f} next=wp{start_wp + 1}")
         # 先由跟随器给出首个指令，再立即规划——避免沿用进入遥控前的
         # 旧动作（零指令下优化器会生成弱反向差速）导致初始偏航
         self._update_auto_nav()
+
+    def _scan_ridge_zones(self):
+        """已知地图预扫描（2026-08-06）：沿全局平滑路径 mj_ray 扫地形，
+        标出离散台阶（相邻路径点高差 >0.08m）的弧长区间 → path_vlim 限速
+        step_vx。解决**航点段内横脊**（wp4→5 航点 z 相同 → step_zone 漏检
+        → 0.13m 横脊高速斜撞西漂侧翻，full_course_17~20 复现）。"""
+        try:
+            f = self.follower
+            if f is None or not hasattr(f, "path_pts"):
+                return
+            pts = f.path_pts
+            hs = np.empty(len(pts), dtype=np.float64)
+            for k, p in enumerate(pts):
+                g = np.array([-1], dtype=np.int32)
+                dist = mujoco.mj_ray(
+                    self.model, self.data,
+                    np.array([p[0], p[1], 8.0]),
+                    np.array([0.0, 0.0, -1.0]),
+                    None, False, -1, g)
+                hs[k] = (8.0 - dist) if g[0] >= 0 else float(p[2])
+            dh = np.abs(np.diff(hs))
+            # 跳过 wp0→1 起步段（缓坡 z 升 0.475 不是离散台阶，2026-08-07）
+            skip_s = float(f.path_wp_s[1]) - 2.0 if len(f.path_wp_s) > 1 else 0.0
+            # 阈值 0.12（2026-08-07 巡航提速）：0.08 对赛道微地形太敏感，
+            # 误标大量"横脊"把整段压到 1.5；真实横脊 0.13m 仍触发。
+            ridge_dh = float(os.environ.get("S10_RIDGE_DH", "0.12"))
+            ridge_idx = np.where(
+                (dh > ridge_dh) & (f.path_cum[:len(dh)] > skip_s))[0]
+            # 横脊限速 1.5（2026-08-06 实测）：2.0 高速斜撞 wp4→5 横脊
+            # 侧翻（full_course_24）；1.5 慢速正对过（full_course_23 过了
+            # wp4→5）。传播窗口 2m 提前减速（原 3m 覆盖前段太长）。
+            step_vx = float(os.environ.get("S10_RIDGE_VX", "1.5"))
+            n_ahead = int(float(os.environ.get(
+                "S10_RIDGE_AHEAD", "2.0")) / f.path_res)
+            n_after = int(float(os.environ.get(
+                "S10_RIDGE_AFTER", "1.2")) / f.path_res)
+            n_zone = 0
+            for k in ridge_idx:
+                lo = max(0, k - n_ahead)
+                hi = min(len(f.path_vlim), k + n_after)
+                f.path_vlim[lo:hi] = np.minimum(
+                    f.path_vlim[lo:hi], step_vx)
+                # 横脊所在航段标记 step_zone（2026-08-06）：脱困速度
+                # 自动降为 RECOVERY_VX_STEP=1.2——2.5m/s 高速斜推横脊
+                # 被导向西漂侧翻（full_course_22 复现）。
+                s_ridge = float(f.path_cum[k])
+                seg_idx = int(np.searchsorted(
+                    f.path_wp_s, s_ridge, side="right") - 1)
+                if 0 <= seg_idx < len(f.step_zone):
+                    f.step_zone[seg_idx] = True
+                n_zone += 1
+            if n_zone:
+                self.get_logger().info(
+                    f"[AUTO] 预扫描发现 {n_zone} 处横脊/台阶，"
+                    f"已限速 {step_vx} m/s（防高速斜撞西漂）")
+        except Exception as _e:
+            self.get_logger().warn(f"[AUTO] 横脊预扫描失败: {_e}")
         q = np.asarray(self.data.qpos[:23], dtype=np.float32)
         qd = np.asarray(self.data.qvel[:22], dtype=np.float32)
         self.last_act = self.mpc.plan_once(q, qd, self.timestamp)
@@ -570,13 +665,20 @@ class MuJoCoSimulationNode(Node):
         w, x, y, z = qq
         roll = float(np.arctan2(2.0 * (w * x + y * z),
                                 1.0 - 2.0 * (x * x + y * y)))
-        # roll 安全刹车阈值（S10_AUTO_ROLL_BRAKE，默认 0.30）：
+        # roll 安全刹车阈值（S10_AUTO_ROLL_BRAKE，默认 0.45）：
         # 实测 wp7 台阶区斜撞 riser 后持续侧倾 -0.4（未翻），0.3 阈值把推力
         # 压到 0.15 m/s → 永久卡死。台阶区内可放宽到 0.45~0.5（配合限速兜底）。
-        if abs(roll) > float(os.environ.get("S10_AUTO_ROLL_BRAKE", "0.30")):
+        _rb = float(os.environ.get("S10_AUTO_ROLL_BRAKE", "0.45"))
+        # 爬梯区（STAIR 模式）放宽（2026-08-06）：爬升时机身必然侧倾
+        # （左右轮交替接触），0.45 频繁急刹 → 失去动量 → 爬升中侧翻
+        # （batch v28 r1 z=1.01 时 roll -1.16 复现）；0.75 给爬梯容差。
+        if getattr(self, "follower", None) is not None \
+                and getattr(self.follower, "mode", "") == "STAIR":
+            _rb = float(os.environ.get("S10_AUTO_ROLL_BRAKE_STAIR", "0.75"))
+        if abs(roll) > _rb:
             self.mpc.set_cmd(0.15, 0.0, 0.0)
             self.get_logger().warn(
-                f"[AUTO] 侧倾 {roll:.2f}rad，急刹降速（防侧翻）")
+                f"[AUTO] 侧倾 {roll:.2f}rad（阈值 {_rb}），急刹降速（防侧翻）")
             return
         yaw_rate = float(self.data.cvel[self.track_body_id][2])
         vx, vyaw = self.follower.compute_cmd(
@@ -1682,6 +1784,22 @@ class MuJoCoSimulationNode(Node):
                 self._apply_joint_torque()
                 # 模拟一步
                 mujoco.mj_step(self.model, self.data)
+                # 关节角 clip（2026-08-07 关键修复）：MPC σ 大时采样极端
+                # 动作 → 主仿真关节转飞（wp7 台阶区 hl 后轮 knee 实测
+                # -1148 rad）→ 数值爆炸卡死/侧翻。qpos[7:] 16 关节限制在
+                # jnt_range（freejoint 跳过），与 rollout 内 clip 一致。
+                # 12 个腿关节（range 非零驱动关节）；wheel 自由转不 clip
+                if getattr(self, "_joint_clip", None) is None:
+                    _act_j = self.model.actuator_trnid[:, 0]
+                    _mask = (self.model.jnt_range[_act_j, 0] != 0) | \
+                        (self.model.jnt_range[_act_j, 1] != 0)
+                    _j = _act_j[_mask]
+                    self._joint_clip = (
+                        self.model.jnt_qposadr[_j],
+                        self.model.jnt_range[_j])
+                _qidx, _rng = self._joint_clip
+                self.data.qpos[_qidx] = np.clip(
+                    self.data.qpos[_qidx], _rng[:, 0], _rng[:, 1])
 
                 self.timestamp = step * DT
 
@@ -1692,8 +1810,10 @@ class MuJoCoSimulationNode(Node):
                     qd = np.asarray(self.data.qvel[:22], dtype=np.float32)
                     if self.auto_nav_active and step % 10 == 0:
                         self._update_auto_nav()
-                    plan_interval = (25 if self.auto_nav_active
-                                     else MPC_PLAN_INTERVAL)
+                    plan_interval = int(os.environ.get(
+                        "S10_MPC_PLAN_INTERVAL_AUTO", "10")
+                        if self.auto_nav_active
+                        else str(MPC_PLAN_INTERVAL))
                     if (step % plan_interval == 0
                             or self.last_act is None):
                         self.last_act = self.mpc.plan_once(q, qd, self.timestamp)
@@ -2156,16 +2276,9 @@ class MuJoCoSimulationNode(Node):
                 xy = self.data.xpos[bid][:2]
                 wheel_z = float(self.data.xpos[bid, 2])
                 if bid in (5, 9):   # 前轮：前视 0.1~0.5m 窗口
-                    # 链 59：连续楼梯门控（按前轮基准）：前轮前 0.05m vs
-                    # 0.5m 地形持续上升 >0.1 → 多级台阶区。单级横脊
-                    # （0.5m 后已平）不触发 foot_place（靠动量滚过，
-                    # chain 48 复现猛抬侧翻）；机身基准判据在平台中间
-                    # 恒 0 → 楼梯不触发（chain 58 复现）。
-                    h_near = _h(xy + fwd * 0.05)
-                    h_far = _h(xy + fwd * 0.5)
-                    in_stair_zone = bool(
-                        h_near is not None and h_far is not None
-                        and h_far[0] - h_near[0] > 0.10)
+                    # 2026-08-06：去掉楼梯门控——单级横脊（0.13m > 轮半径
+                    # 0.081）也需抬轮，chain 49（kp=1.0 温和）实证横脊能过；
+                    # chain 48 猛抬侧翻是 kp=2.0 过强，用温和参数即可。
                     best_h = None
                     best_flag = 0.0
                     hs_list = []
@@ -2183,12 +2296,15 @@ class MuJoCoSimulationNode(Node):
                     for _a, _b in zip(hs_list[:-1], hs_list[1:]):
                         max_grad = max(max_grad, (_b - _a) / 0.1)
                     if best_h is not None and (
-                            best_flag >= step_thr or max_grad > 0.6) \
-                            and in_stair_zone:
+                            best_flag >= step_thr or max_grad > 0.6):
                         front_step[bid] = best_h
                         front_deficit[bid] = (best_h + r) - wheel_z
                 else:               # 后轮：同侧前轮已上台阶顶（跟抬）
-                    if os.environ.get("S10_LIFT_REAR", "0") != "1":
+                    # 2026-08-07 拆分：foot_place 后轮跟抬用独立开关
+                    # S10_FOOT_PLACE_LIFT_REAR（默认 0，防 v38 东漂）；
+                    # reward 层 r_ground 后轮 lift 由 S10_LIFT_REAR 控制。
+                    if os.environ.get(
+                            "S10_FOOT_PLACE_LIFT_REAR", "0") != "1":
                         continue
                     fid = 5 if bid == 13 else 9
                     hs = front_step.get(fid)

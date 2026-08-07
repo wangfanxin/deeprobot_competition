@@ -95,6 +95,11 @@ class MPCController:
         leg_sigma = float(os.environ.get("S10_LEG_SIGMA_SCALE", "1.0"))
         wheel_sigma = float(os.environ.get("S10_WHEEL_SIGMA_SCALE", "1.0"))
         dial_kw["sigma_dim"] = [leg_sigma] * 12 + [wheel_sigma] * 4
+        # 顶缘阶段 σ 缩放（2026-08-07）：STAIR 到顶时缩小腿采样方差，
+        # 抑制顶缘"腿打直 + 轮速震荡 + 侧倾"（wp7 顶缘停滞/侧翻）。
+        self._top_sigma_scale = float(os.environ.get(
+            "S10_STAIR_TOP_SIGMA", "1.0"))
+        self._base_sigma_dim = None
         self.dt = hw_ov.get("dt", cfg.get("dt", 0.02))   # MPC 控制周期（dt 属 env，非 DialConfig）
         dial_kw["env_name"] = cfg.get("env_name", "s10_wheeled")
         dial_kw["n_steps"] = int(cfg.get("n_steps", 100000))
@@ -112,8 +117,12 @@ class MPCController:
                           str(cfg.get("vel_scale", 50.0)))),
                       kd_wheel=cfg.get("kd_wheel", 0.3),
                       wheel_tau_scale=cfg.get("wheel_tau_scale", 14.0),
-                      ang_vel_weight=cfg.get("ang_vel_weight", 10.0),
-                      vel_weight=cfg.get("vel_weight", 25.0),
+                      ang_vel_weight=float(os.environ.get(
+                          "S10_MPC_ANG_W",
+                          str(cfg.get("ang_vel_weight", 10.0)))),
+                      vel_weight=float(os.environ.get(
+                          "S10_MPC_VEL_W",
+                          str(cfg.get("vel_weight", 25.0)))),
                       height_tar=cfg.get("height_tar", 0.20),
                       base_z_init=cfg.get("base_z_init", 0.20),
                       height_weight=float(os.environ.get(
@@ -222,6 +231,27 @@ class MPCController:
                           str(cfg.get("pose_roll_max", 0.25)))),
                       lift_rear=os.environ.get(
                           "S10_LIFT_REAR", "0") == "1",
+                      rear_lift_scale=float(os.environ.get(
+                          "S10_REAR_LIFT_SCALE", "1.0")),
+                      rear_lift_zgate=float(os.environ.get(
+                          "S10_REAR_LIFT_ZGATE", "0.0")),
+                      # 顶缘阶段软调制（2026-08-07，wp7 顶缘停滞修复）
+                      top_z=float(os.environ.get(
+                          "S10_STAIR_TOP_Z", "1.05")),
+                      top_ext_scale=float(os.environ.get(
+                          "S10_STAIR_TOP_EXT", "1.0")),
+                      top_clear_scale=float(os.environ.get(
+                          "S10_STAIR_TOP_CLEAR", "1.0")),
+                      top_pathz_scale=float(os.environ.get(
+                          "S10_STAIR_TOP_PATHZ", "1.0")),
+                      top_push_scale=float(os.environ.get(
+                          "S10_STAIR_TOP_PUSH", "1.0")),
+                      top_upright_scale=float(os.environ.get(
+                          "S10_STAIR_TOP_UPRIGHT", "1.0")),
+                      top_attdamp_scale=float(os.environ.get(
+                          "S10_STAIR_TOP_ATTDAMP", "1.0")),
+                      top_lockpush_scale=float(os.environ.get(
+                          "S10_STAIR_TOP_LOCKPUSH", "1.0")),
                       # E4：参考路径跟踪（world 系路径点，固定 (REF_N,2)）
                       ref_n=int(os.environ.get(
                           "S10_MPC_REF_N", str(cfg.get("ref_n", 10)))),
@@ -240,9 +270,22 @@ class MPCController:
                       leg_ext_w=float(os.environ.get(
                           "S10_LEG_EXT_W",
                           str(cfg.get("leg_ext_w", 0.0)))),
+                      sync_front_ext=float(os.environ.get(
+                          "S10_SYNC_FRONT_EXT", "1.0")),
+                      lift_clear_margin=float(os.environ.get(
+                          "S10_LIFT_CLEAR_MARGIN", "0.05")),
+                      leg_hipy_scale=float(os.environ.get(
+                          "S10_LEG_HIPY_SCALE", "1.0")),
+                      stair_pitch_w=float(os.environ.get(
+                          "S10_STAIR_PITCH_W", "0.0")),
+                      stair_pitch_tar=float(os.environ.get(
+                          "S10_STAIR_PITCH_TAR", "-0.45")),
                       lockpush_w=float(os.environ.get(
                           "S10_LOCKPUSH_W",
                           str(cfg.get("lockpush_w", 0.0)))),
+                      w_wheel_ref=float(os.environ.get(
+                          "S10_WHEEL_REF_W",
+                          str(cfg.get("w_wheel_ref", 0.0)))),
                       solver_iterations=int(os.environ.get(
                           "S10_MPC_SOLVER_IT",
                           str(cfg.get("solver_iterations", 6)))),
@@ -261,7 +304,7 @@ class MPCController:
         # 双视界 MBDPI（用户方案模式化 H）：CRUISE H=14（0.28s 横脊动量、
         # chain 44 3/3 验证）、STAIR H=20（0.4s 长视界爬梯）。Hnode 相同
         # （4）→ Y 状态 (5,16) 可直接复用，切换无重映射。
-        _h_cruise = int(os.environ.get("S10_MPC_H_CRUISE", "14"))
+        _h_cruise = int(os.environ.get("S10_MPC_H_CRUISE", "20"))
         _h_stair = int(os.environ.get("S10_MPC_H_STAIR", "20"))
         import dataclasses as _dc
         _cfg14 = _dc.replace(self.dial_config, Hsample=_h_cruise)
@@ -419,11 +462,16 @@ class MPCController:
         info = dict(self.state.info)
         info["vel_tar"] = jnp.concatenate([self.cmd_vel, jnp.array([0.0])])[:3]
         info["ang_vel_tar"] = jnp.concatenate([self.cmd_ang, jnp.array([0.0])])[:3]
+        info["mode_stair"] = jnp.array(
+            1.0 if getattr(self, "_mode", None) == "STAIR" else 0.0,
+            dtype=jnp.float32)
         info["elevation_map"] = self._elev_jnp()
         # E3：地形自适应姿态目标（上坡仰头/下坡低头/过弯压弯）
         p_tar, r_tar = self._terrain_pose_targets()
         info["pitch_tar"] = jnp.array(p_tar, dtype=jnp.float32)
         info["roll_tar"] = jnp.array(r_tar, dtype=jnp.float32)
+
+
         # E4：参考路径
         info["ref_path"] = jnp.asarray(self._ref_path)
         info["ref_valid"] = jnp.array(bool(self._ref_valid))
@@ -568,35 +616,124 @@ class MPCController:
         # 模式化采样 σ（用户方案 6"退火 z 向关节 sigma 放大"）：STAIR 腿维
         # 噪声放大让 MPC 探索到大幅抬腿；CRUISE 小 σ 保平地/横脊稳定。
         # sigma_dim 已参数化（reverse_once 动态参数），切换无 retrace。
-        _leg_sigma_default = 2.0 if mode == "STAIR" else 0.3
-        leg_sigma = float(os.environ.get(
-            "S10_STAIR_LEG_SIGMA", str(_leg_sigma_default)))
-        self.mbdpi.sigma_dim = jnp.asarray(
-            [leg_sigma] * 12 + [1.0] * 4, dtype=jnp.float32)
+        # 2026-08-07 解耦：CRUISE/STAIR 用独立 env（S10_STAIR_LEG_SIGMA 曾
+        # 同时覆盖两者——σ0.6 爬梯时巡航段也变"乱"，横脊失败率升高）。
         if mode == "STAIR":
+            leg_sigma = float(os.environ.get(
+                "S10_STAIR_LEG_SIGMA", "2.0"))
+            wheel_sigma = float(os.environ.get(
+                "S10_STAIR_WHEEL_SIGMA", "1.0"))
+        else:
+            leg_sigma = float(os.environ.get(
+                "S10_CRUISE_LEG_SIGMA", "0.3"))
+            wheel_sigma = float(os.environ.get(
+                "S10_CRUISE_WHEEL_SIGMA", "1.0"))
+        self.mbdpi.sigma_dim = jnp.asarray(
+            [leg_sigma] * 12 + [wheel_sigma] * 4, dtype=jnp.float32)
+        # 采样偏置（用户 2026-08-07 平衡项）：STAIR 时给 Y 腿节点注入
+        # 软偏置（动作空间）——前膝缩回（抬前轮）、后膝弯曲（抬后轮），
+        # 让"抬腿"成为采样均值方向；扩散/M PPI 权重可覆盖（非门控）。
+        if mode == "STAIR":
+            _b = os.environ.get(
+                "S10_STAIR_LEG_BIAS",
+                "0,0,-0.45,0,0,-0.45,0,0,0.45,0,0,0.45")
+            self._leg_bias = np.asarray(
+                [float(x) for x in _b.replace(" ", "").split(",")],
+                dtype=np.float32)
+            if self._leg_bias.shape[0] != 12:
+                self._leg_bias = np.zeros(12, dtype=np.float32)
+        else:
+            self._leg_bias = np.zeros(12, dtype=np.float32)
+        # 模式化腿动作尺度（2026-08-07 根因修复）：rollout 采样动作被
+        # clip 到 ±1，leg_action_scale=0.45 → 膝角可摆范围仅 ±0.45 rad；
+        # 前轮爬 0.125m riser 需缩膝 ~0.71 rad（2.30→1.59），超出动作
+        # 下限 1.85 → 抬腿动作在采样空间内不可达，狗只能顶死打滑。
+        # STAIR 放大尺度让 swing 可达；CRUISE 恢复小尺度防乱甩。
+        # 必须同时改 ctx cfg（rollout）与 env._config（主仿真 act2tau）。
+        if mode == "STAIR":
+            leg_as = float(os.environ.get(
+                "S10_STAIR_LEG_ACTION_SCALE", "0.45"))
+        else:
+            leg_as = float(os.environ.get(
+                "S10_LEG_ACTION_SCALE", "0.45"))
+        cfg["leg_action_scale"] = leg_as
+        if getattr(self.env, "_config", None) is not None:
+            self.env._config.leg_action_scale = leg_as
+        if mode == "STAIR":
+            def _w(name, default):
+                v = os.environ.get(name)
+                return float(v) if v is not None else default
             overrides = {
                 # 放开屈膝（w_crouch=0 同义）：腿自由伸展爬梯
-                "terrain_w_leg": 0.0,
-                "w_crouch": 0.0,
+                "terrain_w_leg": _w("S10_STAIR_W_LEG", 0.0),
+                "w_crouch": _w("S10_STAIR_W_CROUCH", 0.0),
                 # 抬腿引导（chain 64 验证基线）；push/swing/z_smooth
                 # 临时关（chain 75 A/B：新 reward 可能干扰爬梯）
-                "leg_ext_w": 30.0,
-                "lockpush_w": 8.0,
-                "w_swing_ok": 0.0,
-                "w_push": 0.0,
-                "w_z_smooth": 0.0,
-                "terrain_w_attdamp": 2.0,
+                # 2026-08-07 恢复组合：r_ext=30（伸展引导）+ lockpush=8
+                # （顶死锁轮）——纯 foot_place 卡底部（r_ext 必要），
+                # kp=2.0 时能到 riser 3-4（3/3 到 wp7 稳定）。
+                "leg_ext_w": _w("S10_STAIR_LEG_EXT_W", 30.0),
+                "lockpush_w": _w("S10_STAIR_LOCKPUSH_W", 8.0),
+                # 轮速参考保持（2026-08-07）：v5b 实测无效（-57~+29 仍
+                # 振荡且整体变差 wp7/6/7/6 vs v4 4/4）——轮速振荡是 riser
+                # 边缘物理打滑，非 reward 可压；回退 0 恢复 v4 最优。
+                "w_wheel_ref": _w("S10_STAIR_W_WHEEL_REF", 0.0),
+                # 后轮蹬做功 + 抬轮到位微奖（2026-08-07 开）：foot_place
+                # 抬前轮后卡 riser 顶（kp=2.0 3/3 复现），r_push 激励后轮
+                # 蹬推、r_swing_ok 奖励抬到位。
+                "w_swing_ok": _w("S10_STAIR_W_SWING", 2.0),
+                "w_push": _w("S10_STAIR_W_PUSH", 1.0),
+                "w_z_smooth": _w("S10_STAIR_W_ZSMOOTH", 0.0),
+                "terrain_w_attdamp": _w("S10_STAIR_W_ATTDAMP", 2.0),
+                # 爬升中直立加强（2026-08-06）：σ=2.0 腿伸展时车身侧倾
+                # 累积（batch v28 r1 z=1.01 roll -1.16 侧翻），r_upright
+                # 25→40 抑制爬升中侧翻。
+                "terrain_w_upright": _w("S10_STAIR_W_UPRIGHT", 40.0),
+                # 机身抬升强化（2026-08-07）：卡点分析——后腿近直腿
+                # （body 0.95-后轮 0.62=0.33 vs 直腿 0.36），后轮上
+                # riser 需 body 先抬到 r_clear 目标 1.125；r_clear 60→120、
+                # w_path_z 0→40 强制机身逐级抬升。
+                "w_clear": _w("S10_STAIR_W_CLEAR", 120.0),
+                "w_path_z": _w("S10_STAIR_W_PATH_Z", 40.0),
+                # 爬梯时路径/航向跟踪加强（2026-08-06 修复 wp7 西漂）：
+                # r_clear/r_ext 在台阶区主导时 MPC 忽视 yaw 指令 → 向西
+                # 漂移侧翻（full_course_27）；权重翻倍让 MPC 兼顾导航。
+                "ang_vel_weight": _w("S10_STAIR_W_ANG", 25.0),
+                "w_path": _w("S10_STAIR_W_PATH", 15.0),
+                # 航向跟踪加强（2026-08-07 用户问题 1）：run3 爬梯西漂 4m
+                # （x -15→-19），w_path_head 25→40 让 MPC 在爬梯时保持
+                # 路径切线航向，抑制横向漂移。
+                "w_path_head": _w("S10_STAIR_W_PATH_HEAD", 40.0),
+                "stair_pitch_w": _w("S10_STAIR_PITCH_W", 30.0),
+                "stair_pitch_tar": float(os.environ.get(
+                    "S10_STAIR_PITCH_TAR", "-0.45")),
+                "stair_sym_w": _w("S10_STAIR_SYM_W", 80.0),
+                "stair_air_w": _w("S10_STAIR_AIR_W", 0.0),
             }
         else:  # CRUISE
             overrides = {
                 "terrain_w_leg": 0.3,
                 "w_crouch": 15.0,
-                "leg_ext_w": 0.0,
+                # CRUISE 小权重 r_ext（2026-08-06）：横脊 0.13m > 轮半径
+                # 0.081 需抬腿，但 r_ext=0 时 σ=0.3 采样不抬 → 靠动量方差
+                # 大（wp4→5 横脊通过率 ~60%）。r_ext=5 在横脊（lift_on）
+                # 引导适度伸展，平地不触发（lift_on=False）。
+                "leg_ext_w": 5.0,
                 "lockpush_w": 0.0,
+                "w_wheel_ref": 0.0,
                 "w_swing_ok": 0.0,
                 "w_push": 0.0,
                 "w_z_smooth": 0.0,
                 "terrain_w_attdamp": 0.8,
+                "ang_vel_weight": 10.0,
+                # 2026-08-07 修复 CRUISE 污染：STAIR 覆盖过的字段必须恢复，
+                # 否则泄漏到 CRUISE（w_path_head=40/upright=40/w_path_z=40
+                # 让 CRUISE 横脊/弯道退化）。恢复为外部/默认值。
+                "terrain_w_upright": 25.0,
+                "w_path": float(os.environ.get("S10_MPC_W_PATH", "15.0")),
+                "w_path_head": float(os.environ.get(
+                    "S10_MPC_W_PATH_HEAD", "20.0")),
+                "w_path_z": 0.0,
             }
         cfg.update(overrides)
 
@@ -655,10 +792,37 @@ class MPCController:
         if self.state is None:       # 防御：任何路径进入规划时确保 state 已初始化
             self.init_state(q, qd)
         self.update_state(q, qd, t)
-        # 1) shift：时间平移（末位补 0），使优化过的控制进入 Y[0]
-        self.Y = self.mbdpi.shift(self.Y)
+        # 1) shift：按真实 plan 间隔推进（方案 C，2026-08-07）：执行
+        # 零阶保持周期 = plan 周期（如 0.05s=2.5 ctrl_dt），shift 必须
+        # 推进相同步数，否则 Y 序列相位每轮错位（原始 dial-mpc 用 delta_step）。
+        # 修正（2026-08-07 复核）：原实现 shift_n 后又多执行一次无条件
+        # shift（编辑残留），导致每轮多推进 1 步、视界被更快耗尽；改为
+        # 小数累加器（Bresenham 式 2/3 交替），平均推进 = 实际流逝步数。
+        _last_t = getattr(self, "_last_plan_t", None)
+        if _last_t is None:
+            n_shift_f = 1.0
+        else:
+            n_shift_f = (t - _last_t) / self.env_config.dt
+        _acc = getattr(self, "_shift_accum", 0.0) + n_shift_f
+        n_shift = int(round(_acc))
+        if n_shift < 1:
+            n_shift, _acc = 1, 0.0
+        else:
+            _acc -= n_shift
+        self._shift_accum = _acc
+        n_shift = max(1, min(n_shift, self.dial_config.Hnode))
+        self.Y = self.mbdpi.shift_n(
+            self.Y, jnp.asarray(n_shift, dtype=jnp.int32))
+        self._last_plan_t = t
         # 轮速前馈持续注入（对抗优化器衰减；见 _reinject_wheel_ff）
         self._reinject_wheel_ff()
+        # STAIR 采样偏置注入（软先验，扩散采样可覆盖）
+        _lb = getattr(self, "_leg_bias", None)
+        if _lb is not None and bool(np.any(_lb)):
+            self.Y = self.Y.at[:, :12].set(jnp.clip(
+                self.Y[:, :12]
+                + jnp.asarray(_lb, dtype=jnp.float32),
+                -1.0, 1.0))
 
         n_diffuse = self.dial_config.Ndiffuse
         if self._first:
