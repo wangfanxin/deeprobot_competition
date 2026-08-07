@@ -244,13 +244,17 @@ class AutoNavFollower:
         n_per = int(os.environ.get("S10_GLOBAL_NPER_SEG", "24"))
         xy = wp[:, :2]
         raw = [xy[0].copy()]
+        # 切线因子（2026-08-08）：默认 0.5 = 标准 Catmull-Rom。增大到
+        # 0.7~0.8 让弯道更平缓（wp 处半径 1.36→2.1~4.0m），vlim 自动
+        # 提高（2.85→3.4~4.4），路径仍严格过航点（判点安全）。
+        _tk = float(os.environ.get("S10_GLOBAL_TANGENT_K", "0.5"))
         for i in range(n - 1):
             p0 = xy[max(i - 1, 0)]
             p1 = xy[i]
             p2 = xy[i + 1]
             p3 = xy[min(i + 2, n - 1)]
-            m1 = (p2 - p0) / 2.0
-            m2 = (p3 - p1) / 2.0
+            m1 = (p2 - p0) * _tk
+            m2 = (p3 - p1) * _tk
             for k in range(1, n_per):
                 t = k / n_per
                 t2 = t * t

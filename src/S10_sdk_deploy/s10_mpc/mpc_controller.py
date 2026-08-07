@@ -89,6 +89,14 @@ class MPCController:
             dial_kw["Nsample"] = int(os.environ["S10_MPC_NSAMPLE"])
         if os.environ.get("S10_MPC_HSAMPLE"):
             dial_kw["Hsample"] = int(os.environ["S10_MPC_HSAMPLE"])
+        if os.environ.get("S10_MPC_TEMP"):
+            dial_kw["temp_sample"] = float(os.environ["S10_MPC_TEMP"])
+        if os.environ.get("S10_MPC_HORIZON_DF"):
+            dial_kw["horizon_diffuse_factor"] = float(
+                os.environ["S10_MPC_HORIZON_DF"])
+        if os.environ.get("S10_MPC_TRAJ_DF"):
+            dial_kw["traj_diffuse_factor"] = float(
+                os.environ["S10_MPC_TRAJ_DF"])
         # 定向增大抬腿维度采样噪声（0806 §3.5）：腿 12 维 × leg_scale、轮 4 维 × wheel_scale。
         # S10 动作布局固定为 12 腿 + 4 轮；默认 1.0（各向同性），实验用
         # S10_LEG_SIGMA_SCALE=1.5~2.0 提高采样搜到抬腿轨迹的概率。

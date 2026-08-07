@@ -59,42 +59,24 @@ def wait_gpu_free(max_wait=60):
 
 # 每个版本的 nav 参数（env 覆盖）。MPC 层参数固定（真实一致）。
 VERSIONS = [
-    dict(ver='nr11_b1', env=dict(
-        S10_AUTO_VMAX='5.0', S10_AUTO_VYAW_MAX='1.5', S10_AUTO_YAW_GAIN='3.0',
-        S10_AUTO_LOOKAHEAD='1.5', S10_CURVE_DECEL_AHEAD='3.0',
-        S10_CURVE_SWING_WINDOW='0.0', S10_CURVE_SWING_VX='5.0',
-        S10_AUTO_BIGERR_VX='1.5', S10_AUTO_TURN_VX='2.0')),
-    dict(ver='nr11_b2', env=dict(
-        S10_AUTO_VMAX='5.0', S10_AUTO_VYAW_MAX='1.5', S10_AUTO_YAW_GAIN='3.0',
-        S10_AUTO_LOOKAHEAD='1.5', S10_CURVE_DECEL_AHEAD='3.0',
-        S10_CURVE_SWING_WINDOW='0.0', S10_CURVE_SWING_VX='5.0',
-        S10_AUTO_BIGERR_VX='1.5', S10_AUTO_TURN_VX='2.0')),
-    dict(ver='nr11_b3', env=dict(
-        S10_AUTO_VMAX='5.0', S10_AUTO_VYAW_MAX='1.5', S10_AUTO_YAW_GAIN='3.0',
-        S10_AUTO_LOOKAHEAD='1.5', S10_CURVE_DECEL_AHEAD='3.0',
-        S10_CURVE_SWING_WINDOW='0.0', S10_CURVE_SWING_VX='5.0',
-        S10_AUTO_BIGERR_VX='1.5', S10_AUTO_TURN_VX='2.0')),
-    dict(ver='nr39_plan5', env=dict(
+    dict(ver='nr60b_f1', env=dict(
         S10_AUTO_VMAX='5.0', S10_AUTO_VYAW_MAX='3.0', S10_AUTO_YAW_GAIN='2.5',
         S10_AUTO_LOOKAHEAD='1.5', S10_CURVE_DECEL_AHEAD='5.0',
-        S10_CURVE_SWING_WINDOW='6.0', S10_CURVE_SWING_VX='3.0',
-        S10_AUTO_BIGERR_VX='1.8', S10_AUTO_TURN_VX='2.8',
-        S10_MPC_ANG_W='60', S10_AUTO_ERR_GATE='0.45',
-        S10_MPC_PLAN_INTERVAL_AUTO='5')),
-    dict(ver='nr39_plan20', env=dict(
+        S10_CURVE_SWING_WINDOW='6.0', S10_CURVE_SWING_VX='4.0',
+        S10_AUTO_BIGERR_VX='1.8', S10_AUTO_TURN_VX='2.5',
+        S10_MPC_ANG_W='60', S10_GLOBAL_TANGENT_K='0.7')),
+    dict(ver='nr60b_f2', env=dict(
         S10_AUTO_VMAX='5.0', S10_AUTO_VYAW_MAX='3.0', S10_AUTO_YAW_GAIN='2.5',
         S10_AUTO_LOOKAHEAD='1.5', S10_CURVE_DECEL_AHEAD='5.0',
-        S10_CURVE_SWING_WINDOW='6.0', S10_CURVE_SWING_VX='3.0',
-        S10_AUTO_BIGERR_VX='1.8', S10_AUTO_TURN_VX='2.8',
-        S10_MPC_ANG_W='60', S10_AUTO_ERR_GATE='0.45',
-        S10_MPC_PLAN_INTERVAL_AUTO='20')),
-    dict(ver='nr39_plan30', env=dict(
+        S10_CURVE_SWING_WINDOW='6.0', S10_CURVE_SWING_VX='4.0',
+        S10_AUTO_BIGERR_VX='1.8', S10_AUTO_TURN_VX='2.5',
+        S10_MPC_ANG_W='60', S10_GLOBAL_TANGENT_K='0.7')),
+    dict(ver='nr60b_f3', env=dict(
         S10_AUTO_VMAX='5.0', S10_AUTO_VYAW_MAX='3.0', S10_AUTO_YAW_GAIN='2.5',
         S10_AUTO_LOOKAHEAD='1.5', S10_CURVE_DECEL_AHEAD='5.0',
-        S10_CURVE_SWING_WINDOW='6.0', S10_CURVE_SWING_VX='3.0',
-        S10_AUTO_BIGERR_VX='1.8', S10_AUTO_TURN_VX='2.8',
-        S10_MPC_ANG_W='60', S10_AUTO_ERR_GATE='0.45',
-        S10_MPC_PLAN_INTERVAL_AUTO='30')),
+        S10_CURVE_SWING_WINDOW='6.0', S10_CURVE_SWING_VX='4.0',
+        S10_AUTO_BIGERR_VX='1.8', S10_AUTO_TURN_VX='2.5',
+        S10_MPC_ANG_W='60', S10_GLOBAL_TANGENT_K='0.7')),
 ]
 
 _mpc_ref = {}
@@ -106,6 +88,7 @@ def run_version(m, d, mpc, ver, env, waypoints):
     leg_sig = env.get('S10_LEG_SIGMA_SCALE')
     wh_sig = env.get('S10_WHEEL_SIGMA_SCALE')
     ang_w = env.get('S10_MPC_ANG_W')
+    vel_scale = env.get('S10_MPC_VEL_SCALE')
     # 每版本重建 MPC：保证干净初始状态（rng/Y 不延续），否则多版本
     # 复测被 MPC 状态污染（batch13 假波动根因）。构建 ~2s + 缓存 JIT ~5s。
     need_rebuild = True
@@ -124,7 +107,7 @@ def run_version(m, d, mpc, ver, env, waypoints):
         _mpc_ref['mpc'] = mpc
         for k in ('S10_MPC_H_CRUISE_ACTIVE', 'S10_MPC_NDIFFUSE_ACTIVE',
                   'S10_LEG_SIGMA_ACTIVE', 'S10_WHEEL_SIGMA_ACTIVE',
-                  'S10_MPC_ANG_W_ACTIVE'):
+                  'S10_MPC_ANG_W_ACTIVE', 'S10_MPC_VEL_SCALE_ACTIVE'):
             os.environ.pop(k, None)
         if h_cruise:
             os.environ['S10_MPC_H_CRUISE_ACTIVE'] = h_cruise
@@ -136,6 +119,8 @@ def run_version(m, d, mpc, ver, env, waypoints):
             os.environ['S10_WHEEL_SIGMA_ACTIVE'] = wh_sig
         if ang_w:
             os.environ['S10_MPC_ANG_W_ACTIVE'] = ang_w
+        if vel_scale:
+            os.environ['S10_MPC_VEL_SCALE_ACTIVE'] = vel_scale
         print(f'[BATCH] {ver}: MPC rebuilt (H={h_cruise} ndiff={ndiff} '
               f'angw={ang_w} sig={leg_sig}/{wh_sig}) '
               f'({_t.time()-t0:.0f}s)', flush=True)
