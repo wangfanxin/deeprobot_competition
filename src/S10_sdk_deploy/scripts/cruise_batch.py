@@ -59,24 +59,12 @@ def wait_gpu_free(max_wait=60):
 
 # 每个版本的 nav 参数（env 覆盖）。MPC 层参数固定（真实一致）。
 VERSIONS = [
-    dict(ver='nr60b_f1', env=dict(
-        S10_AUTO_VMAX='5.0', S10_AUTO_VYAW_MAX='3.0', S10_AUTO_YAW_GAIN='2.5',
-        S10_AUTO_LOOKAHEAD='1.5', S10_CURVE_DECEL_AHEAD='5.0',
-        S10_CURVE_SWING_WINDOW='6.0', S10_CURVE_SWING_VX='4.0',
-        S10_AUTO_BIGERR_VX='1.8', S10_AUTO_TURN_VX='2.5',
-        S10_MPC_ANG_W='60', S10_GLOBAL_TANGENT_K='0.7')),
-    dict(ver='nr60b_f2', env=dict(
-        S10_AUTO_VMAX='5.0', S10_AUTO_VYAW_MAX='3.0', S10_AUTO_YAW_GAIN='2.5',
-        S10_AUTO_LOOKAHEAD='1.5', S10_CURVE_DECEL_AHEAD='5.0',
-        S10_CURVE_SWING_WINDOW='6.0', S10_CURVE_SWING_VX='4.0',
-        S10_AUTO_BIGERR_VX='1.8', S10_AUTO_TURN_VX='2.5',
-        S10_MPC_ANG_W='60', S10_GLOBAL_TANGENT_K='0.7')),
-    dict(ver='nr60b_f3', env=dict(
-        S10_AUTO_VMAX='5.0', S10_AUTO_VYAW_MAX='3.0', S10_AUTO_YAW_GAIN='2.5',
-        S10_AUTO_LOOKAHEAD='1.5', S10_CURVE_DECEL_AHEAD='5.0',
-        S10_CURVE_SWING_WINDOW='6.0', S10_CURVE_SWING_VX='4.0',
-        S10_AUTO_BIGERR_VX='1.8', S10_AUTO_TURN_VX='2.5',
-        S10_MPC_ANG_W='60', S10_GLOBAL_TANGENT_K='0.7')),
+    dict(ver='nr74', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '3.0', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_INIT_YAW': '1.624'}),
+    dict(ver='nr74b', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.2', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.8', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_INIT_YAW': '1.624'}),
+    dict(ver='nr75', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.8', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.72', 'S10_INIT_YAW': '1.624'}),
+    dict(ver='nr75b', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '2.0', 'S10_AUTO_TURN_VX': '2.8', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_INIT_YAW': '1.624'}),
+    dict(ver='nr73_x1', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.8', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_INIT_YAW': '1.624'}),
+    dict(ver='nr73_x2', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.8', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_INIT_YAW': '1.624'}),
 ]
 
 _mpc_ref = {}
@@ -99,7 +87,13 @@ def run_version(m, d, mpc, ver, env, waypoints):
         mpc = MPCController(MPC_YAML)
         d.qpos[7:23] = JOINT_INIT
         d.qpos[0:3] = [0.0, -2.5, 0.2]
-        d.qpos[3:7] = [1, 0, 0, 0]
+        init_yaw = float(os.environ.get('S10_INIT_YAW', '0.0'))
+        if abs(init_yaw) > 1e-3:
+            # 模拟"站起时已转向 wp0→1 方向"（验证起步转向收益）
+            d.qpos[3:7] = [np.cos(init_yaw / 2.0), 0, 0,
+                           np.sin(init_yaw / 2.0)]
+        else:
+            d.qpos[3:7] = [1, 0, 0, 0]
         mujoco.mj_forward(m, d)
         mpc.init_state(np.asarray(d.qpos[:23], dtype=np.float32),
                        np.asarray(d.qvel[:22], dtype=np.float32))
