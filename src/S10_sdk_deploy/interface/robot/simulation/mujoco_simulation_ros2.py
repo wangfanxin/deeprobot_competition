@@ -686,6 +686,74 @@ class MuJoCoSimulationNode(Node):
             robot_z=float(self.data.xpos[self.track_body_id, 2]),
             yaw_rate=yaw_rate)
 
+        # v162：STAIR 已知地图几何剖面（pitch 仰头 / 机身 z / 速度剖面）。
+        # pitch 负=仰头（本工程约定）；base_z 世界系；vx 取 zone 限速与剖面较小值
+        # （riser 前减速、踏面恢复）。CRUISE 清除覆盖回感知姿态目标。
+        try:
+            if getattr(self.follower, "mode", "") == "STAIR":
+                _y = float(pos[1])
+                _pt = float(self.follower.stair_pitch_ref(
+                    np.array([_y]))[0])
+                # v190：机身 z 参考前瞻（cruise ref_path_3d 同款 0.2m 前瞻，
+                # 提前抬身给后轮跟抬留出腿部工作空间）
+                _preview = float(os.environ.get("S10_STAIR_BZ_PREVIEW", "0.0"))
+                _bz = float(self.follower.stair_base_z_ref(
+                    np.array([_y + _preview]))[0])
+                self.mpc.set_stair_ref(_pt, _bz)
+                _v = float(self.follower.stair_v_ref(np.array([_y]))[0])
+                vx = min(vx, _v)
+            else:
+                if hasattr(self.mpc, "clear_stair_ref"):
+                    self.mpc.clear_stair_ref()
+        except Exception:
+            pass
+
+        # v168：场驱动抬腿动作偏置（软先验）——每条腿按 wheel_ref 场"欠抬量"
+        # （目标轮心高 - 当前轮心高）注入动作空间偏置：前膝缩回（抬前轮）、
+        # 后膝弯曲（抬后轮），随进度自然切换（前轮先、后轮后）。仅移动采样
+        # 均值，MPPI 权重/cost 可覆盖；CRUISE 清空。
+        try:
+            if getattr(self.follower, "mode", "") == "STAIR":
+                _f = self.follower
+                _wpos = self.data.xpos[[5, 9, 13, 17]]
+                _wy = np.asarray(_wpos[:, 1], dtype=np.float64)
+                _wz = np.asarray(_wpos[:, 2], dtype=np.float64)
+                _wr = np.asarray(_f.stair_wheel_ref(_wy), dtype=np.float64)
+                _lift = np.clip(_wr - _wz, 0.0, 0.25)
+                # v171：时变偏置——按视界内轮子前移后的欠抬量生成逐节点抬腿
+                # 剖面（H+1,12），给采样器完整"抬-落"先验；欠抬 <0.05m 视为
+                # 到位不注入（防过早/过猛）。
+                _Hn = int(self.mpc.Y.shape[0])
+                _dt = float(getattr(self.mpc, "dt", 0.02))
+                _vk = float(vx)
+                _bH = np.zeros((_Hn, 12), dtype=np.float32)
+                for _k in range(_Hn):
+                    _yk = _wy + _vk * _k * _dt
+                    _wrk = np.asarray(_f.stair_wheel_ref(_yk), dtype=np.float64)
+                    _lk = np.clip(_wrk - _wz, 0.0, 0.25)
+                    _lk = np.where(_lk < 0.05, 0.0, _lk)
+                    _nk = np.clip(_lk / 0.15, 0.0, 1.0)
+                    _b12 = np.zeros(12, dtype=np.float32)
+                    # v176：四轮完整偏置（Y 混合收敛后无累积过抬问题）
+                    # v186：恢复 v176 实证有效配方（唯一越过第二级 riser 的
+                    # 组合；膝偏置符号按 v176 原样，hipy 为主抬升驱动）。
+                    _b12[1] = 0.20 * _nk[0]
+                    _b12[2] = -0.50 * _nk[0]
+                    _b12[4] = 0.20 * _nk[1]
+                    _b12[5] = -0.50 * _nk[1]
+                    _b12[7] = -0.10 * _nk[2]
+                    _b12[8] = 0.45 * _nk[2]
+                    _b12[10] = -0.10 * _nk[3]
+                    _b12[11] = 0.45 * _nk[3]
+                    _bH[_k] = _b12
+                if hasattr(self.mpc, "set_stair_action_bias"):
+                    self.mpc.set_stair_action_bias(_bH)
+            else:
+                if hasattr(self.mpc, "set_stair_action_bias"):
+                    self.mpc.set_stair_action_bias(None)
+        except Exception:
+            pass
+
         # 高程图限速（世界系 local_map，姿态无关）：沿世界航向前方 0.5~2m
         # 采样，坡度大则减速。旧 10×16 机身系地图在俯仰时 xy 被 cos(pitch)
         # 压缩、坡度高估（0806 §3.6 姿态敏感点 1），已弃用。
@@ -752,12 +820,20 @@ class MuJoCoSimulationNode(Node):
                             and 0 <= ia < hm.shape[0] and 0 <= ja < hm.shape[1]
                             and valid[ia, ja]):
                         rise_ok = float(hm[ia, ja]) - float(hm[i, j]) > 0.12
-                if rise_ok:
+                if rise_ok and pos[1] < float(os.environ.get(
+                        "S10_AUTO_LOCK_END_Y", "39.0")):
+                    # v157：锁原始航段方向（v137/v156 切线锁失控东跑 25m 已弃）。
+                    # 顶缘前（y<39.0）直线锁防漂移；顶缘后关闭，交回正常
+                    # pursuit 跟走廊路径曲线（v155 顶缘东漂 = 直线锁在路径
+                    # 向西弯时仍锁北向）。S10_AUTO_LOCK_END_Y 可调。
                     seg_h = float(f.heading[self.track_next_index - 1])
                     err_l = float(np.arctan2(
                         np.sin(seg_h - yaw), np.cos(seg_h - yaw)))
                     cte = float(getattr(f, "_last_cte", 0.0))
-                    cte_corr = -f.cte_gain * float(
+                    # STAIR 区 cte 纠偏加倍（爬梯时路径 cost 被地形项压制，
+                    # 横向漂移收敛慢——v136 r1 漂 0.7m 上脊的诱因之一）。
+                    _cte_k = 2.0 if getattr(f, "mode", "") == "STAIR" else 1.0
+                    cte_corr = -f.cte_gain * _cte_k * float(
                         np.clip(cte / 2.0, -1.0, 1.0))
                     z_ahead = float(self.data.xpos[self.track_body_id, 2])
                     elev_k = float(os.environ.get("S10_AUTO_ELEV_K", "0.6"))
@@ -1444,6 +1520,21 @@ class MuJoCoSimulationNode(Node):
                     mpc = getattr(self, "mpc", None)
                     if mpc is not None and local_tile is not None:
                         try:
+                            # v162：已知地图轮心 z 参考场注入（楼梯段世界系几何剖面）。
+                            # 纯 numpy、固定形状，随瓦片 8Hz 更新；区外 valid=False，
+                            # rollout 回退感知/接触机制。
+                            _fl = getattr(self, "follower", None)
+                            if (_fl is not None
+                                    and hasattr(_fl, "stair_wheel_ref_grid")):
+                                _wr, _wr_ok = _fl.stair_wheel_ref_grid(
+                                    float(local_tile["origin"][0]),
+                                    float(local_tile["origin"][1]),
+                                    int(local_tile["nx"]),
+                                    int(local_tile["ny"]),
+                                    float(local_tile["resolution"]))
+                                local_tile["features"]["wheel_ref"] = _wr
+                                local_tile["features"][
+                                    "wheel_ref_valid"] = _wr_ok
                             mpc.set_elevation_map(local_tile)
                         except Exception:
                             pass
@@ -2116,7 +2207,8 @@ class MuJoCoSimulationNode(Node):
                 1.0 - 2.0 * (qq[2] ** 2 + qq[3] ** 2)))
             err_yaw = float(np.arctan2(
                 np.sin(1.57 - yaw), np.cos(1.57 - yaw)))
-            turn = float(np.clip(0.8 * err_yaw, -0.5, 0.5))
+            # v189：增强航向锁定增益（原 0.8/±0.5 太弱，长爬升西漂失控）
+            turn = float(np.clip(1.5 * err_yaw, -0.8, 0.8))
             for wi, wid in ((0, 3), (1, 7), (2, 11), (3, 15)):
                 side = 1.0 if wi in (0, 2) else -1.0
                 # 叠加差速力矩：左轮减速/右轮加速（左转）

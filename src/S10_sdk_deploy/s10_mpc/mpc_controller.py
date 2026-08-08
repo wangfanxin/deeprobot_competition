@@ -354,6 +354,9 @@ class MPCController:
                 "roughness": _zero,
                 "step": _zero,
                 "step_flag": _zero,
+                # v162：轮心 z 参考场（默认无效，结构固定防 retrace）
+                "wheel_ref": _zero_z,
+                "wheel_ref_valid": _invalid.copy(),
             },
             "origin": np.zeros(2, dtype=np.float32),
             "resolution": 0.1,
@@ -373,6 +376,12 @@ class MPCController:
         self.cmd_ang = jnp.array([0.0, 0.0, 0.0])
         # E4：参考路径（世界系，固定 (REF_N,3) = x,y,z；set_ref_path 注入）
         self._ref_path = np.zeros((self.env_config.ref_n, 3), dtype=np.float32)
+        # v162：STAIR 已知地图几何剖面覆盖（set_stair_ref 注入，update_state 使用）
+        self._stair_ref_set = False
+        self._stair_pitch = 0.0
+        self._stair_base_z = 0.0
+        # v168：场驱动抬腿动作偏置（soft prior, (Hnode+1,12) 或 (12,)）
+        self._stair_action_bias = None
         self._ref_valid = False
         # 主线程规划模式：latest_tau 由主循环每步更新；初始化防首帧崩溃
         self.latest_tau = np.zeros(16, dtype=np.float32)
@@ -414,10 +423,38 @@ class MPCController:
                 "roughness": np.asarray(f["roughness"], dtype=np.float32),
                 "step": np.asarray(f["step"], dtype=np.float32),
                 "step_flag": np.asarray(f["step_flag"], dtype=np.float32),
+                # v162：已知地图轮心 z 参考场（楼梯段，0=区外，配合 wheel_ref_valid）
+                "wheel_ref": (np.asarray(f["wheel_ref"], dtype=np.float32)
+                              if f.get("wheel_ref") is not None
+                              else np.zeros_like(f["slope"], dtype=np.float32)),
+                "wheel_ref_valid": (np.asarray(f["wheel_ref_valid"], dtype=np.bool_)
+                                    if f.get("wheel_ref_valid") is not None
+                                    else np.zeros_like(f["valid"], dtype=np.bool_)),
             },
             "origin": np.asarray(elev["origin"], dtype=np.float32),
             "resolution": float(elev["resolution"]),
         }
+
+    def set_stair_action_bias(self, bias):
+        # v168: 注入场驱动抬腿动作偏置（numpy (H+1,12) 或 (12,)，动作空间）。
+        # 软先验：仅把采样均值推向"抬腿"方向，MPPI 权重/rollout cost 可覆盖。
+        if bias is None:
+            self._stair_action_bias = None
+            return
+        b = np.asarray(bias, dtype=np.float32)
+        if b.ndim == 1:
+            b = b.reshape(1, -1)
+        self._stair_action_bias = np.clip(b, -1.0, 1.0)
+
+    def set_stair_ref(self, pitch_tar: float, base_z: float):
+        # v162: STAIR known-map geometric profile override
+        # pitch_tar negative = nose-up (project convention), base_z = world z
+        self._stair_ref_set = True
+        self._stair_pitch = float(pitch_tar)
+        self._stair_base_z = float(base_z)
+
+    def clear_stair_ref(self):
+        self._stair_ref_set = False
 
     def set_ref_path(self, pts, valid=True):
         """注入参考路径（世界系 (N,2) 或 (N,3)），固定形状填充/截断到 REF_N。"""
@@ -453,6 +490,12 @@ class MPCController:
                 "roughness": jnp.asarray(f["roughness"]),
                 "step": jnp.asarray(f["step"]),
                 "step_flag": jnp.asarray(f["step_flag"]),
+                "wheel_ref": jnp.asarray(f.get(
+                    "wheel_ref",
+                    np.zeros_like(np.asarray(f["slope"]), dtype=np.float32))),
+                "wheel_ref_valid": jnp.asarray(f.get(
+                    "wheel_ref_valid",
+                    np.zeros_like(np.asarray(f["valid"]), dtype=np.bool_))),
             },
             "origin": jnp.asarray(self._elev_np["origin"]),
             "resolution": self._elev_np["resolution"],
@@ -483,6 +526,10 @@ class MPCController:
         info["elevation_map"] = self._elev_jnp()
         # E3：地形自适应姿态目标（上坡仰头/下坡低头/过弯压弯）
         p_tar, r_tar = self._terrain_pose_targets()
+        # v162：STAIR 已知地图几何剖面覆盖（pitch 负=仰头；base_z 世界系）
+        if (getattr(self, "_stair_ref_set", False)
+                and getattr(self, "_mode", None) == "STAIR"):
+            p_tar = self._stair_pitch
         info["pitch_tar"] = jnp.array(p_tar, dtype=jnp.float32)
         info["roll_tar"] = jnp.array(r_tar, dtype=jnp.float32)
 
@@ -492,7 +539,11 @@ class MPCController:
         info["ref_valid"] = jnp.array(bool(self._ref_valid))
         # 地形跟随高度目标（0806 §3.6）：目标 = 机下地形 + 站姿高 + clip(前方高差)。
         # 让 r_height 把机身"拉"向即将到达的地形高度，过楼梯/台阶（不依赖抬轮机制）。
-        info["pos_tar"] = jnp.array([0.0, 0.0, self._terrain_follow_z()],
+        _zt = self._terrain_follow_z()
+        if (getattr(self, "_stair_ref_set", False)
+                and getattr(self, "_mode", None) == "STAIR"):
+            _zt = self._stair_base_z
+        info["pos_tar"] = jnp.array([0.0, 0.0, _zt],
                                     dtype=jnp.float32)
         self.state = self.state.replace(info=info)
 
@@ -714,6 +765,17 @@ class MPCController:
                 # 累积（batch v28 r1 z=1.01 roll -1.16 侧翻），r_upright
                 # 25→40 抑制爬升中侧翻。
                 "terrain_w_upright": _w("S10_STAIR_W_UPRIGHT", 40.0),
+                # v162c：轮-地形贴合/过抬权重可配（场目标下 300 过强 →
+                # bang-bang 过冲翻车；100~150 温和跟随；过抬惩罚加强防甩高）
+                "terrain_w_ground": _w("S10_STAIR_W_GROUND", 300.0),
+                "terrain_w_overlift": _w("S10_STAIR_W_OVERLIFT", 200.0),
+                # v164：r_ground 单向（只罚低于目标，高于目标交给 overlift）——
+                # 消除"低于目标猛抬、高于目标猛压"的 bang-bang 过冲振荡
+                "ground_oneway": float(os.environ.get(
+                    "S10_STAIR_GROUND_ONEWAY", "0")),
+                # v169：分相 ground——摆动相只罚没抬到位、支撑相只罚悬空
+                "ground_phase": float(os.environ.get(
+                    "S10_STAIR_GROUND_PHASE", "0")),
                 # 机身抬升强化（2026-08-07）：卡点分析——后腿近直腿
                 # （body 0.95-后轮 0.62=0.33 vs 直腿 0.36），后轮上
                 # riser 需 body 先抬到 r_clear 目标 1.125；r_clear 60→120、
@@ -728,6 +790,9 @@ class MPCController:
                 # v139c：MPCC 进度项——奖励沿路径切线的推进速度，直接对抗
                 # "轮子空转但车不前进"的 riser 卡点振荡（v136 r1 卡 8.5s）。
                 "w_prog": _w("S10_STAIR_W_PROG", 0.0),
+                # v184：STAIR 线速度跟踪权重可配（默认 25；死锁时提高到 40
+                # 打破"轮子到位、无推进"局部最优）
+                "vel_weight": _w("S10_STAIR_VEL_W", 25.0),
                 # 航向跟踪加强（2026-08-07 用户问题 1）：run3 爬梯西漂 4m
                 # （x -15→-19），w_path_head 25→40 让 MPC 在爬梯时保持
                 # 路径切线航向，抑制横向漂移。
@@ -820,9 +885,9 @@ class MPCController:
         """
         if self.state is None:       # 防御：任何路径进入规划时确保 state 已初始化
             self.init_state(q, qd)
-        _t_start = __import__("time").time()
+        _t_start = __import__("time").perf_counter()
         self.update_state(q, qd, t)
-        _t_upd = __import__("time").time() - _t_start
+        _t_upd = __import__("time").perf_counter() - _t_start
         # 1) shift：按真实 plan 间隔推进（方案 C，2026-08-07）：执行
         # 零阶保持周期 = plan 周期（如 0.05s=2.5 ctrl_dt），shift 必须
         # 推进相同步数，否则 Y 序列相位每轮错位（原始 dial-mpc 用 delta_step）。
@@ -842,21 +907,29 @@ class MPCController:
             _acc -= n_shift
         self._shift_accum = _acc
         n_shift = max(1, min(n_shift, self.dial_config.Hnode))
-        _t0 = __import__("time").time()
+        _t0 = __import__("time").perf_counter()
         self.Y = self.mbdpi.shift_n(
             self.Y, jnp.asarray(n_shift, dtype=jnp.int32))
-        _t_shift = __import__("time").time() - _t0
+        _t_shift = __import__("time").perf_counter() - _t0
         self._last_plan_t = t
         # 轮速前馈持续注入（对抗优化器衰减；见 _reinject_wheel_ff）
         _t0 = __import__("time").time()
         self._reinject_wheel_ff()
-        # STAIR 采样偏置注入（软先验，扩散采样可覆盖）
-        _lb = getattr(self, "_leg_bias", None)
+        # STAIR 采样偏置注入（软先验，扩散采样可覆盖）。v168：优先用场驱动
+        # 的时变偏置（每节点不同），否则回退静态 _leg_bias。
+        # v176：偏置用**混合收敛**（Y += λ(bias−Y)，λ=S10_STAIR_BIAS_BLEND）
+        # 替代直接相加——直接相加每 plan 累积导致过抬（v171 前轮 1.0+ 根因）。
+        _lb = getattr(self, "_stair_action_bias", None)
+        if _lb is None:
+            _lb = getattr(self, "_leg_bias", None)
         if _lb is not None and bool(np.any(_lb)):
+            _lb_a = jnp.asarray(_lb, dtype=jnp.float32)
+            if _lb_a.ndim == 1:
+                _lb_a = _lb_a[None, :]
+            _blend = float(os.environ.get("S10_STAIR_BIAS_BLEND", "0.30"))
+            _Yl = self.Y[:, :12]
             self.Y = self.Y.at[:, :12].set(jnp.clip(
-                self.Y[:, :12]
-                + jnp.asarray(_lb, dtype=jnp.float32),
-                -1.0, 1.0))
+                _Yl + _blend * (_lb_a - _Yl), -1.0, 1.0))
 
         n_diffuse = self.dial_config.Ndiffuse
         if self._first:
@@ -869,10 +942,10 @@ class MPCController:
             ** (jnp.arange(n_diffuse))[:, None]
         )
         rng, Y0, st = self.rng, self.Y, self.state
-        _t0 = __import__("time").time()
+        _t0 = __import__("time").perf_counter()
         (rng, Y0, st), info = jax.lax.scan(
             self._scan_body, (rng, Y0, st), factors)
-        _t_scan = __import__("time").time() - _t0
+        _t_scan = __import__("time").perf_counter() - _t0
         if os.environ.get("S10_MPC_DEBUG"):
             import numpy as _np
             rew = _np.asarray(info["rews"])
@@ -887,14 +960,19 @@ class MPCController:
                   f"rew_mean={float(rew.mean()):.0f}",
                   flush=True)
         self.rng, self.Y, self.state = rng, Y0, st
-        _t0 = __import__("time").time()
+        _t0 = __import__("time").perf_counter()
         self.Y = self.Y.block_until_ready()
-        _t_sync = __import__("time").time() - _t0
-        _t_plan = (__import__("time").time() - _t_start)
-        if os.environ.get("S10_MPC_TIMING") and _t_plan > 1.0:
-            print(f"[PLAN-T] total={_t_plan:.2f}s upd={_t_upd:.2f} "
-                  f"shift={_t_shift:.2f} scan={_t_scan:.2f} "
-                  f"sync={_t_sync:.2f} mode={getattr(self,'_mode','?')}",
+        _t_sync = __import__("time").perf_counter() - _t0
+        _t_plan = (__import__("time").perf_counter() - _t_start)
+        self._last_plan_times = dict(
+            total_ms=_t_plan * 1000.0, upd_ms=_t_upd * 1000.0,
+            shift_ms=_t_shift * 1000.0, scan_ms=_t_scan * 1000.0,
+            sync_ms=_t_sync * 1000.0)
+        if os.environ.get("S10_MPC_TIMING"):
+            print(f"[PLAN-T] total={_t_plan*1000:.1f}ms "
+                  f"upd={_t_upd*1000:.1f} shift={_t_shift*1000:.1f} "
+                  f"scan={_t_scan*1000:.1f} sync={_t_sync*1000:.1f} "
+                  f"mode={getattr(self, '_mode', '?')}",
                   flush=True)
         self._last_plan_t = t
         return self.Y[0]

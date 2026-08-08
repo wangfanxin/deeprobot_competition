@@ -624,6 +624,10 @@ class AutoNavFollower:
         （y>40.5 或 next 推进）——狗在台阶底部来回时感知确认瞬时失败会
         反复切 CRUISE（权重突变 → MPC 行为突变 → 侧翻，batch v31 复现）。
         """
+        if os.environ.get("S10_FORCE_MODE") in ("CRUISE", "STAIR"):
+            if self.mode != os.environ["S10_FORCE_MODE"]:
+                self.mode = os.environ["S10_FORCE_MODE"]
+            return
         if self.mode == "STAIR":
             if next_idx > 7 or robot_xy[1] > 40.5:
                 self.mode = "CRUISE"
@@ -733,28 +737,28 @@ class AutoNavFollower:
         """
         if next_idx >= len(self.wp):
             return None
-        i0 = max(next_idx - 1, 0)
-        i1 = min(i0 + n_wp, len(self.wp))
-        if i1 - i0 < 3:
+        # v183：ref_path 改从**平滑全局路径**采样（与导航 pursuit 同一曲线），
+        # 不再用航点折线——折线尖角让 MPC 弯道里追锐角、与导航平滑线打架
+        # （S 弯/55° 弯处速度方差 ±0.5 m/s、偶发卡弯的根因）。采样窗口
+        # 覆盖到 next_idx 后 n_wp 个航点的弧长，保证弯道里 ref 完整。
+        i1 = min(next_idx + n_wp, len(self.wp))
+        s_end = self.path_wp_s[i1 - 1] if i1 > 0 else self.path_total
+        s_end = min(s_end + 2.0, self.path_total)
+        s_cur = getattr(self, "_s_cur", 0.0)
+        if s_end - s_cur < 0.5:
             return None
-        win = self._stair_corridor_xy(self.wp[i0:i1][:, :2])
-        seg = np.linalg.norm(np.diff(win, axis=0), axis=1)
-        cum = np.concatenate([[0.0], np.cumsum(seg)])
-        total = cum[-1]
-        if total < 0.5:
+        s_targets = np.arange(s_cur, s_end, spacing)
+        if len(s_targets) < 3:
             return None
-        # 按 speed 滚动：从机器人投影起，前方总长按 spacing 采样（弧长均匀）
-        s_start = 0.0
-        s_targets = np.arange(s_start, total, spacing)
         pts = np.zeros((len(s_targets), 3))
         for k, s in enumerate(s_targets):
-            i = int(np.searchsorted(cum, s, side="right") - 1)
-            i = max(0, min(i, len(seg) - 1))
-            t = (s - cum[i]) / max(seg[i], 1e-6)
-            pts[k, :2] = win[i] + t * (win[i + 1] - win[i])
-        # v129/v133: shared diagonal bump so MPC ref and navigation pursuit
-        # use the identical path.
-        pts[:, :2] = self._stair_diag_bump(pts[:, :2])
+            i = int(np.searchsorted(self.path_cum, s, side="right") - 1)
+            i = max(0, min(i, len(self.path_pts) - 2))
+            t = ((s - self.path_cum[i])
+                 / max(self.path_cum[i + 1] - self.path_cum[i], 1e-6))
+            pts[k, :2] = (self.path_pts[i, :2]
+                          + t * (self.path_pts[i + 1, :2]
+                                 - self.path_pts[i, :2]))
         # z: elevation + stand height; v133 preview samples the path point
         # S10_REF_Z_PREVIEW (default 0.3m) ahead so the body lift command
         # arrives before the riser (complements r_ground lookahead lift).
@@ -809,3 +813,129 @@ class AutoNavFollower:
                       f"npts={len(pts)} valid_sample={n_valid}", flush=True)
             self._ref_dbg_cnt += 1
         return pts.astype(np.float32)
+
+    # ==================== 楼梯 3D 路径几何剖面（2026-08-08，路径规划层） ====================
+    # wp6→wp7 楼梯段（已知地图实测 scan_wp7_fixed.py，x∈[-15.0,-14.5] 横向一致）：
+    #   6 级 riser：y / 顶 z = 37.90/0.54, 38.375/0.67, 38.775/0.79,
+    #                39.225/0.92, 39.625/1.04, 40.025/1.17；坡前地面 0.48；
+    #   riser 0.12~0.13m > 轮半径 0.081m（静态滚不上，必须抬）；梯面 0.35~0.40m；
+    #   前后轮轴距 0.455m > 梯面（后轮跟抬相位差 = 轴距，天然由逐轮位置场表达）。
+    # 目标：把 cruise 的"路径+速度+3D 参考"机制延伸到楼梯段（软参考，无硬门控）：
+    #   stair_wheel_ref(y)  ：轮心 z 参考场 = 地形+轮半径，riser 前 RAMP_A 起平滑抬到
+    #                         顶+轮半径+MARGIN（提前抬轮，破解"顶到立面才接触抬"的根因）；
+    #   stair_base_z_ref(y) ：机身 z 参考 = 地形+站姿高，滞后于轮 0.1m（车身跟轮上）；
+    #   stair_pitch_ref(y)  ：riser 前仰头（前轮抬升窗口内），踏面回平；
+    #   stair_v_ref(y)      ：riser 前减速 / 踏面提速。
+    # 全部按世界 y 计算（走廊近似沿 y 轴），不受机体倾斜/局部地图遮挡影响。
+    STAIR_GROUND = 0.48
+    STAIR_RISERS = np.array([37.90, 38.375, 38.775, 39.225, 39.625, 40.025])
+    STAIR_TOPS = np.array([0.54, 0.67, 0.79, 0.92, 1.04, 1.17])
+    STAIR_ZONE_Y = (37.0, 41.5)      # wheel_ref 有效 y 带（含最后一级落地区）
+    STAIR_ZONE_X = (-15.1, -13.7)    # wheel_ref 有效 x 带（走廊+余量）
+
+    def _stair_tables(self):
+        """返回 (riser_y, top_z) 数组；支持 S10_STAIR_RISERS/TOPS 逗号串覆盖。"""
+        rs = os.environ.get("S10_STAIR_RISERS", "")
+        ts = os.environ.get("S10_STAIR_TOPS", "")
+        if rs and ts:
+            r = np.array([float(v) for v in rs.split(",")], dtype=np.float64)
+            t = np.array([float(v) for v in ts.split(",")], dtype=np.float64)
+            if len(r) == len(t) and len(r) > 0:
+                return r, t
+        return self.STAIR_RISERS, self.STAIR_TOPS
+
+    def stair_terrain(self, y):
+        """楼梯段地形高 z(y)（阶梯函数，y 可数组；区外截断为最近已知级）。"""
+        rs, ts = self._stair_tables()
+        y = np.asarray(y, dtype=np.float64)
+        out = np.full(y.shape, self.STAIR_GROUND, dtype=np.float64)
+        for k, (y_r, z_top) in enumerate(zip(rs, ts)):
+            out = np.where(y >= y_r, z_top, out)
+        return out
+
+    def stair_wheel_ref(self, y, radius=0.081):
+        """轮心 z 参考场 w_c(y) = 地形+轮半径，riser 前 RAMP_A 平滑抬到 顶+半径+MARGIN。"""
+        rs, ts = self._stair_tables()
+        a = float(os.environ.get("S10_STAIR_RAMP_A", "0.14"))
+        b = float(os.environ.get("S10_STAIR_RAMP_B", "0.10"))
+        margin = float(os.environ.get("S10_STAIR_LIFT_MARGIN", "0.05"))
+        y = np.asarray(y, dtype=np.float64)
+        z = self.stair_terrain(y) + radius
+        for k, (y_r, z_top) in enumerate(zip(rs, ts)):
+            z_bottom = self.STAIR_GROUND if k == 0 else float(ts[k - 1])
+            lo = y_r - a
+            hi = y_r + b
+            t = np.clip((y - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+            s = t * t * (3.0 - 2.0 * t)
+            z_ramp = z_bottom + radius + s * (z_top - z_bottom + margin)
+            z = np.where((y >= lo) & (y <= hi),
+                         np.maximum(z, z_ramp), z)
+        return z
+
+    def stair_base_z_ref(self, y, stand=0.205):
+        """机身 z 参考 = 地形+站姿高，riser 前滞后 0.1m 平滑抬（车随轮上）。"""
+        rs, ts = self._stair_tables()
+        a = float(os.environ.get("S10_STAIR_RAMP_A", "0.14"))
+        b = float(os.environ.get("S10_STAIR_RAMP_B", "0.10"))
+        lag = float(os.environ.get("S10_STAIR_BASE_LAG", "0.10"))
+        y = np.asarray(y, dtype=np.float64)
+        z = self.stair_terrain(y) + stand
+        for k, (y_r, z_top) in enumerate(zip(rs, ts)):
+            z_bottom = self.STAIR_GROUND if k == 0 else float(ts[k - 1])
+            lo = y_r - a + lag
+            hi = y_r + b + lag
+            t = np.clip((y - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+            s = t * t * (3.0 - 2.0 * t)
+            z_ramp = z_bottom + stand + s * (z_top - z_bottom)
+            z = np.where((y >= lo) & (y <= hi),
+                         np.maximum(z, z_ramp), z)
+        return z
+
+    def stair_pitch_ref(self, y, amp=None):
+        """riser 前仰头：窗口 [y_r-a, y_r+b] 内 tent 形（先升后平），踏面回 0。"""
+        if amp is None:
+            amp = float(os.environ.get("S10_STAIR_PITCH_AMP", "0.22"))
+        rs, _ = self._stair_tables()
+        a = float(os.environ.get("S10_STAIR_RAMP_A", "0.14"))
+        b = float(os.environ.get("S10_STAIR_RAMP_B", "0.10"))
+        y = np.asarray(y, dtype=np.float64)
+        p = np.zeros(y.shape, dtype=np.float64)
+        for y_r in rs:
+            t1 = np.clip((y - (y_r - a)) / max(a, 1e-6), 0.0, 1.0)
+            s1 = t1 * t1 * (3.0 - 2.0 * t1)
+            t2 = np.clip((y - y_r) / max(b, 1e-6), 0.0, 1.0)
+            s2 = t2 * t2 * (3.0 - 2.0 * t2)
+            p = np.maximum(p, amp * s1 * (1.0 - s2))
+        # 本工程约定：pitch 负值 = 仰头（抬前轮，见 s10_env r_pitch 注释）
+        return -p
+
+    def stair_v_ref(self, y, v_slow=None, v_fast=None):
+        """riser 前 0.25m 减速到 v_slow、riser 后 0.15m 恢复到 v_fast（取各 riser 最小值）。"""
+        if v_slow is None:
+            v_slow = float(os.environ.get("S10_STAIR_V_SLOW", "1.2"))
+        if v_fast is None:
+            v_fast = float(os.environ.get("S10_STAIR_V_FAST", "1.8"))
+        rs, _ = self._stair_tables()
+        y = np.asarray(y, dtype=np.float64)
+        v = np.full(y.shape, v_fast, dtype=np.float64)
+        for y_r in rs:
+            d_in = 0.10
+            t_in = np.clip((y - (y_r - 0.25)) / d_in, 0.0, 1.0)
+            s_in = t_in * t_in * (3.0 - 2.0 * t_in)
+            t_out = np.clip((y - (y_r + 0.05)) / d_in, 0.0, 1.0)
+            s_out = t_out * t_out * (3.0 - 2.0 * t_out)
+            v_ramp = v_slow + (v_fast - v_slow) * s_in * (1.0 - s_out)
+            v = np.minimum(v, np.where(
+                (y >= y_r - 0.25) & (y <= y_r + 0.15), v_ramp, v_fast))
+        return v
+
+    def stair_wheel_ref_grid(self, x0, y0, nx, ny, res):
+        """构建对齐感知瓦片 (origin=(x0,y0), res, shape=(ny,nx)) 的轮心 z 参考网格。
+        有效区 = 楼梯带（STAIR_ZONE_X/Y 交集），区外 valid=False（回退感知/接触机制）。"""
+        ys = y0 + (np.arange(ny, dtype=np.float64) + 0.5) * res
+        xs = x0 + (np.arange(nx, dtype=np.float64) + 0.5) * res
+        yy, xx = np.meshgrid(ys, xs, indexing="ij")
+        wc = self.stair_wheel_ref(yy)
+        valid = ((yy >= self.STAIR_ZONE_Y[0]) & (yy <= self.STAIR_ZONE_Y[1])
+                 & (xx >= self.STAIR_ZONE_X[0]) & (xx <= self.STAIR_ZONE_X[1]))
+        return wc.astype(np.float32), valid

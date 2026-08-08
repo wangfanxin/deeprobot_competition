@@ -114,6 +114,10 @@ def main():
                     pos, yaw, next_idx,
                     robot_z=float(d.xpos[track_body][2]), yaw_rate=0.0)
                 mpc.set_cmd(vx, 0.0, vyaw)
+                if os.environ.get('S10_USE_REF_PATH', '0') == '1':
+                    ref = fol.ref_path_3d(pos, next_idx, local_map=None)
+                    mpc.set_ref_path(ref if ref is not None else [],
+                                     valid=ref is not None)
                 dbg_cnt += 1
                 if traj_file and dbg_cnt % 10 == 0:
                     _tf.write(f'{t:.2f},{pos[0]:.3f},{pos[1]:.3f},'

@@ -59,12 +59,12 @@ def wait_gpu_free(max_wait=60):
 
 # 每个版本的 nav 参数（env 覆盖）。MPC 层参数固定（真实一致）。
 VERSIONS = [
-    dict(ver='nr126b_r1', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '3.2', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.2', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_H_CRUISE': '22', 'S10_USE_REF_PATH': '1', 'S10_MPC_W_PATH': '30', 'S10_MPC_W_PROG': '5'}),
-    dict(ver='nr126b_r2', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '3.2', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.2', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_H_CRUISE': '22', 'S10_USE_REF_PATH': '1', 'S10_MPC_W_PATH': '30', 'S10_MPC_W_PROG': '5'}),
-    dict(ver='nr126b_r3', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '3.2', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.2', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_H_CRUISE': '22', 'S10_USE_REF_PATH': '1', 'S10_MPC_W_PATH': '30', 'S10_MPC_W_PROG': '5'}),
-    dict(ver='nr126b_r4', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '3.2', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.2', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_H_CRUISE': '22', 'S10_USE_REF_PATH': '1', 'S10_MPC_W_PATH': '30', 'S10_MPC_W_PROG': '5'}),
-    dict(ver='nr128', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '3.4', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.2', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_H_CRUISE': '22', 'S10_USE_REF_PATH': '1', 'S10_MPC_W_PATH': '30', 'S10_MPC_W_PROG': '5'}),
-    dict(ver='nr128b', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '3.2', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.2', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_H_CRUISE': '22', 'S10_USE_REF_PATH': '1', 'S10_MPC_W_PATH': '40', 'S10_MPC_W_PROG': '5'}),
+    dict(ver='nr129', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.5', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_NSAMPLE': '4096'}),
+    dict(ver='nr129b', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.5', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_NSAMPLE': '3072'}),
+    dict(ver='nr130', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.5', 'S10_MPC_ANG_W': '80', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_NSAMPLE': '4096'}),
+    dict(ver='nr130b', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '3.4', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.5', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_NSAMPLE': '4096'}),
+    dict(ver='nr131', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.8', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.7', 'S10_MPC_NSAMPLE': '4096'}),
+    dict(ver='nr131b', env={'S10_AUTO_VMAX': '5.0', 'S10_AUTO_VYAW_MAX': '3.0', 'S10_AUTO_YAW_GAIN': '2.5', 'S10_AUTO_LOOKAHEAD': '1.5', 'S10_CURVE_DECEL_AHEAD': '5.0', 'S10_CURVE_SWING_WINDOW': '6.0', 'S10_CURVE_SWING_VX': '4.0', 'S10_AUTO_BIGERR_VX': '1.8', 'S10_AUTO_TURN_VX': '2.5', 'S10_MPC_ANG_W': '60', 'S10_GLOBAL_TANGENT_K': '0.72', 'S10_MPC_NSAMPLE': '4096'}),
 ]
 
 _mpc_ref = {}
@@ -150,6 +150,7 @@ def run_version(m, d, mpc, ver, env, waypoints):
     _tf.write('t,x,y,yaw,next_idx,err,d_wp,vx,vyaw,cte,s_cur\n')
     dbg_cnt = 0
     plan_times = []
+    plan_break = []
     t0 = time.time()
     while t < MAX_SIM:
         step = int(t / DT)
@@ -208,6 +209,9 @@ def run_version(m, d, mpc, ver, env, waypoints):
                 _pt0 = time.time()
                 last_act = mpc.plan_once(qq, qqd, t)
                 plan_times.append(time.time() - _pt0)
+                _tb = getattr(mpc, "_last_plan_times", None)
+                if _tb is not None:
+                    plan_break.append(_tb)
             mpc.latest_tau = mpc.compute_tau(last_act, qq, qqd)
             d.ctrl[:] = np.asarray(mpc.latest_tau, dtype=np.float64)
         mujoco.mj_step(m, d)
@@ -250,10 +254,20 @@ def run_version(m, d, mpc, ver, env, waypoints):
         _max_ms = float(np.max(plan_times)) * 1000.0
     else:
         _avg_ms, _hz, _max_ms = 0.0, 0.0, 0.0
+    if plan_break:
+        _b = {k: float(np.mean([x[k] for x in plan_break]))
+              for k in ("total_ms", "upd_ms", "shift_ms", "scan_ms", "sync_ms")}
+        _bmax = {k: float(np.max([x[k] for x in plan_break]))
+                 for k in ("upd_ms", "scan_ms", "sync_ms")}
+    else:
+        _b = _bmax = {}
     print(f'[BATCH] {ver}: wall={time.time()-t0:.0f}s '
           f'wp_times={ {k:round(v,1) for k,v in wp_times.items()} } '
           f'crashed={crashed} final_wp={next_idx} avg={avg:.2f}m/s '
-          f'plan_ms={_avg_ms:.0f}(max{_max_ms:.0f}) ctrl_hz={_hz:.1f}',
+          f'plan_ms={_avg_ms:.0f}(max{_max_ms:.0f}) ctrl_hz={_hz:.1f} '
+          f'brk=upd{_b.get("upd_ms",0):.0f}/scan{_b.get("scan_ms",0):.0f}/'
+          f'shift{_b.get("shift_ms",0):.0f}/sync{_b.get("sync_ms",0):.0f} '
+          f'max=upd{_bmax.get("upd_ms",0):.0f}/scan{_bmax.get("scan_ms",0):.0f}',
           flush=True)
     return wp_times, crashed, next_idx, avg
 
