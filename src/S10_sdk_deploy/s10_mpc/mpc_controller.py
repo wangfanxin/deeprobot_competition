@@ -108,6 +108,29 @@ class MPCController:
         self._top_sigma_scale = float(os.environ.get(
             "S10_STAIR_TOP_SIGMA", "1.0"))
         self._base_sigma_dim = None
+        # v200: DBaS 自适应采样方差（arXiv 2502.14387，默认关，A/B 测试）
+        # Se = mu*ln(e + C_B(X*))：标称轨迹代价高（卡台阶）-> 放大探索；
+        # 代价低（顺利通行）-> 收敛精细跟踪。每 plan 后用上轮样本奖励统计
+        # 更新下一次 reverse_once 的 sigma_dim（host numpy，零 JAX 开销）。
+        self._ada_enabled = os.environ.get("S10_ADA_VAR", "0") == "1"
+        self._ada_mu = float(os.environ.get("S10_ADA_MU", "1.0"))
+        self._ada_ref = float(os.environ.get("S10_ADA_REF", "3000.0"))
+        self._ada_cscale = float(os.environ.get("S10_ADA_CSCALE", "1500.0"))
+        self._ada_ema = float(os.environ.get("S10_ADA_EMA", "0.3"))
+        self._ada_max = float(os.environ.get("S10_ADA_MAX", "3.0"))
+        self._ada_leg_only = os.environ.get("S10_ADA_LEG_ONLY", "1") == "1"
+        self._ada_stair_only = os.environ.get("S10_ADA_STAIR_ONLY", "1") == "1"
+        self._ada_se = None
+        self._sigma_dim_base = None
+        self._mode = None
+        # v200e: DBaS 信号驱动 bias 放大（均值位移而非噪声）：卡住打滑时
+        # 把抬腿先验 blend 从 0.30 提高到 S10_STAIR_BIAS_BLEND_STUCK，
+        # 让采样均值更贴近"抬腿-蹬"动作（cost 仍可覆盖，软先验非门控）。
+        self._ada_slip = 0.0
+        self._ada_slip_active = False
+        self._ada_bias_on = os.environ.get("S10_ADA_BIAS", "0") == "1"
+        self._ada_bias_stuck = float(os.environ.get(
+            "S10_STAIR_BIAS_BLEND_STUCK", "0.65"))
         self.dt = float(os.environ.get(
             "S10_MPC_DT",
             str(hw_ov.get("dt", cfg.get("dt", 0.02)))))   # MPC 控制周期（dt 属 env，非 DialConfig）
@@ -598,7 +621,93 @@ class MPCController:
         roll_tar = float(np.clip(
             self.env_config.pose_roll_gain * vyaw * abs(vx),
             -self.env_config.pose_roll_max, self.env_config.pose_roll_max))
+        # v199: curve lean lookahead (moto-style). Base roll on path curvature
+        # ahead of the robot instead of only the current command, so the body
+        # pre-leans before entering the corner. S10_ROLL_FF_DIST=0 disables.
+        _rfd = float(os.environ.get("S10_ROLL_FF_DIST", "1.2"))
+        if _rfd > 0.0:
+            _rc = self._ref_curvature()
+            if _rc is not None:
+                _cum, _k_s, _pts = _rc
+                _k0 = int(np.argmin(np.sum(
+                    (_pts - np.array([bx, by])) ** 2, axis=1)))
+                _s_ahead = float(_cum[_k0]) + _rfd
+                _k_a = float(np.interp(_s_ahead, _cum, _k_s))
+                _mix = float(os.environ.get("S10_ROLL_FF_MIX", "0.5"))
+                _roll_ff = (self.env_config.pose_roll_gain
+                            * abs(vx) * (vx * _k_a))
+                roll_tar = float(np.clip(
+                    (1.0 - _mix) * roll_tar + _mix * _roll_ff,
+                    -self.env_config.pose_roll_max,
+                    self.env_config.pose_roll_max))
         return pitch_tar, roll_tar
+
+    def _ref_curvature(self):
+        # v199: cumulative arc + signed smoothed curvature from the injected
+        # ref path (world frame). Returns (cum, kappa_signed, pts) or None.
+        ref = np.asarray(self._ref_path, dtype=np.float64)
+        if ref.shape[0] < 8 or not getattr(self, "_ref_valid", False):
+            return None
+        dxy = np.diff(ref[:, :2], axis=0)
+        seg = np.linalg.norm(dxy, axis=1)
+        dup = np.argmax(seg < 1e-6) if np.any(seg < 1e-6) else len(seg)
+        nv = max(4, int(dup) + 1)
+        pts = ref[:nv, :2]
+        if pts.shape[0] < 4:
+            return None
+        dxy = np.diff(pts, axis=0)
+        seg = np.maximum(np.linalg.norm(dxy, axis=1), 1e-6)
+        heading = np.arctan2(dxy[:, 1], dxy[:, 0])
+        dhead = np.unwrap(np.diff(heading))
+        kappa = dhead / seg[1:]
+        kappa = np.concatenate([[0.0], kappa, [0.0]])
+        cum = np.concatenate([[0.0], np.cumsum(seg)])
+        k_s = np.convolve(kappa, np.ones(3) / 3.0, mode="same")
+        return cum, k_s, pts
+
+    def _adaptive_sigma_node(self):
+        # v199: MPPI-DBaS style adaptive sampling variance. Per-node sigma
+        # multiplier from path curvature: shrink on straights (samples stick
+        # to the nominal straight action -> straighter lines), widen before
+        # and inside curves (explore turning, paired with early decel+lean).
+        # S10_ADAPTIVE_SIGMA=1 enables; returns (Hnode+1,) float32 mults.
+        n = self.dial_config.Hnode + 1
+        if os.environ.get("S10_ADAPTIVE_SIGMA", "0") != "1":
+            return np.ones(n, dtype=np.float32)
+        _rc = self._ref_curvature()
+        if _rc is None:
+            return np.ones(n, dtype=np.float32)
+        cum, k_s, pts = _rc
+        k_abs = np.abs(k_s)
+        # widen within a radius ahead of each high-curvature point so the
+        # sampling starts exploring slightly before the corner
+        _rad = float(os.environ.get("S10_ADAPTIVE_SIGMA_RADIUS", "0.8"))
+        rw = max(1, int(_rad / max(float(np.median(np.diff(cum))), 1e-3)))
+        kk = np.zeros_like(k_abs)
+        for k in range(len(k_abs)):
+            lo = max(0, k - rw)
+            hi = min(len(k_abs), k + rw + 1)
+            kk[k] = float(np.max(k_abs[lo:hi]))
+        k_th = float(os.environ.get("S10_ADAPTIVE_SIGMA_KAPPA", "0.35"))
+        s_straight = float(os.environ.get(
+            "S10_ADAPTIVE_SIGMA_STRAIGHT", "0.45"))
+        s_curve = float(os.environ.get(
+            "S10_ADAPTIVE_SIGMA_CURVE", "1.2"))
+        d = self.state.pipeline_state.data
+        bx, by = float(d.xpos[1][0]), float(d.xpos[1][1])
+        _k0 = int(np.argmin(np.sum(
+            (pts - np.array([bx, by])) ** 2, axis=1)))
+        vx = max(abs(float(self.cmd_vel[0])), 0.1)
+        node_dt = float(self.mbdpi.node_dt)
+        out = np.ones(n, dtype=np.float32)
+        for j in range(n):
+            s_j = float(cum[_k0]) + vx * node_dt * j
+            k_j = float(np.interp(s_j, cum, kk))
+            t = float(np.clip(
+                (k_j - k_th * 0.6) / max(k_th * 0.8, 1e-6), 0.0, 1.0))
+            t = t * t * (3.0 - 2.0 * t)
+            out[j] = float(s_straight + (s_curve - s_straight) * t)
+        return out
 
     def _terrain_follow_z(self) -> float:
         """从 numpy 高程瓦片算地形跟随目标高度（update_state 调用，无 JAX）。"""
@@ -722,6 +831,10 @@ class MPCController:
                 "S10_CRUISE_WHEEL_SIGMA", "1.0"))
         self.mbdpi.sigma_dim = jnp.asarray(
             [leg_sigma] * 12 + [wheel_sigma] * 4, dtype=jnp.float32)
+        # v200: DBaS 基线快照（自适应在其上缩放，模式切换时重置状态）
+        self._sigma_dim_base = np.asarray(
+            self.mbdpi.sigma_dim, dtype=np.float32)
+        self._ada_se = None
         # 采样偏置（用户 2026-08-07 平衡项）：STAIR 时给 Y 腿节点注入
         # 软偏置（动作空间）——前膝缩回（抬前轮）、后膝弯曲（抬后轮），
         # 让"抬腿"成为采样均值方向；扩散/M PPI 权重可覆盖（非门控）。
@@ -893,6 +1006,78 @@ class MPCController:
                       dtype=jnp.float32))
 
     # ---- 单步规划（扩散采样）----
+    def _ada_update(self, info) -> None:
+        """v200: DBaS 自适应采样方差（arXiv 2502.14387 公式 Se=mu*ln(e+C_B)）。
+
+        每 plan 结束后，用当前 scan 最后一级扩散迭代的样本奖励统计标称轨迹
+        代价（softmax 加权平均，锚点 = Ybar 样本奖励），卡台阶（代价高）时
+        放大下一轮腿维采样 sigma，顺利通行时收敛。EMA 平滑防抖；默认只在
+        STAIR 模式启用（巡航已单独调优，不动）。host 侧 numpy，无 JAX 开销。
+        """
+        if (not getattr(self, "_ada_enabled", False)
+                and not getattr(self, "_ada_bias_on", False)):
+            return
+        if (self._ada_stair_only and not getattr(self, "_ada_bias_on", False)
+                and getattr(self, "_mode", None) != "STAIR"):
+            return
+        rews = np.asarray(info["rews"])[-1]           # 末级扩散 (Nsample+1,)
+        std = float(rews.std()) + 1e-6
+        rew_ybar = float(rews[-1])                     # 标称轨迹（Ybar）奖励
+        w = np.exp(np.clip((rews - rew_ybar) / std
+                           / self.dial_config.temp_sample, -50.0, 50.0))
+        w = w / float(w.sum())
+        c = max(0.0, -float((w * rews).sum()) - self._ada_ref)
+        # v200b: 奖励型 C 在卡台阶时实测不变（rew_bar 巡航/卡死同处 ~-350），
+        # DBaS 的"约束代价"需要直接物理量：轮子目标转速大而实际速度≈0 =
+        # 顶死打滑（前轮挂 riser、后轮空转）。slip=1-v_real/v_cmd 在
+        # 严重打滑（>S10_ADA_SLIP_GATE）时叠加 C，Se 随 ln(e+C) 放大探索；
+        # 正常跟踪 slip≈0 不激活（巡航探索保持 v176 基线）。
+        v_real = 0.0
+        if self.state is not None:
+            try:
+                d0 = self.state.pipeline_state.data
+                v_real = float(np.linalg.norm(np.asarray(d0.cvel[1, 3:])))
+            except Exception:
+                v_real = 0.0
+        v_cmd = abs(getattr(self, "_last_vx", 0.0))
+        slip = 0.0
+        # v_cmd>0.5 才判滑移：站起/起步阶段 v=0 且 vcmd=0 是正常静止，
+        # 不能当"打滑"（v200b 误触发实测：warmup 时 slip=1.0 → Se 飙到 2.5）。
+        self._ada_slip = 0.0
+        self._ada_slip_active = False
+        if v_cmd > float(os.environ.get("S10_ADA_VCMD_GATE", "0.5")):
+            slip = max(0.0, 1.0 - v_real / v_cmd)
+            self._ada_slip = float(slip)
+            if slip > float(os.environ.get("S10_ADA_SLIP_GATE", "0.5")):
+                self._ada_slip_active = True
+                c = max(c, float(os.environ.get(
+                    "S10_ADA_VEL_K", "3000.0")) * slip)
+        se = self._ada_mu * float(np.log(np.e + c / max(self._ada_cscale, 1.0)))
+        se = min(se, self._ada_max)
+        if self._ada_se is None:
+            self._ada_se = se
+        else:
+            self._ada_se = ((1.0 - self._ada_ema) * se
+                            + self._ada_ema * self._ada_se)
+        if self._ada_enabled:
+            base = self._sigma_dim_base
+            if base is None:
+                base = np.asarray(self.mbdpi.sigma_dim, dtype=np.float32)
+            sigma = base.copy()
+            if self._ada_leg_only:
+                sigma[:12] = sigma[:12] * self._ada_se
+            else:
+                sigma = sigma * self._ada_se
+            sigma = np.clip(sigma, 0.05, 5.0)
+            self.mbdpi.sigma_dim = jnp.asarray(sigma, dtype=jnp.float32)
+        if os.environ.get("S10_MPC_DEBUG"):
+            print(f"[ADA] C={c:.0f} Se={se:.3f} "
+                  f"se_ema={self._ada_se:.3f} "
+                  f"leg_sigma={float(self.mbdpi.sigma_dim[0]):.2f} "
+                  f"rew_bar={float((w*rews).sum()):.0f} "
+                  f"slip={slip:.2f} v={v_real:.2f} vcmd={abs(getattr(self, '_last_vx', 0.0)):.2f}",
+                  flush=True)
+
     def plan_once(self, q: np.ndarray, qd: np.ndarray, t: float) -> jnp.ndarray:
         """返回当前最优 action（16 维，供 act2tau 转力矩）。
 
@@ -943,6 +1128,11 @@ class MPCController:
             if _lb_a.ndim == 1:
                 _lb_a = _lb_a[None, :]
             _blend = float(os.environ.get("S10_STAIR_BIAS_BLEND", "0.30"))
+            # v200e: 卡住打滑时放大抬腿先验（软先验；仅 STAIR 且启用时）
+            if (getattr(self, "_ada_bias_on", False)
+                    and getattr(self, "_ada_slip_active", False)
+                    and getattr(self, "_mode", None) == "STAIR"):
+                _blend = self._ada_bias_stuck
             _Yl = self.Y[:, :12]
             self.Y = self.Y.at[:, :12].set(jnp.clip(
                 _Yl + _blend * (_lb_a - _Yl), -1.0, 1.0))
@@ -956,6 +1146,8 @@ class MPCController:
             self.mbdpi.sigma_control
             * self.dial_config.traj_diffuse_factor
             ** (jnp.arange(n_diffuse))[:, None]
+            * jnp.asarray(self._adaptive_sigma_node(),
+                          dtype=jnp.float32)[None, :]
         )
         rng, Y0, st = self.rng, self.Y, self.state
         _t0 = __import__("time").perf_counter()
@@ -990,6 +1182,10 @@ class MPCController:
                   f"scan={_t_scan*1000:.1f} sync={_t_sync*1000:.1f} "
                   f"mode={getattr(self, '_mode', '?')}",
                   flush=True)
+        # v200: DBaS 自适应方差（下一次 plan 的 reverse_once 使用）。
+        # 放在计时区之后：内部 np.asarray(info["rews"]) 会同步 GPU，计入
+        # plan 时间会污染频率测量（v200 实测 total 91ms 触发 GPU 守卫）。
+        self._ada_update(info)
         self._last_plan_t = t
         return self.Y[0]
 
