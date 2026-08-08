@@ -270,15 +270,24 @@ def main():
     avg = route_len / run_t if run_t > 0 else 0.0
     if plan_times:
         _avg_ms = float(np.mean(plan_times)) * 1000.0
+        _med_ms = float(np.median(plan_times)) * 1000.0
         _max_ms = float(np.max(plan_times)) * 1000.0
-        _hz = 1000.0 / max(_avg_ms, 1e-3)
+        _hz = 1000.0 / max(_med_ms, 1e-3)
     else:
-        _avg_ms, _max_ms, _hz = 0.0, 0.0, 0.0
+        _avg_ms, _med_ms, _max_ms, _hz = 0.0, 0.0, 0.0, 0.0, 0.0
+    _brk = getattr(mpc, '_last_plan_times', None)
+    if _brk:
+        _bavg = {k: float(_brk.get(k, 0.0))
+                 for k in ('upd_ms', 'scan_ms', 'shift_ms', 'sync_ms')}
+    else:
+        _bavg = {}
     print(f'[NOROS] RESULT version={os.environ.get("S10_VER","?")} '
           f'wp_times={ {k: round(v,1) for k,v in wp_times.items()} } '
           f'crashed={crashed} final_wp={next_idx} route_len={route_len:.1f}m '
           f'run_t={run_t:.1f}s avg_speed={avg:.2f}m/s '
-          f'plan_ms={_avg_ms:.0f}(max{_max_ms:.0f}) ctrl_hz={_hz:.1f}', flush=True)
+          f'plan_ms={_avg_ms:.0f}(med{_med_ms:.0f},max{_max_ms:.0f}) ctrl_hz={_hz:.1f} '
+          f'brk=upd{_bavg.get("upd_ms",0):.0f}/scan{_bavg.get("scan_ms",0):.0f}/'
+          f'shift{_bavg.get("shift_ms",0):.0f}/sync{_bavg.get("sync_ms",0):.0f}', flush=True)
 
 
 if __name__ == '__main__':

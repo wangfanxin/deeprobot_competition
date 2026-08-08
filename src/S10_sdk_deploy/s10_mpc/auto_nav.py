@@ -217,21 +217,29 @@ class AutoNavFollower:
             p_in = self._raw_point_at(raw, cum, s_in)
             p_out = self._raw_point_at(raw, cum, s_out)
             side = float(v1[0] * v2[1] - v1[1] * v2[0])
-            ni = np.array([-v1[1], v1[0]])
-            no = np.array([-v2[1], v2[0]])
-            c_dir = -1.0 if side > 0 else 1.0
-            center = (p_in + c_dir * ni * cut_r
-                      + p_out + c_dir * no * cut_r) / 2.0
+            # v190 修复（几何重写）：以 p_in/p_out 为圆心 R 的两个圆的交点中，
+            # 取离航点 b 较近者（弯内侧）为圆心，扫短弧——不再依赖直线相切，
+            # 也不会绕远路/变长。
+            half = float(np.linalg.norm(p_out - p_in)) / 2.0
+            if half > cut_r:
+                continue
+            mid = (p_in + p_out) / 2.0
+            dd = np.array([p_out[1] - p_in[1], p_in[0] - p_out[0]])
+            if float(np.linalg.norm(dd)) < 1e-9:
+                continue
+            dd = dd / np.linalg.norm(dd)
+            h = float(np.sqrt(max(cut_r * cut_r - half * half, 0.0)))
+            c1 = mid + dd * h
+            c2 = mid - dd * h
+            center = c1 if (np.sum((c1 - b[:2]) ** 2)
+                            <= np.sum((c2 - b[:2]) ** 2)) else c2
             ang_in = np.arctan2(p_in[1] - center[1], p_in[0] - center[0])
             ang_out = np.arctan2(p_out[1] - center[1], p_out[0] - center[0])
-            n_arc = max(int(2.0 * d / max(float(seg.mean()), 1e-4)), 8)
-            if side > 0:
-                if ang_out < ang_in:
-                    ang_out += 2.0 * np.pi
-            else:
-                if ang_out > ang_in:
-                    ang_out -= 2.0 * np.pi
-            angs = np.linspace(ang_in, ang_out, n_arc)
+            delta = ang_out - ang_in
+            delta = (delta + np.pi) % (2.0 * np.pi) - np.pi   # 短弧
+            n_arc = max(int(abs(delta) * cut_r
+                            / max(float(seg.mean()), 1e-4)), 8)
+            angs = ang_in + np.linspace(0.0, delta, n_arc)
             arc = np.column_stack([
                 center[0] + cut_r * np.cos(angs),
                 center[1] + cut_r * np.sin(angs)])

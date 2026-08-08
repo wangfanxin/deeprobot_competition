@@ -106,8 +106,8 @@ S10_MUJOCO_XML=/absolute/path/to/model.xml \
 
 ## 附加场景
 
-- **new_wp30（全平地连续弯道）**：30 航点、z=0 全平地，弯型复刻 wp0→wp4
-  （直道 + 85.6°/66.7°/55° 连续弯，单元镜像蛇形），用于巡航提速压力测试。
+- **new_wp30（原赛道平面版）**：原赛道全部 33 航点 XY 一致、z 全部清零的
+  全平地赛道，用于隔离纯弯道动力学测试（替代旧蛇形版）。
   文件 `src/S10_sdk_deploy/S10_description/s10_mjcf/mjcf/new_wp30.xml`，
   路径图 [new_wp30_path.png](doc/new_wp30_path.png)，说明见 doc/0806.md §13.12。
 
