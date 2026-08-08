@@ -199,6 +199,8 @@ class MPCController:
                           "S10_LIFT_THRESHOLD",
                           str(((cfg.get("perception") or {})
                                .get("lift") or {}).get("threshold", 0.05)))),
+                      rear_follow_thresh=float(os.environ.get(
+                          "S10_REAR_FOLLOW_THRESH", "0.10")),
                       lift_step_gate=float(os.environ.get(
                           "S10_LIFT_STEP_GATE",
                           str(((cfg.get("perception") or {})
@@ -274,6 +276,9 @@ class MPCController:
                       w_path_z=float(os.environ.get(
                           "S10_MPC_W_PATH_Z",
                           str(cfg.get("w_path_z", 0.0)))),
+                      w_prog=float(os.environ.get(
+                          "S10_MPC_W_PROG",
+                          str(cfg.get("w_prog", 0.0)))),
                       w_clear=float(os.environ.get(
                           "S10_MPC_W_CLEAR",
                           str(cfg.get("w_clear", 0.0)))),
@@ -559,7 +564,17 @@ class MPCController:
             h_ahead = h_now
         lift = float(np.clip(h_ahead - h_now, 0.0,
                              self.env_config.height_lift_cap))
-        return h_now + self.env_config.height_tar + lift
+        z_tar = h_now + self.env_config.height_tar + lift
+        # 转弯蹲低（2026-08-08，用户"不再锁死蹲姿"）：转向指令大时降低
+        # 目标高度 → 降低重心 → 提高弯道侧翻极限（摩托压弯压低身体）。
+        # S10_TURN_CROUCH 每 rad/s 蹲低米数，S10_TURN_CROUCH_MAX 上限。
+        _ck = float(os.environ.get("S10_TURN_CROUCH", "0.0"))
+        if _ck > 0.0:
+            _vyaw = float(np.asarray(self.cmd_ang)[2])
+            _crouch = min(abs(_vyaw) * _ck,
+                          float(os.environ.get("S10_TURN_CROUCH_MAX", "0.10")))
+            z_tar -= _crouch
+        return z_tar
 
     def set_cmd(self, vx: float, vy: float, vyaw: float):
         """遥控：目标线速度 (vx,vy) 与偏航角速度 vyaw。"""
@@ -710,6 +725,9 @@ class MPCController:
                 # 漂移侧翻（full_course_27）；权重翻倍让 MPC 兼顾导航。
                 "ang_vel_weight": _w("S10_STAIR_W_ANG", 25.0),
                 "w_path": _w("S10_STAIR_W_PATH", 15.0),
+                # v139c：MPCC 进度项——奖励沿路径切线的推进速度，直接对抗
+                # "轮子空转但车不前进"的 riser 卡点振荡（v136 r1 卡 8.5s）。
+                "w_prog": _w("S10_STAIR_W_PROG", 0.0),
                 # 航向跟踪加强（2026-08-07 用户问题 1）：run3 爬梯西漂 4m
                 # （x -15→-19），w_path_head 25→40 让 MPC 在爬梯时保持
                 # 路径切线航向，抑制横向漂移。
@@ -734,6 +752,7 @@ class MPCController:
                 "w_swing_ok": 0.0,
                 "w_push": 0.0,
                 "w_z_smooth": 0.0,
+                "w_prog": 0.0,
                 "terrain_w_attdamp": 0.8,
                 "ang_vel_weight": 10.0,
                 # 2026-08-07 修复 CRUISE 污染：STAIR 覆盖过的字段必须恢复，
@@ -801,7 +820,9 @@ class MPCController:
         """
         if self.state is None:       # 防御：任何路径进入规划时确保 state 已初始化
             self.init_state(q, qd)
+        _t_start = __import__("time").time()
         self.update_state(q, qd, t)
+        _t_upd = __import__("time").time() - _t_start
         # 1) shift：按真实 plan 间隔推进（方案 C，2026-08-07）：执行
         # 零阶保持周期 = plan 周期（如 0.05s=2.5 ctrl_dt），shift 必须
         # 推进相同步数，否则 Y 序列相位每轮错位（原始 dial-mpc 用 delta_step）。
@@ -821,10 +842,13 @@ class MPCController:
             _acc -= n_shift
         self._shift_accum = _acc
         n_shift = max(1, min(n_shift, self.dial_config.Hnode))
+        _t0 = __import__("time").time()
         self.Y = self.mbdpi.shift_n(
             self.Y, jnp.asarray(n_shift, dtype=jnp.int32))
+        _t_shift = __import__("time").time() - _t0
         self._last_plan_t = t
         # 轮速前馈持续注入（对抗优化器衰减；见 _reinject_wheel_ff）
+        _t0 = __import__("time").time()
         self._reinject_wheel_ff()
         # STAIR 采样偏置注入（软先验，扩散采样可覆盖）
         _lb = getattr(self, "_leg_bias", None)
@@ -845,8 +869,10 @@ class MPCController:
             ** (jnp.arange(n_diffuse))[:, None]
         )
         rng, Y0, st = self.rng, self.Y, self.state
+        _t0 = __import__("time").time()
         (rng, Y0, st), info = jax.lax.scan(
             self._scan_body, (rng, Y0, st), factors)
+        _t_scan = __import__("time").time() - _t0
         if os.environ.get("S10_MPC_DEBUG"):
             import numpy as _np
             rew = _np.asarray(info["rews"])
@@ -861,7 +887,15 @@ class MPCController:
                   f"rew_mean={float(rew.mean()):.0f}",
                   flush=True)
         self.rng, self.Y, self.state = rng, Y0, st
+        _t0 = __import__("time").time()
         self.Y = self.Y.block_until_ready()
+        _t_sync = __import__("time").time() - _t0
+        _t_plan = (__import__("time").time() - _t_start)
+        if os.environ.get("S10_MPC_TIMING") and _t_plan > 1.0:
+            print(f"[PLAN-T] total={_t_plan:.2f}s upd={_t_upd:.2f} "
+                  f"shift={_t_shift:.2f} scan={_t_scan:.2f} "
+                  f"sync={_t_sync:.2f} mode={getattr(self,'_mode','?')}",
+                  flush=True)
         self._last_plan_t = t
         return self.Y[0]
 

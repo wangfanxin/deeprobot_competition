@@ -77,6 +77,42 @@ class AutoNavFollower:
         self._precompute()
         self._build_smooth_path()
 
+    def _stair_corridor_xy(self, xy):
+        """v132 台阶段走廊偏移：wp6→7 直线路径（y≈36-41 处 x≈-15.0）骑在
+        中央隔脊上（地形射线实测：x∈[-15.05,-14.95]、y∈[34.5,40.25]、高出
+        两侧 0.3-0.6m）→ 狗车身骑脊、左右轮悬在两侧台阶 → 卡死/侧翻
+        （v90-v131 统一失败模式根因，2026-08-08 扫描实锤）。
+        把 y∈[33,41.2] 的路径点沿 +x 平移 S10_STAIR_CORRIDOR_X（默认 0.6m，
+        半正弦平滑进出），让整条狗（轮距±0.24m）落在东侧台阶带 x≈-14.5
+        （安全走廊 x∈[-14.6,-13.9]，两侧余量 0.25m+）。0=关闭。
+        """
+        out = np.asarray(xy, dtype=np.float64).copy()
+        amp = float(os.environ.get("S10_STAIR_CORRIDOR_X", "0.6"))
+        if amp <= 0.0:
+            return out
+        y = out[:, 1]
+        y_in0, y_in1 = 33.0, 39.5      # 进入斜坡：0→amp
+        y_out0, y_out1 = 39.5, 41.2    # 退出斜坡：amp→0（收敛回 wp7）
+        t_in = np.clip((y - y_in0) / (y_in1 - y_in0), 0.0, 1.0)
+        t_out = np.clip((y - y_out1) / (y_out0 - y_out1), 0.0, 1.0)
+        ramp = np.where(y < y_in1,
+                        np.sin(0.5 * np.pi * t_in) ** 2,
+                        np.sin(0.5 * np.pi * t_out) ** 2)
+        out[:, 0] += amp * ramp
+        return out
+
+    def _stair_diag_bump(self, xy):
+        """v133: shared diagonal bump for dense path points (y in [37.8,40.6]).
+        Amp from S10_STAIR_DIAG_AMP (0=off). Returns copy."""
+        out = np.asarray(xy, dtype=np.float64).copy()
+        a = float(os.environ.get("S10_STAIR_DIAG_AMP", "0.0"))
+        if a <= 0.0:
+            return out
+        y0, y1 = 37.8, 40.6
+        t = np.clip((out[:, 1] - y0) / (y1 - y0), 0.0, 1.0)
+        out[:, 0] = out[:, 0] + a * np.sin(np.pi * t)
+        return out
+
     def _precompute(self):
         wp = self.wp
         n = len(wp)
@@ -242,7 +278,7 @@ class AutoNavFollower:
         n = len(wp)
         res = self.path_res
         n_per = int(os.environ.get("S10_GLOBAL_NPER_SEG", "24"))
-        xy = wp[:, :2]
+        xy = self._stair_corridor_xy(wp[:, :2])
         raw = [xy[0].copy()]
         # 切线因子（2026-08-08）：默认 0.5 = 标准 Catmull-Rom。增大到
         # 0.7~0.8 让弯道更平缓（wp 处半径 1.36→2.1~4.0m），vlim 自动
@@ -273,6 +309,10 @@ class AutoNavFollower:
         _cut_r = float(os.environ.get("S10_RACING_CUT_R", "0.0"))
         if _cut_r > 0.1:
             raw = self._racing_line_arc(raw, xy, n_per, _cut_r)
+        # v133: navigation smooth path also gets the diagonal bump so that
+        # pursuit/yaw-FF and MPC r_path use the SAME path (v132 r1 drifted
+        # back onto the ridge partly because the two layers diverged).
+        raw = self._stair_diag_bump(raw)
 
         # 均匀弧长重采样（path_res）
         cum_raw = np.concatenate([[0.0], np.cumsum(
@@ -446,24 +486,38 @@ class AutoNavFollower:
         # err 修正反向打架（nr14 wp1 极限环复现）；|err|>0.8 时完全不用 FF。
         _ff_fade = float(np.clip(1.0 - abs(err) / 0.8, 0.0, 1.0))
         yaw_ff = float(self._last_vx * self.path_curv_signed[_k_ff] * _ff_fade)
-        # 横向偏差修正（防漂移）：相对当前航段计算 cte，修正方向与 pursuit
-        # 航向一致时才叠加（点积>0），避免与航点航向打架形成极限环。
-        seg_a = self.wp[max(next_idx - 1, 0)]
-        seg_b = self.wp[next_idx]
-        d = seg_b[:2] - seg_a[:2]
-        L = float(np.linalg.norm(d))
+        # 横向偏差修正（防漂移）：v143b cte 相对**平滑路径**（含走廊偏移+斜向
+        # bump）计算，而非原始航点直线——爬坡直线锁用 f.heading[6] 锁方向，
+        # 但 cte 若相对骑脊线（wp6->wp7 直线 x=-15.0）算，会把狗往脊上拉
+        # （v136-v142 西漂根因，走廊路径在 x=-14.4）。纠偏目标=走廊。
+        _kn = getattr(self, "_k_near", None)
+        _smooth_ok = (_kn is not None
+                      and 0 <= _kn < len(self.path_heading)
+                      and hasattr(self, "path_pts"))
         cte = 0.0
-        if L > 1e-6:
-            n = d / L
-            rel = robot_xy - seg_a[:2]
-            cte = float(n[0] * rel[1] - n[1] * rel[0])   # 左为正
+        cte_corr = 0.0
+        if _smooth_ok:
+            _pk = self.path_pts[_kn]
+            _tang = self.path_heading[_kn]
+            _tx, _ty = float(np.cos(_tang)), float(np.sin(_tang))
+            _rel = robot_xy - _pk[:2]
+            # 与原始公式一致：cte = cross(路径切线, rel)，左为正
+            cte = float(_tx * _rel[1] - _ty * _rel[0])
             self._last_cte = cte
-            # 修正方向：左偏→右转（vyaw 负）
+        else:
+            seg_a = self.wp[max(next_idx - 1, 0)]
+            seg_b = self.wp[next_idx]
+            d = seg_b[:2] - seg_a[:2]
+            L = float(np.linalg.norm(d))
+            if L > 1e-6:
+                n = d / L
+                rel = robot_xy - seg_a[:2]
+                cte = float(n[0] * rel[1] - n[1] * rel[0])   # 左为正
+                self._last_cte = cte
+        if cte != 0.0 or _smooth_ok:
+            # 修正方向：左偏→右转（vyaw 负）；与 pursuit 航向一致性检查
+            # （err 符号），避免与航点航向打架形成极限环。cte 纠偏仅在 |err| 小时叠加。
             cte_corr = -self.cte_gain * float(np.clip(cte / 2.0, -1.0, 1.0))
-            # 与 pursuit 航向的一致性：航向朝目标=err 符号；修正不反向则叠加
-            # 弯道 yaw 前馈（2026-08-07 赛用摩托/MPPI 参考）：按前视点
-            # 路径曲率给出恒定转向率 v/R，err 只做修正——弯道内不靠纯反馈
-            # 追线，避免 err 突跳触发龟速。cte 纠偏仅在 |err| 小时叠加。
             if (abs(cte) < 6.0 and abs(err) < float(os.environ.get(
                     "S10_AUTO_CTE_ERR_GATE", "0.6"))
                     and cte_corr * err >= -0.5):
@@ -583,12 +637,23 @@ class AutoNavFollower:
             d_wp = float(np.linalg.norm(
                 robot_xy - self.wp[next_idx, :2]))
             _d = d_wp
-            if d_wp < self.stair_mode_dist \
-                    and self._stair_confirmed(robot_xy, yaw, local_map):
+            # v133: global known map first - if the segment is a stair zone
+            # (z rise >0.25) and within stair_mode_dist of the segment end,
+            # enter STAIR regardless of perception step_flag (v132 r2 stayed
+            # CRUISE and rammed the riser because perception failed).
+            # Perception confirmation only triggers EARLIER (S10_STAIR_CONFIRM_DIST).
+            _confirm_dist = float(os.environ.get(
+                "S10_STAIR_CONFIRM_DIST", "6.0"))
+            _use_global = d_wp < self.stair_mode_dist
+            _use_percept = (d_wp < _confirm_dist
+                            and self._stair_confirmed(
+                                robot_xy, yaw, local_map))
+            if _use_global or _use_percept:
                 self.mode = "STAIR"
                 if _dbg:
                     print(f"[MODE] STAIR next={next_idx} sz={_sz} "
-                          f"d={d_wp:.1f} confirm=1", flush=True)
+                          f"d={d_wp:.1f} global={int(_use_global)} "
+                          f"percept={int(_use_percept)}", flush=True)
                 return
         if _dbg and int(robot_xy[1] * 2) % 10 == 0:
             print(f"[MODE] CRUISE next={next_idx} sz={_sz} d={_d} "
@@ -672,7 +737,7 @@ class AutoNavFollower:
         i1 = min(i0 + n_wp, len(self.wp))
         if i1 - i0 < 3:
             return None
-        win = self.wp[i0:i1][:, :2]
+        win = self._stair_corridor_xy(self.wp[i0:i1][:, :2])
         seg = np.linalg.norm(np.diff(win, axis=0), axis=1)
         cum = np.concatenate([[0.0], np.cumsum(seg)])
         total = cum[-1]
@@ -687,16 +752,12 @@ class AutoNavFollower:
             i = max(0, min(i, len(seg) - 1))
             t = (s - cum[i]) / max(seg[i], 1e-6)
             pts[k, :2] = win[i] + t * (win[i + 1] - win[i])
-        # v129 台阶段斜向进入（对角线过台阶）：在台阶区 y∈[37.8,40.6]
-        # 给参考路径加平滑横向凸起（sin bump，最大 A 米），让机器狗以
-        # ~10-15° 偏航斜向爬台阶——左右前轮先后触 riser，避免同时顶死
-        # （轮式上马路牙子策略）。A 由 S10_STAIR_DIAG_AMP 控制（0=关）。
-        _dia = float(os.environ.get("S10_STAIR_DIAG_AMP", "0.0"))
-        if _dia > 0.0:
-            _y0, _y1 = 37.8, 40.6
-            _t = np.clip((pts[:, 1] - _y0) / (_y1 - _y0), 0.0, 1.0)
-            pts[:, 0] = pts[:, 0] + _dia * np.sin(np.pi * _t)
-        # z：高程图地形高 + 站姿高（平滑 + 无效继承）
+        # v129/v133: shared diagonal bump so MPC ref and navigation pursuit
+        # use the identical path.
+        pts[:, :2] = self._stair_diag_bump(pts[:, :2])
+        # z: elevation + stand height; v133 preview samples the path point
+        # S10_REF_Z_PREVIEW (default 0.3m) ahead so the body lift command
+        # arrives before the riser (complements r_ground lookahead lift).
         z_ref = np.full(len(pts), 0.205)
         last_ok = None
         if local_map is not None:
@@ -706,9 +767,12 @@ class AutoNavFollower:
                 ox = float(local_map["origin"][0])
                 oy = float(local_map["origin"][1])
                 res = float(local_map["resolution"])
+                _preview = float(os.environ.get("S10_REF_Z_PREVIEW", "0.3"))
+                _nprev = max(0, int(round(_preview / max(spacing, 1e-3))))
                 for k in range(len(pts)):
-                    j = int(np.floor((pts[k, 0] - ox) / res))
-                    i = int(np.floor((pts[k, 1] - oy) / res))
+                    kk = min(k + _nprev, len(pts) - 1)
+                    j = int(np.floor((pts[kk, 0] - ox) / res))
+                    i = int(np.floor((pts[kk, 1] - oy) / res))
                     if (0 <= i < hm.shape[0] and 0 <= j < hm.shape[1]
                             and valid[i, j]):
                         last_ok = float(hm[i, j])
