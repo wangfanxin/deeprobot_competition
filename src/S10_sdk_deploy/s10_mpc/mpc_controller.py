@@ -427,7 +427,20 @@ class MPCController:
         info = dict(st.info)
         if t is not None:
             info["step"] = int(t / self.env_config.dt)
-        return st.replace(pipeline_state=self.env._make_state(d), info=info)
+        # v203: x/xd 只依赖 d.xpos/xquat/cvel（注入 qpos/qvel 不改这些字段），
+        # 且主控制/奖励路径不使用输入状态的 x/xd（卷动内部重算）。
+        # 缓存一次后复用，去掉每轮 _make_state 的 ~11ms JAX 组合开销
+        # （升频率 13.5Hz -> 15Hz+）。
+        kin = getattr(self, "_state_kin_cache", None)
+        if kin is None:
+            made = self.env._make_state(d)
+            self._state_kin_cache = (made.x, made.xd)
+            return st.replace(pipeline_state=made, info=info)
+        from dial_mpc.envs.s10_env import MjxLikeState
+        x, xd = kin
+        return st.replace(
+            pipeline_state=MjxLikeState(data=d, x=x, xd=xd), info=info)
+
 
     def init_state(self, q: np.ndarray, qd: np.ndarray):
         """用真仿真初始状态初始化 MPC state。"""
