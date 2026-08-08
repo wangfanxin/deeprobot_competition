@@ -35,7 +35,8 @@ class AutoNavFollower:
         self.lat_gain = float(lat_gain)
         self.max_accel = float(os.environ.get(
             "S10_AUTO_MAX_ACCEL", str(max_accel)))
-        self.yaw_damp = float(yaw_damp)   # 实测 yaw rate 阻尼，防航向过冲
+        self.yaw_damp = float(os.environ.get(
+            "S10_YAW_DAMP", str(yaw_damp)))   # yaw rate 阻尼，防航向过冲
         # 横向偏差修正增益 2.0（2026-08-06）：1.2 在横脊/弯道处横向漂移
         # 修正不足 → 西漂侧翻；2.0 更强纠偏。
         self.cte_gain = float(os.environ.get(
@@ -353,6 +354,21 @@ class AutoNavFollower:
             np.interp(s_uniform, cum_raw, raw[:, 1]),
             np.interp(s_uniform, self.cum_len, self.wp[:, 2]),
         ])
+
+        # v199 全局路径轻量平滑（滑动平均窗口 S10_PATH_SMOOTH_W，默认 7 点
+        # ≈0.35m）：Catmull-Rom tangent=0.7 在长直线段有 Hermite 过冲弓形
+        # （实测 wp0→1 直线 x 弓 0.38m、wp13→14 直线 y 弓 0.67m），ref_path
+        # 直接采样这条弓形 → MPC 追弓形切向 → 轨迹画龙（cte std ~0.47m）。
+        # 平滑后直线归直、弯角削尖；端点保持原值防判点偏移。
+        _sw = int(os.environ.get("S10_PATH_SMOOTH_W", "1"))   # 默认关：弓形为低频弯曲，非画龙主因
+        if _sw > 1:
+            _k = np.ones(_sw) / _sw
+            _xs = np.convolve(pts[:, 0], _k, mode="same")
+            _ys = np.convolve(pts[:, 1], _k, mode="same")
+            _h = _sw // 2
+            _xs[:_h] = pts[:_h, 0]; _xs[-_h:] = pts[-_h:, 0]
+            _ys[:_h] = pts[:_h, 1]; _ys[-_h:] = pts[-_h:, 1]
+            pts = np.column_stack([_xs, _ys, pts[:, 2]])
 
         # 弧长累积 + 数值曲率（|dθ/ds|，平滑 5 点）
         seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)

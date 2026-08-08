@@ -93,6 +93,32 @@ def main():
     )
     mpc.set_yaw_gain_lo(float(os.environ.get('S10_AUTO_YAW_FF_GAIN', '20.0')))
 
+    # 进程内 JIT 预热（2026-08-08 修复“卡在起点”）：本机 JAX 持久化编译缓存
+    # 跨进程不生效（实测首次 plan_once 仍编译 17.5s），单独预编译对真跑无帮助。
+    # 这里在仿真主循环前把 CRUISE/STAIR 两套 MBDPI 先编译完（约 20-40s），
+    # 机器人保持趴姿；否则 t=3s 起步瞬间才触发编译，视觉上就是“站起后不动”。
+    mpc._first = False
+    _w0 = time.time()
+    _q0 = np.asarray(d.qpos[:23], dtype=np.float32)
+    _qd0 = np.asarray(d.qvel[:22], dtype=np.float32)
+    for _k in range(4):
+        _t1 = time.time()
+        mpc.plan_once(_q0, _qd0, 0.02 * _k)
+        if time.time() - _t1 < 0.5:
+            break
+    try:
+        if hasattr(mpc, 'mbdpi_h20'):
+            mpc.set_mode('STAIR')
+            for _k in range(3):
+                _t1 = time.time()
+                mpc.plan_once(_q0, _qd0, 0.02 * _k)
+                if time.time() - _t1 < 0.5:
+                    break
+            mpc.set_mode('CRUISE')
+    except Exception:
+        pass
+    print(f'[NOROS] MPC JIT 预热完成（{time.time()-_w0:.1f}s），即将开始', flush=True)
+
     next_idx = 0
     t = 0.0
     last_act = None
@@ -165,6 +191,13 @@ def main():
                             if _busy:
                                 _phase = 1
                                 _hfree = 0
+                            else:
+                                # 修复（2026-08-08）：GPU 本来空闲时原逻辑
+                                # 会一直等“忙→闲”转变，干等满 S10_GPU_HOLD_MAX
+                                # （默认 300s）——起步卡住主因。空闲连续 2 次放行。
+                                _hfree += 1
+                                if _hfree >= 2:
+                                    break
                         else:
                             if not _busy:
                                 _hfree += 1
