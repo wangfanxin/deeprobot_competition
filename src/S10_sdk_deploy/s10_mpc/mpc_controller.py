@@ -221,6 +221,8 @@ class MPCController:
                           "S10_TERRAIN_W_WHEEL_AIR",
                           str(((cfg.get("perception") or {})
                                .get("cost_weights") or {}).get("wheel_air", 15.0)))),
+                      lean_leg_w=float(os.environ.get(
+                          "S10_LEAN_LEG_W", "0.0")),
                       wheel_ref_force=float(os.environ.get(
                           "S10_WHEEL_REF_FORCE",
                           str(((cfg.get("perception") or {})
