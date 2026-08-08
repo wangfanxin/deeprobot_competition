@@ -833,7 +833,7 @@ class MPCController:
                 "w_swing_ok": 0.0,
                 "w_push": 0.0,
                 "w_z_smooth": 0.0,
-                "w_prog": 0.0,
+                "w_prog": float(os.environ.get("S10_MPC_W_PROG", "0.0")),
                 "terrain_w_attdamp": 0.8,
                 "ang_vel_weight": 10.0,
                 # 2026-08-07 修复 CRUISE 污染：STAIR 覆盖过的字段必须恢复，

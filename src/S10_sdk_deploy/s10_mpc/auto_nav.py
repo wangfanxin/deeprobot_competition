@@ -572,6 +572,12 @@ class AutoNavFollower:
             # 弯道/起步限速（2026-08-07）：err>1.0（起步 90° 或急弯）必须
             # 慢速转向防侧翻；gate~1.0 用 turn_vx（0.45 可让直线段小偏差
             # 不触发减速）；进弯前 3m 线性减速。
+            # v195 起步提速：仅 wp0→1（next_idx==0）允许高于 turn_vx 的速度
+            # （默认 0=关）。起步 93° 对准是 wp0→1 最大耗时项；S 弯 next_idx
+            # >=2 不受影响。
+            _start_vx = float(os.environ.get("S10_AUTO_START_VX", "0.0"))
+            if next_idx == 0 and _start_vx > 0.0:
+                v_lim = min(v_lim, _start_vx * elev_factor)
             big_err_vx = float(os.environ.get("S10_AUTO_BIGERR_VX", "1.5"))
             turn_vx = float(os.environ.get("S10_AUTO_TURN_VX", "2.5"))
             near_vx = float(os.environ.get("S10_AUTO_NEAR_VX", "1.8"))
