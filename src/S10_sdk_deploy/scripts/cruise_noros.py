@@ -1,6 +1,7 @@
 """cruise 无 ROS 独立测试：wp0→MAX_WP，直接 mujoco + MPC + 导航。
 不初始化 rclpy，可与 stair 会话并行（无 DDS 冲突）。"""
 import os, sys, time
+from collections import deque
 import numpy as np
 import mujoco
 
@@ -16,7 +17,8 @@ from s10_mpc.auto_nav import AutoNavFollower
 DT = 0.005
 MAX_SIM = float(os.environ.get('S10_TEST_MAX_SIM', '120'))
 MAX_WP = int(os.environ.get('S10_AUTO_MAX_WP', '5'))
-XML = f'{PKG}/S10_description/s10_mjcf/mjcf/S10_track.xml'
+XML = os.environ.get('S10_XML',
+    f'{PKG}/S10_description/s10_mjcf/mjcf/S10_track.xml')
 MPC_YAML = os.environ.get('S10_MPC_YAML',
     '/home/wfx/DR_competition/deeprobot_competition/doc/s10_mpc_deploy.yaml')
 
@@ -35,7 +37,12 @@ def main():
     m.opt.timestep = DT
     d = mujoco.MjData(m)
     d.qpos[7:23] = JOINT_INIT
-    d.qpos[0:3] = [0.0, -2.5, 0.2]
+    _sx = os.environ.get('S10_START_XY')
+    if _sx:
+        _s0, _s1 = [float(v) for v in _sx.split(',')]
+        d.qpos[0:3] = [_s0, _s1, 0.2]
+    else:
+        d.qpos[0:3] = [0.0, -2.5, 0.2]
     d.qpos[3:7] = [1, 0, 0, 0]
     mujoco.mj_forward(m, d)
 
@@ -79,6 +86,9 @@ def main():
     last_progress_t = None
     plan_interval = int(os.environ.get('S10_MPC_PLAN_INTERVAL_AUTO', '10'))
     dbg_cnt = 0
+    plan_times = []
+    plan_recent = deque(maxlen=4)
+    plan_cnt = 0
     traj_file = os.environ.get('S10_TRAJ_FILE')
     if traj_file:
         _tf = open(traj_file, 'w')
@@ -114,6 +124,21 @@ def main():
                     pos, yaw, next_idx,
                     robot_z=float(d.xpos[track_body][2]), yaw_rate=0.0)
                 mpc.set_cmd(vx, 0.0, vyaw)
+                if os.environ.get('S10_CURVE_DEBUG') == '1':
+                    _q = d.xquat[track_body]
+                    _roll = float(np.arctan2(
+                        2.0*(_q[0]*_q[1]+_q[2]*_q[3]),
+                        1.0-2.0*(_q[1]*_q[1]+_q[2]*_q[2])))
+                    _wyaw = float(d.cvel[track_body, 0])  # world yaw rate? use body ang
+                    _vyaw_real = float(np.asarray(
+                        d.cvel[track_body, :3]).dot(
+                        np.asarray(d.xmat[track_body]).reshape(3, 3).T)[2])
+                    if next_idx >= 2 and next_idx <= 5:
+                        print(f"[CURVE] t={t:.1f} next={next_idx} "
+                              f"x={pos[0]:.1f} y={pos[1]:.1f} "
+                              f"vx_cmd={vx:.2f} vyaw_cmd={vyaw:.2f} "
+                              f"vyaw_real={_vyaw_real:.2f} roll={_roll:.2f}",
+                              flush=True)
                 if os.environ.get('S10_USE_REF_PATH', '0') == '1':
                     ref = fol.ref_path_3d(pos, next_idx, local_map=None)
                     mpc.set_ref_path(ref if ref is not None else [],
@@ -134,7 +159,18 @@ def main():
                           f'd_wp={fol._last_dwp:.2f} mode={fol.mode}',
                           flush=True)
             if step % plan_interval == 0:
+                _pt0 = time.time()
                 last_act = mpc.plan_once(qq, qqd, t)
+                _pt1 = time.time() - _pt0
+                plan_cnt += 1
+                if plan_cnt > 2:
+                    plan_times.append(_pt1)
+                    plan_recent.append(_pt1)
+                    if (len(plan_recent) == 4
+                            and float(np.mean(plan_recent)) > 0.13):
+                        crashed = 'gpu_busy'
+                        print(f'[NOROS] GPU 争抢中止: plan_mean={float(np.mean(plan_recent))*1000:.0f}ms', flush=True)
+                        break
                 if t_cmd0 is None:
                     t_cmd0 = t
             mpc.latest_tau = mpc.compute_tau(last_act, qq, qqd)
@@ -193,10 +229,17 @@ def main():
         np.diff(wps[:min(MAX_WP, len(wps)) + 1], axis=0), axis=1)))
     run_t = (t - t_cmd0) if t_cmd0 else (t - (t_start or 0.0))
     avg = route_len / run_t if run_t > 0 else 0.0
+    if plan_times:
+        _avg_ms = float(np.mean(plan_times)) * 1000.0
+        _max_ms = float(np.max(plan_times)) * 1000.0
+        _hz = 1000.0 / max(_avg_ms, 1e-3)
+    else:
+        _avg_ms, _max_ms, _hz = 0.0, 0.0, 0.0
     print(f'[NOROS] RESULT version={os.environ.get("S10_VER","?")} '
           f'wp_times={ {k: round(v,1) for k,v in wp_times.items()} } '
           f'crashed={crashed} final_wp={next_idx} route_len={route_len:.1f}m '
-          f'run_t={run_t:.1f}s avg_speed={avg:.2f}m/s', flush=True)
+          f'run_t={run_t:.1f}s avg_speed={avg:.2f}m/s '
+          f'plan_ms={_avg_ms:.0f}(max{_max_ms:.0f}) ctrl_hz={_hz:.1f}', flush=True)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,4 @@
+<mujoco model="new_wp30">
+  <include file="./S10.xml"/>
+  <include file="./new_wp30_overlay.xml"/>
+</mujoco>

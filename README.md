@@ -104,6 +104,13 @@ S10_MUJOCO_XML=/absolute/path/to/model.xml \
 - `Ctrl` + 右键双击 body：跟踪该 body；`Esc`：停止跟踪
 - 仿真窗口失焦时可右键选择 "always on top"
 
+## 附加场景
+
+- **new_wp30（全平地连续弯道）**：30 航点、z=0 全平地，弯型复刻 wp0→wp4
+  （直道 + 85.6°/66.7°/55° 连续弯，单元镜像蛇形），用于巡航提速压力测试。
+  文件 `src/S10_sdk_deploy/S10_description/s10_mjcf/mjcf/new_wp30.xml`，
+  路径图 [new_wp30_path.png](doc/new_wp30_path.png)，说明见 doc/0806.md §13.12。
+
 ## 当前进度与待办
 
 - 模式 B（遥控）：稳定，4.5 m/s 竞速档已调优。
