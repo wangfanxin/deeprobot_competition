@@ -737,14 +737,31 @@ class MuJoCoSimulationNode(Node):
                     # v176：四轮完整偏置（Y 混合收敛后无累积过抬问题）
                     # v186：恢复 v176 实证有效配方（唯一越过第二级 riser 的
                     # 组合；膝偏置符号按 v176 原样，hipy 为主抬升驱动）。
-                    _b12[1] = 0.20 * _nk[0]
-                    _b12[2] = -0.50 * _nk[0]
-                    _b12[4] = 0.20 * _nk[1]
-                    _b12[5] = -0.50 * _nk[1]
-                    _b12[7] = -0.10 * _nk[2]
-                    _b12[8] = 0.45 * _nk[2]
-                    _b12[10] = -0.10 * _nk[3]
-                    _b12[11] = 0.45 * _nk[3]
+                    # v201: bias 系数参数化（运动学校准，2026-08-08 卡点可达性分析）：
+                    # 卡点姿态下（前轮挂 riser2/3、后轮在 riser1 面）局部导数：
+                    #   前轮 hipy+/knee+ 抬升（knee+ 0.45rad -> +7.6cm）
+                    #   后轮 hipy+ 抬升（+5.5cm）、knee- 抬升（+5.4cm）
+                    # v176 原系数（前 knee -0.50 / 后 hipy -0.10 / 后 knee +0.45）
+                    # 在该姿态方向相反（会把轮压向地面），与 ground cost 拉锯
+                    # -> 轮速正反震荡死锁。默认仍保持 v176，可用 env 覆盖为
+                    # 运动学方向（见 tmp/run_stair_kin.sh）。
+                    _bc = np.zeros(8, dtype=np.float32)
+                    _bc[0] = float(os.environ.get("S10_BIAS_FL_HIPY", "0.20"))
+                    _bc[1] = float(os.environ.get("S10_BIAS_FL_KNEE", "-0.50"))
+                    _bc[2] = float(os.environ.get("S10_BIAS_FR_HIPY", "0.20"))
+                    _bc[3] = float(os.environ.get("S10_BIAS_FR_KNEE", "-0.50"))
+                    _bc[4] = float(os.environ.get("S10_BIAS_HL_HIPY", "-0.10"))
+                    _bc[5] = float(os.environ.get("S10_BIAS_HL_KNEE", "0.45"))
+                    _bc[6] = float(os.environ.get("S10_BIAS_HR_HIPY", "-0.10"))
+                    _bc[7] = float(os.environ.get("S10_BIAS_HR_KNEE", "0.45"))
+                    _b12[1] = _bc[0] * _nk[0]
+                    _b12[2] = _bc[1] * _nk[0]
+                    _b12[4] = _bc[2] * _nk[1]
+                    _b12[5] = _bc[3] * _nk[1]
+                    _b12[7] = _bc[4] * _nk[2]
+                    _b12[8] = _bc[5] * _nk[2]
+                    _b12[10] = _bc[6] * _nk[3]
+                    _b12[11] = _bc[7] * _nk[3]
                     _bH[_k] = _b12
                 if hasattr(self.mpc, "set_stair_action_bias"):
                     self.mpc.set_stair_action_bias(_bH)
