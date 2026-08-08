@@ -371,6 +371,21 @@ class AutoNavFollower:
             if c > 1e-6:
                 vlim[k] = min(vlim[k], np.sqrt(
                     curve_accel / max(c, 1e-4)))
+        # v191 急转弯限速（按转角，非曲率）：曲率限速（R>=2m -> 3.46）对
+        # 90°+ 急弯仍过快——平地版 wp10（92.7°）暴露；真赛道同弯靠高程
+        # 限速（z=1.165 -> x0.685）才 2.3 通过。阈值默认 88°（wp1 的 85.6°
+        # 不受影响，S 弯 55-67° 完全豁免）。
+        _turn_th = float(os.environ.get("S10_AUTO_SHARP_TURN_DEG", "88"))
+        _turn_vx = float(os.environ.get("S10_AUTO_SHARP_TURN_VX", "2.5"))
+        for i in range(1, n - 1):
+            _da = np.arctan2(
+                np.sin(self.heading[i] - self.heading[i - 1]),
+                np.cos(self.heading[i] - self.heading[i - 1]))
+            if abs(_da) > np.deg2rad(_turn_th):
+                _sw0 = self.cum_len[i] - 2.0
+                _sw1 = self.cum_len[i] + 3.0
+                _mask = (cum >= _sw0) & (cum <= _sw1)
+                vlim[_mask] = np.minimum(vlim[_mask], _turn_vx)
         # 转向能力约束（2026-08-07）：弯道速度不能超过 vyaw_max * R——
         # 否则 MPC 实际 yaw 跟不上，转向滞后→过冲→振荡。v = ω·R。
         for k, c in enumerate(self.path_curv):

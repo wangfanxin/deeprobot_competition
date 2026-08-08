@@ -44,7 +44,12 @@ def main():
         d.qpos[0:3] = [_s0, _s1, 0.2]
     else:
         d.qpos[0:3] = [0.0, -2.5, 0.2]
-    d.qpos[3:7] = [1, 0, 0, 0]
+    _init_yaw = float(os.environ.get('S10_INIT_YAW', '0.0'))
+    if abs(_init_yaw) > 1e-3:
+        d.qpos[3:7] = [np.cos(_init_yaw / 2.0), 0, 0,
+                       np.sin(_init_yaw / 2.0)]
+    else:
+        d.qpos[3:7] = [1, 0, 0, 0]
     mujoco.mj_forward(m, d)
 
     waypoints = []
@@ -103,6 +108,17 @@ def main():
             dq = d.qvel[6:22].reshape(-1, 1)
             tau = (80.0 * (STAND_TARGET.reshape(-1, 1) - q) - 2.0 * dq).flatten()
             tau[3::4] = -0.3 * dq[3::4].flatten()
+            # v191：站起阶段 base yaw 预转向（轮子差速，可移植真机）
+            if os.environ.get('S10_STAND_TURN', '0') == '1':
+                _q = d.xquat[track_body]
+                _yaw = float(np.arctan2(
+                    2.0*(_q[3]*_q[0]+_q[1]*_q[2]),
+                    1.0-2.0*(_q[2]**2+_q[3]**2)))
+                _yt = float(os.environ.get('S10_STAND_TURN_YAW', '1.624'))
+                _err = float(np.arctan2(np.sin(_yt-_yaw), np.cos(_yt-_yaw)))
+                _k = float(os.environ.get('S10_STAND_TURN_K', '5.0'))
+                _turn = float(np.clip(_k*_err, -40.0, 40.0))
+                tau[3::4] += np.array([_turn, _turn, -_turn, -_turn])
             d.ctrl[:] = tau
             if t >= 3.0:
                 qq = np.asarray(d.qpos[:23], dtype=np.float32)
