@@ -731,7 +731,12 @@ class MuJoCoSimulationNode(Node):
                     _yk = _wy + _vk * _k * _dt
                     _wrk = np.asarray(_f.stair_wheel_ref(_yk), dtype=np.float64)
                     _lk = np.clip(_wrk - _wz, 0.0, 0.25)
-                    _lk = np.where(_lk < 0.05, 0.0, _lk)
+                    # v203: 抬升触发阈值参数化（S10_BIAS_LIFT_MIN，默认 0.05）。
+                    # 卡点实测四轮距 ref 只差 2.7~3.3cm（<0.05 被静音），
+                    # 降阈值让"临界欠抬"也注入 bias 先验。
+                    _lk = np.where(
+                        _lk < float(os.environ.get("S10_BIAS_LIFT_MIN", "0.05")),
+                        0.0, _lk)
                     _nk = np.clip(_lk / 0.15, 0.0, 1.0)
                     _b12 = np.zeros(12, dtype=np.float32)
                     # v176：四轮完整偏置（Y 混合收敛后无累积过抬问题）
@@ -882,6 +887,19 @@ class MuJoCoSimulationNode(Node):
         rec_t = getattr(self, "_recovery_t", 0.0)
         if rec_t > 0.0:
             self._recovery_t = rec_t + 0.05
+            # v204：脱困先"后退释放楔死"再前冲（导航层，无 MPC 门控）。
+            # 卡点 = 前轮挂 riser2/3、后轮在 riser1 面的对角楔死；直接前推
+            # 只磨轮子。先反向 0.8m/s 退 1s 释放接触，再按原前推逻辑再攻。
+            _bk_vx = float(os.environ.get("S10_AUTO_RECOVERY_BACKUP_VX", "0.0"))
+            _bk_t = float(os.environ.get("S10_AUTO_RECOVERY_BACKUP_T", "1.0"))
+            if _bk_vx > 0.0 and rec_t < _bk_t:
+                self.mpc.set_cmd(-_bk_vx, 0.0, 0.0)
+                if int(rec_t * 20) % 5 == 0:
+                    self.get_logger().warn(
+                        f"[AUTO] 脱困后退 {rec_t:.1f}/{_bk_t:.1f}s "
+                        f"vx={-_bk_vx:.1f} m/s 释放楔死")
+                self._update_track_progress()
+                return
             # 前推 + 航向纠偏（链 55 修复）：之前用"冻结的 _last_cmd_vyaw"
             # ——脱困 3.5s 内无横向修正，横脊前反复脱困累积西漂 → 斜撞
             # 横脊侧翻（chain 55 r1 复现）。改为**锁定当前航段 heading**
@@ -914,7 +932,8 @@ class MuJoCoSimulationNode(Node):
                 rec_vx = float(os.environ.get(
                     "S10_AUTO_RECOVERY_VX_STEP", "1.2"))
             self.mpc.set_cmd(rec_vx, 0.0, vyaw_rec)
-            if rec_t >= 5.0:
+            if rec_t >= float(os.environ.get(
+                    "S10_AUTO_RECOVERY_BACKUP_T", "1.0")) + 5.0:
                 self._recovery_t = 0.0
                 self._stall_t = 0.0
             self.get_logger().warn(
@@ -1552,6 +1571,29 @@ class MuJoCoSimulationNode(Node):
                                 local_tile["features"]["wheel_ref"] = _wr
                                 local_tile["features"][
                                     "wheel_ref_valid"] = _wr_ok
+                            # v203 P2.1：已知几何瓦片覆盖（S10_KNOWN_TERRAIN=1
+                            # 启用，默认关）。楼梯带内 heightmap 用 stair_terrain
+                            # 精确值，slope/roughness/step 置 0（已知可爬，不
+                            # 当障碍），消除 LiDAR 俯仰浮空/空洞对 cost 的污染。
+                            if os.environ.get("S10_KNOWN_TERRAIN", "0") == "1":
+                                _kt = _fl.stair_known_tile(
+                                    float(local_tile["origin"][0]),
+                                    float(local_tile["origin"][1]),
+                                    int(local_tile["nx"]),
+                                    int(local_tile["ny"]),
+                                    float(local_tile["resolution"]))
+                                if _kt is not None:
+                                    _mk = _kt["valid"]
+                                    local_tile["heightmap"] = np.where(
+                                        _mk, _kt["heightmap"],
+                                        local_tile["heightmap"])
+                                    local_tile["valid"] = (
+                                        local_tile["valid"] | _mk)
+                                    _f = local_tile["features"]
+                                    for _k in ("slope", "roughness",
+                                               "step", "step_flag"):
+                                        _f[_k] = np.where(
+                                            _mk, _kt[_k], _f[_k])
                             mpc.set_elevation_map(local_tile)
                         except Exception:
                             pass

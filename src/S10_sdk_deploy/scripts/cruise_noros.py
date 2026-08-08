@@ -219,9 +219,15 @@ def main():
                                        1.0-2.0*(quat[2]**2+quat[3]**2)))
                 fol.update_mode(pos, next_idx, yaw=yaw, local_map=None)
                 mpc.set_mode(fol.mode)
+                # v199: pass measured body yaw rate so nav yaw damping
+                # (- S10_YAW_DAMP * yaw_rate) actually activates -> less
+                # heading overshoot on straights
+                _wyaw_real = float(np.asarray(
+                    d.cvel[track_body, :3]).dot(
+                    np.asarray(d.xmat[track_body]).reshape(3, 3).T)[2])
                 vx, vyaw = fol.compute_cmd(
                     pos, yaw, next_idx,
-                    robot_z=float(d.xpos[track_body][2]), yaw_rate=0.0)
+                    robot_z=float(d.xpos[track_body][2]), yaw_rate=_wyaw_real)
                 mpc.set_cmd(vx, 0.0, vyaw)
                 if os.environ.get('S10_CURVE_DEBUG') == '1':
                     _q = d.xquat[track_body]
@@ -243,7 +249,7 @@ def main():
                     mpc.set_ref_path(ref if ref is not None else [],
                                      valid=ref is not None)
                 dbg_cnt += 1
-                if traj_file and dbg_cnt % 10 == 0:
+                if traj_file and dbg_cnt % 2 == 0:
                     _tf.write(f'{t:.2f},{pos[0]:.3f},{pos[1]:.3f},'
                               f'{yaw:.3f},{next_idx},{fol._last_err:.3f},'
                               f'{fol._last_dwp:.3f},{vx:.3f},{vyaw:.3f},'
@@ -289,7 +295,19 @@ def main():
         if next_idx < len(wps):
             rp = d.xpos[track_body][:2]
             dist = float(np.linalg.norm(rp - wps[next_idx][:2]))
-            if dist <= 0.5:
+            _reached = dist <= 0.5
+            if not _reached:
+                # v199: 弧长已越过航点且物理距离在容差内 → 视为通过，
+                # 避免“错过目标点反复绕圈”（S10_WP_ADVANCE_DIST=0 关闭）
+                _adv = float(os.environ.get('S10_WP_ADVANCE_DIST', '0.0'))
+                if (next_idx >= 1 and _adv > 0.0
+                        and hasattr(fol, '_s_cur')
+                        and next_idx < len(fol.path_wp_s)):
+                    _passed = (fol._s_cur
+                               > fol.path_wp_s[next_idx] - 0.05)
+                    if _passed and dist <= _adv:
+                        _reached = True
+            if _reached:
                 if next_idx == 0 and t_start is None:
                     t_start = t
                     print(f'[NOROS] wp0 @ t={t:.1f}s (计时开始)', flush=True)

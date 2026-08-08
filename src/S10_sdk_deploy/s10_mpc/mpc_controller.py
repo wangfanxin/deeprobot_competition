@@ -323,6 +323,8 @@ class MPCController:
                       lockpush_w=float(os.environ.get(
                           "S10_LOCKPUSH_W",
                           str(cfg.get("lockpush_w", 0.0)))),
+                      stair_wheel_brake_w=float(os.environ.get(
+                          "S10_STAIR_WHEEL_BRAKE_W", "0.0")),
                       w_wheel_ref=float(os.environ.get(
                           "S10_WHEEL_REF_W",
                           str(cfg.get("w_wheel_ref", 0.0)))),
@@ -597,9 +599,9 @@ class MPCController:
         d = self.state.pipeline_state.data
         bx, by = float(d.xpos[1][0]), float(d.xpos[1][1])
         xm = np.asarray(d.xmat[1]).reshape(3, 3)
-        fx, fy = float(xm[0, 0]), float(xm[1, 0])
+        fx, fy = float(xm[0, 0]), float(xm[1, 0])   # 前向 = xmat 第一列
         fn = np.hypot(fx, fy) + 1e-9
-        fx, fy = fx / fn, fy / fn
+        fx, fy = fx / fn, fy / fn                   # 水平归一化（抗俯仰缩短）
 
         def _h(x, y):
             i = int(np.floor((y - oy) / res))

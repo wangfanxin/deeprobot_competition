@@ -995,6 +995,32 @@ class AutoNavFollower:
                 (y >= y_r - 0.25) & (y <= y_r + 0.15), v_ramp, v_fast))
         return v
 
+    def stair_known_tile(self, x0, y0, nx, ny, res):
+        """P2.1（v203）：STAIR 区已知几何瓦片覆盖。
+
+        楼梯带（STAIR_ZONE_X/Y）内用 stair_terrain 精确高度图；该区是已知
+        可爬地形，slope/roughness/step 全部置 0（地形障碍惩罚=0，避免把必须
+        翻越的 riser 当墙逼离走廊）；区外 valid=False 回退感知瓦片。返回 dict
+        （heightmap/valid/slope/roughness/step/step_flag）或 None（无交集）。
+        """
+        ys = y0 + (np.arange(ny, dtype=np.float64) + 0.5) * res
+        xs = x0 + (np.arange(nx, dtype=np.float64) + 0.5) * res
+        yy, xx = np.meshgrid(ys, xs, indexing="ij")
+        h = self.stair_terrain(yy).astype(np.float32)
+        valid = ((yy >= self.STAIR_ZONE_Y[0]) & (yy <= self.STAIR_ZONE_Y[1])
+                 & (xx >= self.STAIR_ZONE_X[0]) & (xx <= self.STAIR_ZONE_X[1]))
+        if not bool(valid.any()):
+            return None
+        z = np.zeros((ny, nx), dtype=np.float32)
+        return {
+            "heightmap": h,
+            "valid": valid,
+            "slope": z,
+            "roughness": z,
+            "step": z,
+            "step_flag": z,
+        }
+
     def stair_wheel_ref_grid(self, x0, y0, nx, ny, res):
         """构建对齐感知瓦片 (origin=(x0,y0), res, shape=(ny,nx)) 的轮心 z 参考网格。
         有效区 = 楼梯带（STAIR_ZONE_X/Y 交集），区外 valid=False（回退感知/接触机制）。"""
