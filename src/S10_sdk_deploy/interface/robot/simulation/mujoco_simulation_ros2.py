@@ -2216,7 +2216,12 @@ class MuJoCoSimulationNode(Node):
             return tau
         try:
             y = float(self.data.xpos[self.track_body_id, 1])
-            if not (37.5 < y < 41.5):
+            # v202: 航向锁区间/增益参数化（默认 37.5~41.5 / 1.5）：入口提前
+            # 锁直（避免 riser1→2 斜楔西漂）+ 卡住时更强纠偏
+            _y0 = float(os.environ.get("S10_STAIR_HEADLOCK_Y0", "37.5"))
+            _y1 = float(os.environ.get("S10_STAIR_HEADLOCK_Y1", "41.5"))
+            _gain = float(os.environ.get("S10_STAIR_HEADLOCK_GAIN", "1.5"))
+            if not (_y0 < y < _y1):
                 return tau
             qq = self.data.xquat[self.track_body_id]
             yaw = float(np.arctan2(
@@ -2225,7 +2230,7 @@ class MuJoCoSimulationNode(Node):
             err_yaw = float(np.arctan2(
                 np.sin(1.57 - yaw), np.cos(1.57 - yaw)))
             # v189：增强航向锁定增益（原 0.8/±0.5 太弱，长爬升西漂失控）
-            turn = float(np.clip(1.5 * err_yaw, -0.8, 0.8))
+            turn = float(np.clip(_gain * err_yaw, -0.8, 0.8))
             for wi, wid in ((0, 3), (1, 7), (2, 11), (3, 15)):
                 side = 1.0 if wi in (0, 2) else -1.0
                 # 叠加差速力矩：左轮减速/右轮加速（左转）
