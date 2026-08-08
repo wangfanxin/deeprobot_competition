@@ -4,6 +4,11 @@ import os, sys, time
 from collections import deque
 import numpy as np
 import mujoco
+try:
+    import mujoco.viewer
+    _HAS_VIEWER = True
+except Exception:
+    _HAS_VIEWER = False
 
 PKG = '/home/wfx/DR_competition/deeprobot_competition/src/S10_sdk_deploy'
 sys.path.insert(0, PKG)
@@ -63,6 +68,14 @@ def main():
     print(f'[NOROS] waypoints: {len(wps)}', flush=True)
     track_body = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, 'base_link')
     assert track_body >= 0
+    # S10_USE_VIEWER=1：被动 viewer（同 mujoco_simulation_ros2.py 方案）
+    _viewer = None
+    if os.environ.get('S10_USE_VIEWER', '0') == '1' and _HAS_VIEWER:
+        _viewer = mujoco.viewer.launch_passive(m, d)
+        with _viewer.lock():
+            _viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+            _viewer.cam.trackbodyid = track_body
+        print('[NOROS] viewer 已打开（关窗口即停止）', flush=True)
 
     t0 = time.time()
     mpc = MPCController(MPC_YAML)
@@ -233,6 +246,11 @@ def main():
 
         mujoco.mj_step(m, d)
         t += DT
+        if _viewer is not None:
+            if not _viewer.is_running():
+                print('[NOROS] viewer 已关闭，结束', flush=True)
+                break
+            _viewer.sync()
 
         # 航点推进（0.5m 半径，与节点一致）
         if next_idx < len(wps):
