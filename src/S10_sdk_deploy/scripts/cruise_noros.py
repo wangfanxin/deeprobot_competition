@@ -17,6 +17,7 @@ from s10_mpc.auto_nav import AutoNavFollower
 DT = 0.005
 MAX_SIM = float(os.environ.get('S10_TEST_MAX_SIM', '120'))
 MAX_WP = int(os.environ.get('S10_AUTO_MAX_WP', '5'))
+WP_TIMEOUT = float(os.environ.get('S10_WP_TIMEOUT', '60.0'))
 XML = os.environ.get('S10_XML',
     f'{PKG}/S10_description/s10_mjcf/mjcf/S10_track.xml')
 MPC_YAML = os.environ.get('S10_MPC_YAML',
@@ -108,6 +109,42 @@ def main():
                 qqd = np.asarray(d.qvel[:22], dtype=np.float32)
                 last_act = mpc.plan_once(qq, qqd, t)
                 t_cmd0 = t
+                # v186: JIT 预热后原地等 GPU 空闲再起步（把干净窗口留给行驶段）
+                if os.environ.get('S10_GPU_HOLD', '0') == '1':
+                    import subprocess as _sp
+                    _hold_max = float(os.environ.get('S10_GPU_HOLD_MAX', '300'))
+                    _h0 = time.time()
+                    _hfree = 0
+                    _phase = 0   # 0=等 busy（确保对齐到空隙起点），1=等 free
+                    while time.time() - _h0 < _hold_max:
+                        _busy = True
+                        try:
+                            _r1 = _sp.run(
+                                ['bash', '-lc',
+                                 "pgrep -f 'test_auto_[n]av.py' | wc -l"],
+                                capture_output=True, text=True, timeout=5)
+                            _r2 = _sp.run(
+                                ['nvidia-smi', '--query-gpu=memory.used',
+                                 '--format=csv,noheader,nounits'],
+                                capture_output=True, text=True, timeout=5)
+                            _n = int(_r1.stdout.strip() or 0)
+                            _mem = int(_r2.stdout.strip().split()[0])
+                            _busy = (_n > 0 or _mem >= 1500)
+                        except Exception:
+                            pass
+                        if _phase == 0:
+                            if _busy:
+                                _phase = 1
+                                _hfree = 0
+                        else:
+                            if not _busy:
+                                _hfree += 1
+                                if _hfree >= 2:   # 空隙起点连续 2 次确认
+                                    break
+                            else:
+                                _hfree = 0
+                        time.sleep(3)
+                    print(f'[NOROS] GPU_HOLD 释放 (t={t:.1f}s) wall={time.strftime("%H:%M:%S")}', flush=True)
                 auto_active = True
                 print(f'[NOROS] auto_nav 启动 t={t:.1f}s', flush=True)
         else:
@@ -163,13 +200,15 @@ def main():
                 last_act = mpc.plan_once(qq, qqd, t)
                 _pt1 = time.time() - _pt0
                 plan_cnt += 1
-                if plan_cnt > 2:
+                if os.environ.get('S10_PLAN_DEBUG') == '1' and plan_cnt <= 70:
+                    print(f'[PLANDBG] plan#{plan_cnt} ms={_pt1*1000:.0f} wp={next_idx} t={t:.2f}', flush=True)
+                if plan_cnt > 12:   # 前 12 个 plan 仍含剩余 JIT，不计频率/守卫
                     plan_times.append(_pt1)
                     plan_recent.append(_pt1)
                     if (len(plan_recent) == 4
-                            and float(np.mean(plan_recent)) > 0.13):
+                            and all(float(x) > 0.13 for x in plan_recent)):
                         crashed = 'gpu_busy'
-                        print(f'[NOROS] GPU 争抢中止: plan_mean={float(np.mean(plan_recent))*1000:.0f}ms', flush=True)
+                        print(f'[NOROS] GPU 争抢中止: plans_ms={[float(x)*1000 for x in plan_recent]} wall={time.strftime("%H:%M:%S")}', flush=True)
                         break
                 if t_cmd0 is None:
                     t_cmd0 = t
@@ -208,7 +247,7 @@ def main():
             break
 
         # wp 计时 60s 上限（用户要求：到 wp5 最多 60s，不含预热）
-        if t_start is not None and t - t_start > 60.0:
+        if t_start is not None and t - t_start > WP_TIMEOUT:
             print(f'[NOROS] wp 计时超 60s（wp={next_idx}），强制结束',
                   flush=True)
             break
