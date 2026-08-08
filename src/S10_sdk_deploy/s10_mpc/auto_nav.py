@@ -90,15 +90,24 @@ class AutoNavFollower:
         amp = float(os.environ.get("S10_STAIR_CORRIDOR_X", "0.6"))
         if amp <= 0.0:
             return out
-        y = out[:, 1]
-        y_in0, y_in1 = 33.0, 39.5      # 进入斜坡：0→amp
-        y_out0, y_out1 = 39.5, 41.2    # 退出斜坡：amp→0（收敛回 wp7）
-        t_in = np.clip((y - y_in0) / (y_in1 - y_in0), 0.0, 1.0)
-        t_out = np.clip((y - y_out1) / (y_out0 - y_out1), 0.0, 1.0)
-        ramp = np.where(y < y_in1,
-                        np.sin(0.5 * np.pi * t_in) ** 2,
-                        np.sin(0.5 * np.pi * t_out) ** 2)
-        out[:, 0] += amp * ramp
+        # v198 地图无关化：走廊范围由 stair_zone（z 升>0.25 的航段）自动推导，
+        # 替代硬编码 y∈[33,41.2]。取第一个非起始台阶区（index>=2，排除 wp0→1
+        # 起步缓坡），范围=该台阶段首尾航点。新地图台阶区在哪就作用在哪；
+        # 无台阶（如 new_wp30 平面版）自动不触发，无需手动 S10_STAIR_CORRIDOR_X=0。
+        idxs = np.where(self.stair_zone)[0]
+        idxs = idxs[idxs >= 2]
+        if len(idxs) == 0:
+            return out
+        i0 = int(idxs[0])
+        i1 = min(int(idxs[0]) + 1, len(self.cum_len) - 1)
+        s0, s1 = self.cum_len[i0], self.cum_len[i1]
+        if s1 <= s0:
+            return out
+        for i in range(len(out)):
+            _s = self.cum_len[i]
+            if s0 <= _s <= s1:
+                _t = (_s - s0) / (s1 - s0)
+                out[i, 0] += amp * np.sin(np.pi * _t) ** 2
         return out
 
     def _stair_diag_bump(self, xy):
@@ -108,9 +117,21 @@ class AutoNavFollower:
         a = float(os.environ.get("S10_STAIR_DIAG_AMP", "0.0"))
         if a <= 0.0:
             return out
-        y0, y1 = 37.8, 40.6
-        t = np.clip((out[:, 1] - y0) / (y1 - y0), 0.0, 1.0)
-        out[:, 0] = out[:, 0] + a * np.sin(np.pi * t)
+        # v198 地图无关化：与走廊偏移同一推导（第一个非起始台阶段首尾航点）。
+        idxs = np.where(self.stair_zone)[0]
+        idxs = idxs[idxs >= 2]
+        if len(idxs) == 0:
+            return out
+        i0 = int(idxs[0])
+        i1 = min(int(idxs[0]) + 1, len(self.cum_len) - 1)
+        s0, s1 = self.cum_len[i0], self.cum_len[i1]
+        if s1 <= s0:
+            return out
+        for i in range(len(out)):
+            _s = self.cum_len[i]
+            if s0 <= _s <= s1:
+                _t = (_s - s0) / (s1 - s0)
+                out[i, 0] += a * np.sin(np.pi * _t)
         return out
 
     def _precompute(self):
