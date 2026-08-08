@@ -18,7 +18,7 @@
               <!-- 接触软化（仅 rollout 模型）：dt=0.02 下 solref=0.05 是
                    高站姿稳定下限（0.04 失稳、0.05 稳）；真实仿真 S10_track.xml
                    保持硬接触 dt=0.005 精确建模 -->
-              <geom condim="3" priority="1" friction="0.8 0.02 0.01" contype="1" conaffinity="1"
+              <geom condim="3" priority="1" friction="1.0 0.02 0.01" contype="1" conaffinity="1"
                     solref="0.05 1" solimp="0.9 0.99 0.001"/>
           </default>
       </default>

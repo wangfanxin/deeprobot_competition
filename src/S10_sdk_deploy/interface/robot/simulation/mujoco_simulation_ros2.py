@@ -698,7 +698,8 @@ class MuJoCoSimulationNode(Node):
                 # 提前抬身给后轮跟抬留出腿部工作空间）
                 _preview = float(os.environ.get("S10_STAIR_BZ_PREVIEW", "0.0"))
                 _bz = float(self.follower.stair_base_z_ref(
-                    np.array([_y + _preview]))[0])
+                    np.array([_y + _preview]),
+                    stand=float(os.environ.get("S10_STAIR_STAND", "0.205")))[0])
                 self.mpc.set_stair_ref(_pt, _bz)
                 _v = float(self.follower.stair_v_ref(np.array([_y]))[0])
                 vx = min(vx, _v)
