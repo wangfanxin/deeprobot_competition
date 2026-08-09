@@ -1021,6 +1021,29 @@ class AutoNavFollower:
             "step_flag": z,
         }
 
+    def stair_foothold_y_grid(self, x0, y0, nx, ny, res):
+        """v206：落脚点前拉场（foothold planning 软落地）。
+
+        楼梯带内每格给出"下一级 riser 的 y + 踏面中距"作为该轮落脚点 y；
+        摆动相（要抬的轮）被 cost 向前拉到落脚点，激励 hipy 前摆把轮子
+        放到下一级踏面（卡点运动学分析：后轮上 riser 需 hipy 前摆 +1.2rad）。
+        区外/末级之后 valid=False（无前拉）。返回 (foothold_y, valid)。
+        """
+        ys = y0 + (np.arange(ny, dtype=np.float64) + 0.5) * res
+        xs = x0 + (np.arange(nx, dtype=np.float64) + 0.5) * res
+        yy, xx = np.meshgrid(ys, xs, indexing="ij")
+        rs = self.STAIR_RISERS
+        step = float(os.environ.get("S10_FOOTHOLD_STEP", "0.12"))
+        fy = np.full(yy.shape, np.nan, dtype=np.float64)
+        # 每格取"下一个未过的 riser"作为落脚目标级
+        for r in rs:
+            fy = np.where((yy < r) & np.isnan(fy), r + step, fy)
+        fy = np.where(np.isnan(fy), float(rs[-1]) + 0.4, fy)  # 末级后平地
+        valid = ((yy >= self.STAIR_ZONE_Y[0]) & (yy <= self.STAIR_ZONE_Y[1])
+                 & (xx >= self.STAIR_ZONE_X[0]) & (xx <= self.STAIR_ZONE_X[1])
+                 & (yy < float(rs[-1]) + 0.25))
+        return fy.astype(np.float32), valid
+
     def stair_wheel_ref_grid(self, x0, y0, nx, ny, res):
         """构建对齐感知瓦片 (origin=(x0,y0), res, shape=(ny,nx)) 的轮心 z 参考网格。
         有效区 = 楼梯带（STAIR_ZONE_X/Y 交集），区外 valid=False（回退感知/接触机制）。"""

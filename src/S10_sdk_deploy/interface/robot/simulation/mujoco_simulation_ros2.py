@@ -1572,6 +1572,18 @@ class MuJoCoSimulationNode(Node):
                                 local_tile["features"]["wheel_ref"] = _wr
                                 local_tile["features"][
                                     "wheel_ref_valid"] = _wr_ok
+                                # v206：落脚点前拉场（foothold planning）
+                                if hasattr(_fl, "stair_foothold_y_grid"):
+                                    _fy, _fy_ok = _fl.stair_foothold_y_grid(
+                                        float(local_tile["origin"][0]),
+                                        float(local_tile["origin"][1]),
+                                        int(local_tile["nx"]),
+                                        int(local_tile["ny"]),
+                                        float(local_tile["resolution"]))
+                                    local_tile["features"][
+                                        "foothold_y"] = _fy
+                                    local_tile["features"][
+                                        "foothold_valid"] = _fy_ok
                             # v203 P2.1：已知几何瓦片覆盖（S10_KNOWN_TERRAIN=1
                             # 启用，默认关）。楼梯带内 heightmap 用 stair_terrain
                             # 精确值，slope/roughness/step 置 0（已知可爬，不

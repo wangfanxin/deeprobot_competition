@@ -325,6 +325,10 @@ class MPCController:
                           str(cfg.get("lockpush_w", 0.0)))),
                       stair_wheel_brake_w=float(os.environ.get(
                           "S10_STAIR_WHEEL_BRAKE_W", "0.0")),
+                      w_foothold=float(os.environ.get(
+                          "S10_STAIR_W_FOOTHOLD", "0.0")),
+                      swing_thresh=float(os.environ.get(
+                          "S10_SWING_THRESH", "0.04")),
                       w_wheel_ref=float(os.environ.get(
                           "S10_WHEEL_REF_W",
                           str(cfg.get("w_wheel_ref", 0.0)))),
@@ -384,6 +388,9 @@ class MPCController:
                 # v162：轮心 z 参考场（默认无效，结构固定防 retrace）
                 "wheel_ref": _zero_z,
                 "wheel_ref_valid": _invalid.copy(),
+                # v206：落脚点前拉场（foothold planning 软落地）
+                "foothold_y": _zero_z,
+                "foothold_valid": _invalid.copy(),
             },
             "origin": np.zeros(2, dtype=np.float32),
             "resolution": 0.1,
@@ -474,6 +481,12 @@ class MPCController:
                 "wheel_ref_valid": (np.asarray(f["wheel_ref_valid"], dtype=np.bool_)
                                     if f.get("wheel_ref_valid") is not None
                                     else np.zeros_like(f["valid"], dtype=np.bool_)),
+                "foothold_y": (np.asarray(f["foothold_y"], dtype=np.float32)
+                               if f.get("foothold_y") is not None
+                               else np.zeros_like(f["slope"], dtype=np.float32)),
+                "foothold_valid": (np.asarray(f["foothold_valid"], dtype=np.bool_)
+                                   if f.get("foothold_valid") is not None
+                                   else np.zeros_like(f["valid"], dtype=np.bool_)),
             },
             "origin": np.asarray(elev["origin"], dtype=np.float32),
             "resolution": float(elev["resolution"]),
@@ -547,6 +560,12 @@ class MPCController:
                     np.zeros_like(np.asarray(f["slope"]), dtype=np.float32))),
                 "wheel_ref_valid": jnp.asarray(f.get(
                     "wheel_ref_valid",
+                    np.zeros_like(np.asarray(f["valid"]), dtype=np.bool_))),
+                "foothold_y": jnp.asarray(f.get(
+                    "foothold_y",
+                    np.zeros_like(np.asarray(f["slope"]), dtype=np.float32))),
+                "foothold_valid": jnp.asarray(f.get(
+                    "foothold_valid",
                     np.zeros_like(np.asarray(f["valid"]), dtype=np.bool_))),
             },
             "origin": jnp.asarray(self._elev_np["origin"]),
