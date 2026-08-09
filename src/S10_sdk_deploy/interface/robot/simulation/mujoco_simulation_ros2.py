@@ -2290,6 +2290,22 @@ class MuJoCoSimulationNode(Node):
         """
         if os.environ.get("S10_RISER_LIFT", "0") != "1":
             return tau
+        # v217: 门控——只处理巡航横脊（step_zone 且非 stair_zone 且 next>=2）。
+        # 起步段（wp0→1）有微地形台阶，RISER_LIFT 会误抬膝把站姿搞翻
+        # （v217h 实测 t=4s 翻）；台阶段交给 stair 技能（v216 轮锁），
+        # 不叠加确定性接管，避免与 stair MPC 抬腿偏置打架。
+        try:
+            _nxt = getattr(self, "track_next_index", 0)
+            _fol = getattr(self, "follower", None)
+            if _fol is None or _nxt < 2:
+                return tau
+            if not (1 <= _nxt - 1 < len(_fol.step_zone)):
+                return tau
+            if not (_fol.step_zone[_nxt - 1]
+                    and not _fol.stair_zone[_nxt - 1]):
+                return tau
+        except Exception:
+            return tau
         try:
             lm = self.get_local_map()
             if lm is None:
