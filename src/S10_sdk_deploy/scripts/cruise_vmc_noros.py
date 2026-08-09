@@ -150,7 +150,10 @@ def main():
             _ref = np.array(_ref) if len(_ref) else np.array([[pos2[0], pos2[1], yaw]])
             st = np.array([pos2[0], pos2[1], yaw,
                            float(d.cvel[1][3]), float(d.cvel[1][4]), float(qvel[5])])
-            vx_c, om_c = mppi.plan(st, _ref, v_ref, prev_u)
+            if os.environ.get('S10_VMC_USE_NAV', '0') == '1':
+                vx_c, om_c = vx, vyaw   # 直接导航指令（无 MPPI 随机性）
+            else:
+                vx_c, om_c = mppi.plan(st, _ref, v_ref, prev_u)
             # v218p: omega 上限匹配 VMC yaw 能力（防指令远超执行导致振荡）
             _omcap = float(os.environ.get("S10_VMC_OM_CAP", "0.5"))
             om_c = float(np.clip(om_c, -_omcap, _omcap))
