@@ -365,6 +365,8 @@ class MPCController:
                           "S10_SWING_PROX", "1e9")),
                       ext_hl_boost=float(os.environ.get(
                           "S10_EXT_HL_BOOST", "1.0")),
+                      stair_wheel_lock_w=float(os.environ.get(
+                          "S10_STAIR_WHEEL_LOCK_W", "0.0")),
                       w_support=float(os.environ.get(
                           "S10_STAIR_W_SUPPORT", "0.0")),
                       support_margin=float(os.environ.get(
@@ -1128,7 +1130,13 @@ class MPCController:
         ff_yaw = float(np.clip(
             yaw_gain * vyaw * 0.05 / (self.env_config.vel_scale * 0.081),
             -1.0, 1.0))
-        ff_vx_r = self._ramped_ff_fwd(ff_vx)
+        # v216: 轮锁模式（S10_STAIR_WHEEL_LOCK_W>0）——STAIR 区轮速前馈
+        # 清零（轮子锁死，腿足狗式爬梯）；巡航保持原前馈。
+        if (getattr(self, "_mode", None) == "STAIR"
+                and float(os.environ.get("S10_STAIR_WHEEL_LOCK_W", "0.0")) > 0.0):
+            ff_vx_r = self._ramped_ff_fwd(0.0)
+        else:
+            ff_vx_r = self._ramped_ff_fwd(ff_vx)
         self.Y = self.Y.at[:, 12:].set(
             jnp.array([ff_vx_r - ff_yaw, ff_vx_r + ff_yaw,
                        ff_vx_r - ff_yaw, ff_vx_r + ff_yaw],

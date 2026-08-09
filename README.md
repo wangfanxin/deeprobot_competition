@@ -133,6 +133,7 @@ S10_MUJOCO_XML=/absolute/path/to/model.xml \
 
 - [doc/0808.md](doc/0808.md) —— 工程总文档（环境配置/架构/参数/进度/待办）
 - [doc/s10_mpc_deploy.yaml](doc/s10_mpc_deploy.yaml) —— 部署配置
+- [doc/requirements.md](doc/requirements.md) —— Ubuntu 22.04（非 WSL）安装要求
 - `doc/比赛规则_赛道四_具身未来.md`、`doc/赛道四_具身未来.pdf` —— 官方规则
 - `doc/Airy雷达用户手册.pdf`、`doc/hardware spec.pdf` —— 真机硬件资料
 - `doc/cruise_3.50_xy_speed.png`、`doc/new_wp30_full_xy_speed.png` —— 最新结果图
