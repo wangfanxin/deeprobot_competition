@@ -209,8 +209,11 @@ class VMCController:
             A6[3:6, leg * 3:leg * 3 + 3] = -S
         try:
             f_legs = np.linalg.pinv(A6) @ W
-            if os.environ.get("S10_VMC_QP", "0") == "1":
+            _qpm = os.environ.get("S10_VMC_QP", "0")
+            if _qpm == "1":
                 f_legs = self._solve_wbc_qp(A6, W, f_legs)
+            elif _qpm == "2":
+                f_legs = self._project_cone(f_legs)
         except Exception:
             f_legs = np.zeros(12)
             f_legs[2::3] = self.m * self.g / 4.0
@@ -345,6 +348,28 @@ class VMCController:
         except Exception:
             pass
         return f0
+
+
+    def _project_cone(self, f_legs):
+        """v218u: 快速锥投影——只削水平分量、保持垂直支撑（防坡上卸载）。"""
+        mu = float(os.environ.get("S10_VMC_MU", "0.8"))
+        f_max = float(os.environ.get("S10_VMC_F_LEG_MAX", "140.0"))
+        out = f_legs.copy()
+        for l in range(4):
+            b = l * 3
+            fx, fy, fz = out[b], out[b + 1], out[b + 2]
+            fz = max(fz, 5.0)                      # 保持最小支撑
+            h = float(np.hypot(fx, fy))
+            lim = mu * fz
+            if h > lim and h > 1e-6:
+                s = lim / h
+                fx, fy = fx * s, fy * s
+            fn = float(np.sqrt(fx * fx + fy * fy + fz * fz))
+            if fn > f_max:
+                s = f_max / fn
+                fx, fy, fz = fx * s, fy * s, fz * s
+            out[b], out[b + 1], out[b + 2] = fx, fy, fz
+        return out
 
 class TerrainMap:
     """启动时一次性 raycast 赛道地形（机器人移走），运行期 O(1) 查表。"""
