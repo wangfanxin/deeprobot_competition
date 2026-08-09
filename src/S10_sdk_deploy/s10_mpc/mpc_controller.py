@@ -349,6 +349,16 @@ class MPCController:
                           "S10_STAIR_W_PITCH_CAP", "0.0")),
                       pitch_cap_rad=float(os.environ.get(
                           "S10_PITCH_CAP_RAD", "0.50")),
+                      lift_pose_hl_hipy=float(os.environ.get(
+                          "S10_LIFT_POSE_HL_HIPY", "1.80")),
+                      lift_pose_hl_knee=float(os.environ.get(
+                          "S10_LIFT_POSE_HL_KNEE", "-1.40")),
+                      lift_pose_hr_hipy=float(os.environ.get(
+                          "S10_LIFT_POSE_HR_HIPY", "1.50")),
+                      lift_pose_hr_knee=float(os.environ.get(
+                          "S10_LIFT_POSE_HR_KNEE", "-1.80")),
+                      swing_prox=float(os.environ.get(
+                          "S10_SWING_PROX", "1e9")),
                       w_support=float(os.environ.get(
                           "S10_STAIR_W_SUPPORT", "0.0")),
                       support_margin=float(os.environ.get(
@@ -637,6 +647,10 @@ class MPCController:
             info["gait_swing"] = jnp.asarray(
                 getattr(self, "_gait_swing", np.zeros(4, dtype=np.float32)),
                 dtype=jnp.float32)
+        # v215d: 摆动邻近门控（轮距下一 riser 距离，m；默认 1e9=不启用）
+        info["stair_prox"] = jnp.asarray(
+            getattr(self, "_stair_prox", np.full(4, 1e9, dtype=np.float32)),
+            dtype=jnp.float32)
         info["elevation_map"] = self._elev_jnp()
         # E3：地形自适应姿态目标（上坡仰头/下坡低头/过弯压弯）
         p_tar, r_tar = self._terrain_pose_targets()
@@ -707,6 +721,13 @@ class MPCController:
             _hl = float(_gsw4[2]); _hr = float(_gsw4[3])
             roll_tar = float(np.clip(
                 roll_tar + (_hl - _hr) * _swing_roll, -0.35, 0.35))
+        # v215: STAIR 恒定 roll 偏置（S10_STAIR_ROLL_BIAS，默认 0）——
+        # M10 左后轮 9mm 不对称，3 轮上台后 HL 被压（roll 负=左低）；
+        # 正偏置抬高左侧卸载左轮（软目标，与 roll_level 通过权重平衡）。
+        if getattr(self, "_mode", None) == "STAIR":
+            _srb = float(os.environ.get("S10_STAIR_ROLL_BIAS", "0.0"))
+            if abs(_srb) > 1e-6:
+                roll_tar = float(np.clip(roll_tar + _srb, -0.35, 0.35))
         # v199: curve lean lookahead (moto-style). Base roll on path curvature
         # ahead of the robot instead of only the current command, so the body
         # pre-leans before entering the corner. S10_ROLL_FF_DIST=0 disables.

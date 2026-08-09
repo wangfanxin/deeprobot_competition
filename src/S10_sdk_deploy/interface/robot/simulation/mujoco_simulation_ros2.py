@@ -726,6 +726,19 @@ class MuJoCoSimulationNode(Node):
                         or os.environ.get("S10_GAIT_UTIL", "0") == "1"):
                     _gsw = _f.gait_schedule(_wy, _wz, self.timestamp)
                     self.mpc._gait_swing = np.asarray(_gsw, dtype=np.float32)
+                # v215d: 摆动邻近（轮距下一 riser 距离）——前轮悬停死锁修复：
+                # 远处悬空（无牵引）应被 stance 罚压回地面滚动，只有靠近
+                # riser 面才进入摆动相（豁免悬空罚）。
+                try:
+                    _rs, _ = _f._stair_tables()
+                    _prox = np.full(4, 1e9, dtype=np.float64)
+                    for _k in range(4):
+                        _ix = int(np.searchsorted(_rs, float(_wy[_k])))
+                        if _ix < len(_rs):
+                            _prox[_k] = float(_rs[_ix]) - float(_wy[_k])
+                    self.mpc._stair_prox = np.asarray(_prox, dtype=np.float32)
+                except Exception:
+                    pass
                 _wr = np.asarray(_f.stair_wheel_ref(_wy), dtype=np.float64)
                 _lift = np.clip(_wr - _wz, 0.0, 0.25)
                 # v171：时变偏置——按视界内轮子前移后的欠抬量生成逐节点抬腿
