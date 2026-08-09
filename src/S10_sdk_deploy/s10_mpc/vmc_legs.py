@@ -229,7 +229,12 @@ class VMCController:
             f_sag = np.array([f_body[0], -f_body[2]])       # [x, z_down]
             t_hipy, t_knee = J.T @ f_sag
             # hipx 侧向力经轮深杠杆 -> 力矩（wrench 已解出 fb[1]）
+            # v218o: hipx 低通（wrench 侧向力随姿态抖动翻转 → 扑动）
             t_hipx = 0.30 * float(f_body[1])
+            if not hasattr(self, "_hipx_f"):
+                self._hipx_f = np.zeros(4)
+            self._hipx_f[leg] += 0.15 * (t_hipx - self._hipx_f[leg])
+            t_hipx = self._hipx_f[leg]
             # v218f: 姿态正则（零空间 PD 拉回蹲姿，防腿伸到近奇异）
             qhx = float(qpos[LEG_Q_IDX[b]])
             t_hipx += (self.kp_pose * (self.pose_target[b] - qhx)

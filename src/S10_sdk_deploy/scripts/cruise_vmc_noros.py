@@ -160,16 +160,19 @@ def main():
         terr = np.array([terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
                          for i in range(4)])
         s_cur = float(getattr(fol, '_s_cur', 0.0))
-        _lift = float(os.environ.get('S10_VMC_RIDGE_LIFT', '0.15'))
-        _w = 0.9
+        _lift = float(os.environ.get('S10_VMC_RIDGE_LIFT', '0.12'))
+        _lift_act = 0.0
         for (sr, dhv) in ridge_arcs:
             ds = s_cur - sr
-            if -0.9 <= ds < 0.20:
-                f = float(np.clip((0.9 - abs(ds - 0.05)) / _w, 0.0, 1.0))
+            # v218o: 短促 bump——前轮棱前 0.35m 抬、过棱即放（防腿保持伸直）
+            if -0.35 <= ds < 0.08:
+                f = float(np.clip((0.35 - abs(ds + 0.13)) / 0.35, 0.0, 1.0))
                 terr[:] = np.maximum(terr, terr + _lift * f)
-            elif 0.20 <= ds < 0.80:
-                f = float(np.clip((0.8 - ds) / 0.6, 0.0, 1.0))
+                _lift_act = max(_lift_act, f)
+            elif 0.08 <= ds < 0.55:
+                f = float(np.clip((0.55 - ds) / 0.47, 0.0, 1.0))
                 terr[2:] = np.maximum(terr[2:], terr[2:] + _lift * f)
+                _lift_act = max(_lift_act, f)
         # v218k: 后轮跟抬——前轮已上棱（前轮 z > 后轮 z+0.05）即抬后轮，
         # 不依赖 s_cur 越过（body 卡在棱前时 s_cur 无法推进）
         _wz = np.asarray([d.xpos[WHEEL_BODY[i], 2] for i in range(4)])
@@ -186,6 +189,9 @@ def main():
             h_a = terrain_at(body_pos[0] + fx*0.6, body_pos[1] + fy*0.6)
             h_b = terrain_at(body_pos[0] - fx*0.6, body_pos[1] - fy*0.6)
             pitch_tar = float(np.clip(np.arctan2(h_a - h_b, 1.2), -0.35, 0.35))
+            # v218o: 横脊抬前轮时顺坡仰头（防 pitch 控制器对抗抬升导致腿饱和）
+            if _lift_act > 0.05:
+                pitch_tar = max(pitch_tar, 0.25 * _lift_act)
         except Exception:
             pass
 
