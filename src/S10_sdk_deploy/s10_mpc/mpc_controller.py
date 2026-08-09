@@ -345,6 +345,10 @@ class MPCController:
                           "S10_STAIR_W_LIFT_PROG", "0.0")),
                       w_roll_level=float(os.environ.get(
                           "S10_STAIR_W_ROLL_LEVEL", "0.0")),
+                      w_pitch_cap=float(os.environ.get(
+                          "S10_STAIR_W_PITCH_CAP", "0.0")),
+                      pitch_cap_rad=float(os.environ.get(
+                          "S10_PITCH_CAP_RAD", "0.50")),
                       w_support=float(os.environ.get(
                           "S10_STAIR_W_SUPPORT", "0.0")),
                       support_margin=float(os.environ.get(
