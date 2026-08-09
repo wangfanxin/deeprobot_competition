@@ -1201,7 +1201,33 @@ class AutoNavFollower:
         if not hasattr(self, "_gaitu_prim"):
             self._gaitu_prim = None
             self._gaitu_t0 = t
+        # v214i: 前轴优先（S10_GAIT_AXLE=1）——爬梯自然顺序：双前轮齐抬
+        # 越过 riser（后轮保持接地推身）→ 前进 → 后轴再抬。对角选择会把
+        # 推身轮（前）和抬升轮（后）同时摆，无牵引（实测卡死）。
+        _axle = int(os.environ.get("S10_GAIT_AXLE", "0"))
         swing = np.zeros(4, dtype=np.float32)
+        if _axle == 1:
+            _fneed = max(float(util[0]), float(util[1]))
+            _rneed = max(float(util[2]), float(util[3]))
+            if _fneed >= need_thr and _fneed >= _rneed * 0.75:
+                _fpw = float(os.environ.get("S10_GAIT_AXLE_W", "0.8"))
+                swing[0] = _fpw if util[0] >= need_thr else 0.0
+                swing[1] = _fpw if util[1] >= need_thr else 0.0
+            elif _rneed >= need_thr:
+                _fpw = float(os.environ.get("S10_GAIT_AXLE_W", "0.8"))
+                swing[2] = _fpw if util[2] >= need_thr else 0.0
+                swing[3] = _fpw if util[3] >= need_thr else 0.0
+            self._gaitu_prim = 0 if swing[:2].sum() > 0 else (
+                2 if swing[2:].sum() > 0 else None)
+            swing = np.asarray(swing, dtype=np.float32)
+            self._gait_swing = swing
+            if os.environ.get("S10_GAIT_DEBUG", "0") == "1":
+                print(f"[GAITU] t={t:.1f} AXLE "
+                      f"fneed={_fneed:.2f} rneed={_rneed:.2f} "
+                      f"wz={[round(float(v), 2) for v in wheel_z]} "
+                      f"swing={[round(float(v), 2) for v in swing]}",
+                      flush=True)
+            return swing
         _order = np.argsort(-_util_sel)
         _cand = int(_order[0])
         _prim = _cand

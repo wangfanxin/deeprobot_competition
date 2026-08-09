@@ -692,6 +692,17 @@ class MPCController:
         roll_tar = float(np.clip(
             self.env_config.pose_roll_gain * vyaw * abs(vx),
             -self.env_config.pose_roll_max, self.env_config.pose_roll_max))
+        # v214j: 摆动轮联动 roll——HL（左后）摆动时左轮需卸荷抬升，允许
+        # 车身右倾（roll 正=左高，v211 实测 roll 负=左轮低）；HR 摆动反向。
+        # 软目标偏置（S10_SWING_ROLL 幅度），与 roll_level 回平通过权重平衡。
+        _swing_roll = float(os.environ.get("S10_SWING_ROLL", "0.0"))
+        if _swing_roll > 0.0:
+            _gsw4 = np.asarray(
+                getattr(self, "_gait_swing", np.zeros(4, dtype=np.float32)),
+                dtype=np.float32)
+            _hl = float(_gsw4[2]); _hr = float(_gsw4[3])
+            roll_tar = float(np.clip(
+                roll_tar + (_hl - _hr) * _swing_roll, -0.35, 0.35))
         # v199: curve lean lookahead (moto-style). Base roll on path curvature
         # ahead of the robot instead of only the current command, so the body
         # pre-leans before entering the corner. S10_ROLL_FF_DIST=0 disables.
