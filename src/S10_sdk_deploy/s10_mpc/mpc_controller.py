@@ -1130,13 +1130,10 @@ class MPCController:
         ff_yaw = float(np.clip(
             yaw_gain * vyaw * 0.05 / (self.env_config.vel_scale * 0.081),
             -1.0, 1.0))
-        # v216: 轮锁模式（S10_STAIR_WHEEL_LOCK_W>0）——STAIR 区轮速前馈
-        # 清零（轮子锁死，腿足狗式爬梯）；巡航保持原前馈。
-        if (getattr(self, "_mode", None) == "STAIR"
-                and float(os.environ.get("S10_STAIR_WHEEL_LOCK_W", "0.0")) > 0.0):
-            ff_vx_r = self._ramped_ff_fwd(0.0)
-        else:
-            ff_vx_r = self._ramped_ff_fwd(ff_vx)
+        # v216: 轮锁靠 reward（S10_STAIR_WHEEL_LOCK_W）实现——接近段保留
+        # 前馈滚动，riser 面前 reward 锁自然把轮速拉 0（腿足狗式爬梯）。
+        # 前馈不清零（整 STAIR 区清零会连接近段一起停，v216 实测卡 y=37.4）。
+        ff_vx_r = self._ramped_ff_fwd(ff_vx)
         self.Y = self.Y.at[:, 12:].set(
             jnp.array([ff_vx_r - ff_yaw, ff_vx_r + ff_yaw,
                        ff_vx_r - ff_yaw, ff_vx_r + ff_yaw],
