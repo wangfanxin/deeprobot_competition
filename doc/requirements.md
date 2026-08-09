@@ -33,9 +33,11 @@ nvidia-smi            # GPU 驱动可见；推荐驱动 ≥535（JAX CUDA12 运�
 ```
 ~/DR_competition/
 ├── .venv/                       # Python 虚拟环境（本机创建）
-├── dial-mpc/                    # dial-mpc 采样 MPC 库（含 S10 补丁，见下）
-├── deeprobot_competition/       # 本仓库（git clone）
-└── refs/                        # 可选：参考仓库（go2w_rl_gym、unitree_mujoco）
+└── deeprobot_competition/       # 本仓库（git clone）
+    ├── dial-mpc/                # dial-mpc 采样 MPC 库（已内置 S10 补丁，clone 即用）
+    ├── src/S10_sdk_deploy/      # 仿真节点/感知/导航/控制器/模型
+    ├── doc/                     # 0808.md + 部署 yaml + 官方材料
+    └── tmp/                     # 核心测试入口与结果分析脚本
 ```
 
 ```bash
@@ -43,18 +45,11 @@ mkdir -p ~/DR_competition && cd ~/DR_competition
 git clone https://github.com/wangfanxin/deeprobot_competition.git
 ```
 
-> **重要：dial-mpc 的 S10 补丁**。本项目的 `mpc_controller.py` 依赖
-> `dial_mpc` 包，且当前 MPC 行为依赖 S10 定制补丁（`dial_mpc/envs/s10_env.py`
-> 等，开发机本地分支领先上游约 14 个提交）。两种获取方式：
->
-> 1. **推荐**：从现有开发机整体拷贝 `~/DR_competition/dial-mpc/`（含补丁），
->    或由团队发布 S10 分支后 clone。
-> 2. 备选：clone 上游后自行补丁——
->    ```bash
->    git clone https://github.com/LeCAR-Lab/dial-mpc.git
->    cd dial-mpc && git checkout f582b3b
->    # 然后应用 S10 补丁（补丁由团队维护，未随本仓库分发）
->    ```
+> **dial-mpc 说明**：本项目的 `mpc_controller.py` 依赖 `dial_mpc` 包，
+> 且当前 MPC 行为依赖 S10 定制（新增 `dial_mpc/envs/s10_env.py`，并修改
+> `dial_core.py` / `dial_config.py`）。**S10 版 dial-mpc 已作为普通目录
+> 内置在本仓库 `deeprobot_competition/dial-mpc/`**（剔除了 unitree 模型
+> 资产等非必需文件），克隆仓库后无需再单独获取上游代码或打补丁。
 
 ## 4. 系统依赖（apt）
 
@@ -133,8 +128,11 @@ python3 -m venv .venv
 
 ## 7. dial-mpc 安装
 
+S10 版 dial-mpc 已内置在仓库内（`deeprobot_competition/dial-mpc/`），
+直接 editable 安装：
+
 ```bash
-cd ~/DR_competition/dial-mpc
+cd ~/DR_competition/deeprobot_competition/dial-mpc
 ~/DR_competition/.venv/bin/pip install -e . --no-deps
 ```
 
@@ -165,6 +163,16 @@ cd ~/DR_competition
 import jax, mujoco, mujoco_lidar
 print("jax backend:", jax.default_backend())   # 期望 gpu（无 GPU 则 cpu）
 print("mujoco:", mujoco.__version__)
+PY
+```
+
+```bash
+# dial-mpc S10 导入验证
+cd ~/DR_competition
+./.venv/bin/python - <<'PY'
+from dial_mpc.core.dial_core import DialConfig, MBDPI
+from dial_mpc.envs.s10_env import S10WheeledEnv, S10WheeledEnvConfig
+print("dial_mpc S10 import OK")
 PY
 ```
 
@@ -203,6 +211,7 @@ S10_MPC_ENABLE=1 S10_MODE=auto_nav S10_USE_VIEWER=0 \
 | `jax.default_backend()` 为 cpu | 检查 `nvidia-smi` 驱动；重装 `jax[cuda12]==0.4.38` |
 | LiDAR core dump / 花屏 | 保持 `S10_LIDAR_BACKEND=cpu`（taichi GPU 后端在部分环境不稳定） |
 | 找不到 `drdds` 模块 | 未 `source install/setup.bash`，或未执行 §8 构建 |
+| 找不到 `dial_mpc` 模块 | 未执行 §7 的 `pip install -e .`，或 PYTHONPATH 未包含 dial-mpc |
 | `numpy` 装不上 | Ubuntu 22.04 用 `numpy>=2.0,<2.5`（3.10 无法装 2.5+） |
 | pip 把 numpy 降到 1.x | dial-mpc 用 `--no-deps` 安装（§7） |
 | 无头运行 | `S10_USE_VIEWER=0`；如需远程看画面，用 X11 转发或录制轨迹分析 |

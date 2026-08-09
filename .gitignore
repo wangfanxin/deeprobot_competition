@@ -9,3 +9,4 @@ __pycache__/
 *.py[cod]
 .reasonix/
 reasonix.toml
+*.egg-info/n*.egg-linkn.pytest_cache/n

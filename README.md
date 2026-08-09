@@ -44,10 +44,10 @@ graph LR
 ```
 DR_competition/
 ├── .venv/                       # 项目虚拟环境（Python 3.12.3）
-├── dial-mpc/                    # dial-mpc 采样 MPC 库（含 S10 补丁）
 ├── deeprobot_competition/       # 本仓库：ROS2 工作空间
+│   ├── dial-mpc/                # dial-mpc 采样 MPC 库（S10 补丁内置，clone 即用）
 │   ├── src/S10_sdk_deploy/      # 仿真节点/感知/导航/控制器/模型
-│   ├── doc/                     # 0808.md + 部署 yaml + 官方材料
+│   ├── doc/                     # 0808.md + requirements.md + 部署 yaml + 官方材料
 │   └── tmp/                     # 核心测试入口与结果分析脚本
 └── refs/                        # 参考仓库（go2w_rl_gym、unitree_mujoco）
 ```
