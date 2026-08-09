@@ -118,7 +118,7 @@ class VMCController:
                                      0.05,  1.16, -2.30], dtype=np.float64)
         self.wheel_k, self.wheel_d = wheel_k, wheel_d
         self.yaw_k = 30.0
-        self.yaw_k_wheel = 40.0
+        self.yaw_k_wheel = 60.0
         self.track_half = track_half
         self.wheelbase = 0.455
         self._vx_f, self._om_f = 0.0, 0.0
@@ -172,8 +172,9 @@ class VMCController:
             self.m * self.g + self.kp_z * (z_des - body["pos"][2])
             - self.kd_z * float(qvel[2])])
         # v218k: 驱动 25% 由腿分担（轮为主），全轮在坡上推力不足
+        _dsh = float(os.environ.get("S10_VMC_DRIVE_SHARE", "0.25"))
         fwd = body["R"] @ np.array([1.0, 0.0, 0.0])
-        F_des_w += fwd * (0.25 * self.m
+        F_des_w += fwd * (_dsh * self.m
                           * (self._vx_f - body["vx"]) / self.tau_v)
         roll_rate = ((body["roll"] - self._roll_prev) / max(dt, 1e-4)
                      if self._roll_prev is not None else 0.0)
@@ -279,7 +280,7 @@ class VMCController:
             tau[hipy_i] = float(np.clip(t_hipy, -50, 50))
             tau[knee_i] = float(np.clip(t_knee, -50, 50))
             # v218m: 轮力矩钳制到抓地极限内（μN·r≈3Nm），超限打滑
-            _wt = float(os.environ.get("S10_VMC_WHEEL_TMAX", "2.5"))
+            _wt = float(os.environ.get("S10_VMC_WHEEL_TMAX", "3.5"))
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -_wt, _wt))
         tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -50, 50)
         return tau
