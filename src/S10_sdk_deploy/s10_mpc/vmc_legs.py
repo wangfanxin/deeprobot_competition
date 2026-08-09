@@ -99,8 +99,8 @@ class VMCController:
 
     def __init__(self, mass=19.0, g=9.81, L1=0.18, L2=0.18, r=0.081,
                  tau_v=0.60, kp_h=300.0, kd_h=60.0, kp_z=800.0, kd_z=80.0,
-                 kp_roll=40.0, kd_roll=6.0,
-                 kp_pitch=50.0, kd_pitch=8.0, pitch_ff=0.8,
+                 kp_roll=200.0, kd_roll=15.0,
+                 kp_pitch=250.0, kd_pitch=20.0, pitch_ff=0.8,
                  kp_pose=80.0, kd_pose=6.0,
                  wheel_k=1.2, wheel_d=0.05,
                  track_half=0.24):
@@ -183,6 +183,10 @@ class VMCController:
         T_pitch_b = (self.kp_pitch * (pitch_tar - body["pitch"])
                      - self.kd_pitch * pitch_rate
                      - self.pitch_ff * self.m * ax * 0.20)
+        # v218h: 力矩钳制在支撑多边形可行域内（后轮无法上拉，|T|≤mg·lever/2）
+        _tmax = float(os.environ.get("S10_VMC_TMAX", "25.0"))
+        T_roll_b = float(np.clip(T_roll_b, -_tmax, _tmax))
+        T_pitch_b = float(np.clip(T_pitch_b, -_tmax, _tmax))
         T_des_w = body["R"] @ np.array([T_roll_b, T_pitch_b, 0.0])
         W = np.concatenate([F_des_w, T_des_w])
         A6 = np.zeros((6, 12))
@@ -239,8 +243,9 @@ class VMCController:
             v_wheel = wq * self.fk.r
             v_ref = self._vx_f + wd_side * self._om_f * self.track_half
             # v218: 实测 +轮力矩=倒车（S10 轮轴符号），取反前进
-            t_wheel = -(self.wheel_k * (v_ref - v_wheel)
-                        - self.wheel_d * wq)
+            # v218h: 驱动按校准取反，阻尼必须始终反向（否则负转速时放大）
+            t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
+                       - self.wheel_d * wq)
 
             tau[hipx_i] = float(np.clip(t_hipx, -20, 20))
             tau[hipy_i] = float(np.clip(t_hipy, -50, 50))
@@ -276,8 +281,8 @@ class VMCController:
             side = -1.0 if leg in (0, 2) else 1.0
             v_ref = self._vx_f + side * self._om_f * self.track_half
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(
-                -(self.wheel_k * (v_ref - wq * self.fk.r)
-                  - self.wheel_d * wq), -14, 14))
+                -(self.wheel_k * (v_ref - wq * self.fk.r))
+                - self.wheel_d * wq, -14, 14))
         tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -50, 50)
         return tau
 
