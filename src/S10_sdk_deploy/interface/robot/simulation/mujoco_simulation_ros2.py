@@ -734,8 +734,12 @@ class MuJoCoSimulationNode(Node):
             _vx_c, _om_c = self._bmpi.plan(_st, _ref, float(_f._last_vlim))
             vx = float(_vx_c) * float(os.environ.get(
                 "S10_BODY_MPPI_VX_SCALE", "0.9"))
-            vyaw = float(_om_c) * float(os.environ.get(
-                "S10_BODY_MPPI_OM_SCALE", "0.8"))
+            if os.environ.get("S10_BODY_MPPI_SPEED_ONLY", "1") == "1":
+                # v218c: MPPI 只优化速度，转向沿用导航（经过验证的弯道指令）
+                vyaw = float(vyaw)
+            else:
+                vyaw = float(_om_c) * float(os.environ.get(
+                    "S10_BODY_MPPI_OM_SCALE", "0.8"))
 
         # v162：STAIR 已知地图几何剖面（pitch 仰头 / 机身 z / 速度剖面）。
         # pitch 负=仰头（本工程约定）；base_z 世界系；vx 取 zone 限速与剖面较小值
