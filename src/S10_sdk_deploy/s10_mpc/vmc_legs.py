@@ -171,8 +171,10 @@ class VMCController:
             0.0, 0.0,
             self.m * self.g + self.kp_z * (z_des - body["pos"][2])
             - self.kd_z * float(qvel[2])])
+        # v218k: 驱动 25% 由腿分担（轮为主），全轮在坡上推力不足
         fwd = body["R"] @ np.array([1.0, 0.0, 0.0])
-        F_des_w += fwd * (self.m * (self._vx_f - body["vx"]) / self.tau_v)
+        F_des_w += fwd * (0.25 * self.m
+                          * (self._vx_f - body["vx"]) / self.tau_v)
         roll_rate = ((body["roll"] - self._roll_prev) / max(dt, 1e-4)
                      if self._roll_prev is not None else 0.0)
         self._roll_prev = body["roll"]

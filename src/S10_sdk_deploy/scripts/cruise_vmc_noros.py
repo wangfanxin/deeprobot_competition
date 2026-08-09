@@ -153,12 +153,22 @@ def main():
         terr = np.array([terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
                          for i in range(4)])
         s_cur = float(getattr(fol, '_s_cur', 0.0))
+        _lift = float(os.environ.get('S10_VMC_RIDGE_LIFT', '0.15'))
+        _w = 0.9
         for (sr, dhv) in ridge_arcs:
             ds = s_cur - sr
-            if -0.6 <= ds < 0.0:
-                terr[:] = np.maximum(terr, terr + 0.10)   # 前轮预抬（全部）
-            elif 0.0 <= ds < 0.5:
-                terr[2:] = np.maximum(terr[2:], terr[2:] + 0.10)  # 后轮跟抬
+            if -0.9 <= ds < 0.20:
+                f = float(np.clip((0.9 - abs(ds - 0.05)) / _w, 0.0, 1.0))
+                terr[:] = np.maximum(terr, terr + _lift * f)
+            elif 0.20 <= ds < 0.80:
+                f = float(np.clip((0.8 - ds) / 0.6, 0.0, 1.0))
+                terr[2:] = np.maximum(terr[2:], terr[2:] + _lift * f)
+        # v218k: 后轮跟抬——前轮已上棱（前轮 z > 后轮 z+0.05）即抬后轮，
+        # 不依赖 s_cur 越过（body 卡在棱前时 s_cur 无法推进）
+        _wz = np.asarray([d.xpos[WHEEL_BODY[i], 2] for i in range(4)])
+        _lf = max(_wz[0], _wz[1]); _lr = min(_wz[2], _wz[3])
+        if _lf > _lr + 0.05:
+            terr[2:] = np.maximum(terr[2:], terr[2:] + _lift * 0.8)
 
         # 压弯 + 坡度
         roll_tar = float(np.clip(0.20 * om_c * abs(vx_c), -0.40, 0.40))
