@@ -533,7 +533,18 @@ class AutoNavFollower:
             else:
                 target = wp_next
         else:
-            s_target = min(self._s_cur + _lk, self.path_total)
+            # v217t: 曲率自适应前视——弯道提前转，防“过点后 err 突跳 76°
+            # 硬转”翻车；直道保持 _lk 不切弯。
+            _kfut = min(
+                self._k_near + int(float(os.environ.get(
+                    "S10_AUTO_YAW_FF_DIST", "1.5")) / self.path_res),
+                len(self.path_curv) - 1)
+            _kahead = float(self.path_curv[_kfut])
+            _lk_eff = float(np.clip(
+                _lk * (1.0 + _kahead * float(os.environ.get(
+                    "S10_AUTO_LOOKAHEAD_CURVE_K", "2.0"))),
+                _lk, float(os.environ.get("S10_AUTO_LOOKAHEAD_MAX", "3.2"))))
+            s_target = min(self._s_cur + _lk_eff, self.path_total)
             target = self._path_point_at(s_target)
         err = np.arctan2(target[1] - robot_xy[1],
                          target[0] - robot_xy[0]) - yaw

@@ -774,6 +774,14 @@ class MPCController:
                     (1.0 - _mix) * roll_tar + _mix * _roll_ff,
                     -self.env_config.pose_roll_max,
                     self.env_config.pose_roll_max))
+        # v217v: roll 目标速率限制（S10_POSE_ROLL_RATE>0）——S 弯左右压弯
+        # 符号翻转太快时身体惯性跟不上会翻（wp2→3 实测）。平滑过渡。
+        _rl = float(os.environ.get("S10_POSE_ROLL_RATE", "0.0"))
+        if _rl > 0.0:
+            _prev_rt = getattr(self, "_last_roll_tar", 0.0)
+            roll_tar = float(np.clip(
+                roll_tar, _prev_rt - _rl, _prev_rt + _rl))
+        self._last_roll_tar = roll_tar
         return pitch_tar, roll_tar
 
     def _ref_curvature(self):

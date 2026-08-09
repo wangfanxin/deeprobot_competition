@@ -612,6 +612,14 @@ class MuJoCoSimulationNode(Node):
                 if 0 <= seg_idx < len(f.step_zone):
                     f.step_zone[seg_idx] = True
                 n_zone += 1
+            # v217u: 已知地图横脊弧长表（供抬轮前馈，绕开 LiDAR riser 阴影空洞）
+            if hasattr(f, "_ridge_arcs") or True:
+                try:
+                    f._ridge_arcs = [
+                        (float(f.path_cum[k]), float(dh[k]))
+                        for k in ridge_idx]
+                except Exception:
+                    pass
             if n_zone:
                 self.get_logger().info(
                     f"[AUTO] 预扫描发现 {n_zone} 处横脊/台阶，"
@@ -676,7 +684,10 @@ class MuJoCoSimulationNode(Node):
                 and getattr(self.follower, "mode", "") == "STAIR":
             _rb = float(os.environ.get("S10_AUTO_ROLL_BRAKE_STAIR", "0.75"))
         if abs(roll) > _rb:
-            self.mpc.set_cmd(0.15, 0.0, 0.0)
+            # v217t: 刹车保留当前偏航指令——清零 vyaw 会让压弯目标 roll_tar
+            # 塌成 0，车身带着侧倾动量回摆反而翻车（wp1 实测）。
+            _vyaw_keep = float(getattr(self, "_last_auto_vyaw", 0.0))
+            self.mpc.set_cmd(0.15, 0.0, _vyaw_keep)
             self.get_logger().warn(
                 f"[AUTO] 侧倾 {roll:.2f}rad（阈值 {_rb}），急刹降速（防侧翻）")
             return
@@ -685,6 +696,7 @@ class MuJoCoSimulationNode(Node):
             pos, yaw, self.track_next_index,
             robot_z=float(self.data.xpos[self.track_body_id, 2]),
             yaw_rate=yaw_rate)
+        self._last_auto_vyaw = vyaw
 
         # v162：STAIR 已知地图几何剖面（pitch 仰头 / 机身 z / 速度剖面）。
         # pitch 负=仰头（本工程约定）；base_z 世界系；vx 取 zone 限速与剖面较小值
@@ -1197,6 +1209,23 @@ class MuJoCoSimulationNode(Node):
                             lift = float(np.clip(
                                 (best - 0.05) / 0.08, 0.0, 1.0))
                             assist[knee_idx] = sign * amp * lift
+        except Exception:
+            pass
+        # v217u: 已知地图横脊前馈抬轮（确定性，绕开 LiDAR riser 阴影空洞）：
+        # 车身弧长距横脊 -0.75~+0.05m → 前轮预抬；+0.05~+0.65m → 后轮跟抬。
+        try:
+            _f = getattr(self, "follower", None)
+            _s_cur = float(getattr(_f, "_s_cur", 0.0)) if _f is not None else 0.0
+            _ridges = getattr(_f, "_ridge_arcs", None) if _f is not None else None
+            if _ridges:
+                for _sr, _dh in _ridges:
+                    _ds = _s_cur - float(_sr)
+                    if -0.75 <= _ds < 0.05:
+                        assist[2] = max(assist[2], amp)
+                        assist[5] = max(assist[5], amp)
+                    elif 0.05 <= _ds < 0.65:
+                        assist[8] = min(assist[8], -amp_rear)
+                        assist[11] = min(assist[11], -amp_rear)
         except Exception:
             pass
         self._leg_assist = assist
