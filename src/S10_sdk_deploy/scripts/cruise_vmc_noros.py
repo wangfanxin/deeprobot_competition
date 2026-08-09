@@ -151,6 +151,9 @@ def main():
             st = np.array([pos2[0], pos2[1], yaw,
                            float(d.cvel[1][3]), float(d.cvel[1][4]), float(qvel[5])])
             vx_c, om_c = mppi.plan(st, _ref, v_ref, prev_u)
+            # v218p: omega 上限匹配 VMC yaw 能力（防指令远超执行导致振荡）
+            _omcap = float(os.environ.get("S10_VMC_OM_CAP", "0.5"))
+            om_c = float(np.clip(om_c, -_omcap, _omcap))
             prev_u = np.array([vx_c, om_c])
             last_log = t
         else:
@@ -234,7 +237,7 @@ def main():
                 2.0*(quat[0]*quat[1]+quat[2]*quat[3]),
                 1.0-2.0*(quat[1]**2+quat[2]**2)))
             print(f'[VMC-T] t={t:.0f}s wp={next_idx} pos=({body_pos[0]:.1f},'
-                  f'{body_pos[1]:.1f},{body_pos[2]:.2f}) vx={float(d.cvel[1][3]):.2f} '
+                  f'{body_pos[1]:.1f},{body_pos[2]:.2f}) yaw={yaw:.2f} vx_w={float(d.cvel[1][3]):.2f} '
                   f'roll={roll:.2f} cmd=({vx_c:.2f},{om_c:.2f}) '
                   f'vref={v_ref:.2f} tau_max={np.abs(tau).max():.1f}', flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
