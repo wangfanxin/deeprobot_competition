@@ -1066,6 +1066,23 @@ class AutoNavFollower:
                  & (yy < float(rs[-1]) + 0.25))
         return fy.astype(np.float32), valid
 
+    def stair_next_riser_ref(self, y, radius=0.081):
+        """v208：下一级 riser 的轮心满值参考（供 field-driven bias 用）。
+
+        对每个 y，返回"下一个未过的 riser 顶 + 半径 + margin"（恒定满值，
+        非 ramp 渐进）。卡点左轮距 ramp ref 仅 2.7-3.3cm（bias 按此缩放只发
+        18% 力度），实际需抬 12.5cm；用满值参考让 bias 在接近段以全额幅度
+        推动采样均值（cost 保持 ramp 不变，只在轮真抬起时奖励）。
+        """
+        rs, ts = self._stair_tables()
+        margin = float(os.environ.get("S10_STAIR_LIFT_MARGIN", "0.05"))
+        y = np.asarray(y, dtype=np.float64)
+        z = self.stair_terrain(y) + radius
+        for k, (y_r, z_top) in enumerate(zip(rs, ts)):
+            # y 越过本级后（+0.05m），下一目标 = 本级顶满值（+margin）
+            z = np.where(y > y_r + 0.05, z_top + radius + margin, z)
+        return z
+
     def stair_wheel_ref_grid(self, x0, y0, nx, ny, res):
         """构建对齐感知瓦片 (origin=(x0,y0), res, shape=(ny,nx)) 的轮心 z 参考网格。
         有效区 = 楼梯带（STAIR_ZONE_X/Y 交集），区外 valid=False（回退感知/接触机制）。"""

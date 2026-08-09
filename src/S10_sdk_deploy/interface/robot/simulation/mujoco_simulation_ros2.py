@@ -731,6 +731,14 @@ class MuJoCoSimulationNode(Node):
                 for _k in range(_Hn):
                     _yk = _wy + _vk * _k * _dt
                     _wrk = np.asarray(_f.stair_wheel_ref(_yk), dtype=np.float64)
+                    # v208: 满值偏置参考（S10_BIAS_FULL_REF=1，默认关）。
+                    # 卡点左轮距 ramp ref 仅 2.7-3.3cm → bias 按 18% 缩放
+                    # 太弱；用"下一级 riser 顶+半径+margin"满值让 bias 以
+                    # 全额幅度推动采样均值（cost 仍用 ramp，只奖励真抬升）。
+                    if os.environ.get("S10_BIAS_FULL_REF", "0") == "1":
+                        _nrr = np.asarray(
+                            _f.stair_next_riser_ref(_yk), dtype=np.float64)
+                        _wrk = np.maximum(_wrk, _nrr)
                     _lk = np.clip(_wrk - _wz, 0.0, 0.25)
                     # v203: 抬升触发阈值参数化（S10_BIAS_LIFT_MIN，默认 0.05）。
                     # 卡点实测四轮距 ref 只差 2.7~3.3cm（<0.05 被静音），
