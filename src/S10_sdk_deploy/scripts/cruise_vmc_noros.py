@@ -201,7 +201,20 @@ def main():
         if os.environ.get('VMC_STAND', '0') == '1':
             cmd = dict(vx=0.0, omega=0.0, roll_tar=0.0, pitch_tar=0.0)
         else:
-            cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar, pitch_tar=pitch_tar)
+            # v218q: 前轮地形前瞻 hop——前方 0.3m 高差>0.08 给前轮向上冲量（不伸腿）
+            hop = np.zeros(4, dtype=np.float64)
+            _fwd2 = d.xmat[1][0:2]
+            _fx, _fy = _fwd2[0], _fwd2[1]
+            _fn = float(np.hypot(_fx, _fy)) + 1e-9
+            _fx, _fy = _fx / _fn, _fy / _fn
+            for _wi in (0, 1):
+                _w0 = wheel_xyz[_wi]
+                _h0 = terr[_wi]
+                _ha = terrain_at(_w0[0] + _fx * 0.30, _w0[1] + _fy * 0.30)
+                if _ha - _h0 > 0.08:
+                    hop[_wi] = float(os.environ.get('S10_VMC_HOP_F', '90.0'))
+            cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
+                       pitch_tar=pitch_tar, hop=hop)
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
@@ -239,7 +252,8 @@ def main():
             print(f'[VMC-T] t={t:.0f}s wp={next_idx} pos=({body_pos[0]:.1f},'
                   f'{body_pos[1]:.1f},{body_pos[2]:.2f}) yaw={yaw:.2f} vx_w={float(d.cvel[1][3]):.2f} '
                   f'roll={roll:.2f} cmd=({vx_c:.2f},{om_c:.2f}) '
-                  f'vref={v_ref:.2f} tau_max={np.abs(tau).max():.1f}', flush=True)
+                  f'vref={v_ref:.2f} tau_max={np.abs(tau).max():.1f} '
+                  f'wz={np.round([d.xpos[WHEEL_BODY[i],2] for i in range(4)],2)}', flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[VMC-T] *** 侧翻/摔倒 ***', flush=True)
                 break

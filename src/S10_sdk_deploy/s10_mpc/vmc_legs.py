@@ -221,6 +221,10 @@ class VMCController:
             J = self.fk.jac(q1, q2)
             # WBC 腿力（世界系）+ 地形阻抗（垂直跟随，横脊预抬经 terrain_h）
             fw = f_legs[leg * 3:leg * 3 + 3].copy()
+            # v218q: 前轮 hop 冲量（世界 z 向上，短暂弹跳过棱，不伸腿）
+            _hop = cmd.get("hop")
+            if _hop is not None:
+                fw[2] += float(_hop[leg])
             p = wheel_xyz[leg]
             pz_des = float(terrain_h[leg]) + self.fk.r
             fw[2] += (self.kp_h * (pz_des - p[2])
