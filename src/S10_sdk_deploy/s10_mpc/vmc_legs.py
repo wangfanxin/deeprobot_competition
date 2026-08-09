@@ -28,6 +28,7 @@ LEG_ATTACH = np.array([
 ], dtype=np.float64)
 LEG_Q_IDX = [7, 8, 9, 11, 12, 13, 15, 16, 17, 19, 20, 21]
 LEG_CTRL_IDX = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]
+LEG_QV_LEG = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]  # qvel[6:22] 内腿索引
 WHEEL_BODY = [5, 9, 13, 17]
 
 
@@ -98,8 +99,9 @@ class VMCController:
 
     def __init__(self, mass=19.0, g=9.81, L1=0.18, L2=0.18, r=0.081,
                  tau_v=0.60, kp_h=300.0, kd_h=60.0, kp_z=800.0, kd_z=80.0,
-                 kp_roll=160.0, kd_roll=12.0,
-                 kp_pitch=80.0, kd_pitch=12.0, pitch_ff=0.8,
+                 kp_roll=40.0, kd_roll=6.0,
+                 kp_pitch=50.0, kd_pitch=8.0, pitch_ff=0.8,
+                 kp_pose=80.0, kd_pose=6.0,
                  wheel_k=1.2, wheel_d=0.05,
                  track_half=0.24):
         self.m, self.g = mass, g
@@ -109,6 +111,11 @@ class VMCController:
         self.kp_z, self.kd_z = kp_z, kd_z
         self.kp_roll, self.kd_roll = kp_roll, kd_roll
         self.kp_pitch, self.kd_pitch, self.pitch_ff = kp_pitch, kd_pitch, pitch_ff
+        self.kp_pose, self.kd_pose = kp_pose, kd_pose
+        self.pose_target = np.array([-0.05, -1.16, 2.30,
+                                     0.05, -1.16, 2.30,
+                                    -0.05,  1.16, -2.30,
+                                     0.05,  1.16, -2.30], dtype=np.float64)
         self.wheel_k, self.wheel_d = wheel_k, wheel_d
         self.track_half = track_half
         self.wheelbase = 0.455
@@ -139,6 +146,8 @@ class VMCController:
     def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel,
                     cmd, terrain_h, dt=0.005):
         """-> tau(16)。wheel_xyz/wheel_vel: (4,3) 世界系轮心位姿/线速度。"""
+        if os.environ.get("S10_VMC_MODE", "wbc") == "static":
+            return self._static_pose_tau(qpos, qvel, cmd, dt)
         body = self._body_state(qpos, qvel)
         k = min(1.0, dt / 0.04)
         # v218c: 身体加速度温和化（轮腿猛推会抬头炸）——0.25s 斜坡
@@ -153,15 +162,15 @@ class VMCController:
         Fx_body += self.m * self.g * float(np.sin(pitch_tar))
 
         tau = np.zeros(16, dtype=np.float64)
-        # v218d: 身体级 VMC——高度/俯仰/侧倾整体控制，按支撑几何分配到 4 腿；
-        # 轮端阻抗只负责地形跟随（含横脊预抬）。4 轮独立重力补偿会跷跷板失稳。
-        z_des = float(np.mean(terrain_h)) + 0.205   # 身体标称高（非轮心）
-        if os.environ.get("S10_VMC_KPZ", "1") == "1":
-            Fz_total = (self.m * self.g
-                        + self.kp_z * (z_des - body["pos"][2])
-                        - self.kd_z * float(qvel[2]))
-        else:
-            Fz_total = self.m * self.g
+        # v218f: 完整 6D 身体 wrench -> 12 腿力（世界系，最小范数）——含水平分量，
+        # 用实际轮位几何解耦俯仰/侧倾（此前仅垂直力 3 约束，带倾角腿强耦合）。
+        z_des = float(np.mean(terrain_h)) + 0.205
+        F_des_w = np.array([
+            0.0, 0.0,
+            self.m * self.g + self.kp_z * (z_des - body["pos"][2])
+            - self.kd_z * float(qvel[2])])
+        fwd = body["R"] @ np.array([1.0, 0.0, 0.0])
+        F_des_w += fwd * (self.m * (self._vx_f - body["vx"]) / self.tau_v)
         roll_rate = ((body["roll"] - self._roll_prev) / max(dt, 1e-4)
                      if self._roll_prev is not None else 0.0)
         self._roll_prev = body["roll"]
@@ -169,30 +178,28 @@ class VMCController:
                       if self._pitch_prev is not None else 0.0)
         self._pitch_prev = body["pitch"]
         ax = (self._vx_f - body["vx"]) / self.tau_v
-        if os.environ.get("S10_VMC_PITCH", "1") == "1":
-            T_pitch = (self.kp_pitch * (pitch_tar - body["pitch"])
-                       - self.kd_pitch * pitch_rate
-                       - self.pitch_ff * self.m * ax * 0.20)
-        else:
-            T_pitch = 0.0
-        if os.environ.get("S10_VMC_HIPX", "1") == "1":
-            # v218i: 目标跟随实测 tar=+0.1→实际-0.1（符号反），翻回 (tar-roll)
-            T_roll = (self.kp_roll * (self._roll_f - body["roll"])
-                      - self.kd_roll * roll_rate)
-        else:
-            T_roll = 0.0
-        # v218h: 几何感知力分配——身体 wrench [Fz,T_pitch,T_roll] 用实际轮位
-        # 最小二乘解到 4 腿垂直力，消除带倾角腿的交叉耦合。
-        r_body = np.einsum("ij,nj->ni", body["R"].T,
-                          wheel_xyz - body["pos"][None, :])  # (4,3) body 系
-        A = np.column_stack([np.ones(4), r_body[:, 0], r_body[:, 1]])
-        W = np.array([Fz_total, T_pitch, T_roll])
+        T_roll_b = (self.kp_roll * (self._roll_f - body["roll"])
+                    - self.kd_roll * roll_rate)
+        T_pitch_b = (self.kp_pitch * (pitch_tar - body["pitch"])
+                     - self.kd_pitch * pitch_rate
+                     - self.pitch_ff * self.m * ax * 0.20)
+        T_des_w = body["R"] @ np.array([T_roll_b, T_pitch_b, 0.0])
+        W = np.concatenate([F_des_w, T_des_w])
+        A6 = np.zeros((6, 12))
+        for leg in range(4):
+            rw = wheel_xyz[leg] - body["pos"]
+            S = np.array([
+                [0.0, -rw[2], rw[1]],
+                [rw[2], 0.0, -rw[0]],
+                [-rw[1], rw[0], 0.0]])
+            # v218f: 身体 wrench = 腿对轮力 f 的反作用（-f）：A6 整体取反
+            A6[0:3, leg * 3:leg * 3 + 3] = -np.eye(3)
+            A6[3:6, leg * 3:leg * 3 + 3] = -S
         try:
-            fz_dist = np.linalg.pinv(A) @ W
-            fz_dist = np.maximum(fz_dist, 0.08 * self.m * self.g / 4.0)
+            f_legs = np.linalg.pinv(A6) @ W
         except Exception:
-            fz_dist = np.full(4, self.m * self.g / 4.0)
-
+            f_legs = np.zeros(12)
+            f_legs[2::3] = self.m * self.g / 4.0
         for leg in range(4):
             b = leg * 3
             hipx_i, hipy_i, knee_i = (
@@ -200,29 +207,31 @@ class VMCController:
             q1 = float(qpos[LEG_Q_IDX[b + 1]])
             q2 = float(qpos[LEG_Q_IDX[b + 2]])
             J = self.fk.jac(q1, q2)
-            # 轮端力：身体级分配 + 地形阻抗（横脊预抬经 terrain_h）
+            # WBC 腿力（世界系）+ 地形阻抗（垂直跟随，横脊预抬经 terrain_h）
+            fw = f_legs[leg * 3:leg * 3 + 3].copy()
             p = wheel_xyz[leg]
             pz_des = float(terrain_h[leg]) + self.fk.r
-            Fz_w = (fz_dist[leg]
-                    + self.kp_h * (pz_des - p[2])
-                    - self.kd_h * float(wheel_vel[leg, 2]))
-            # v218b: 腿水平力是内力，不驱动身体——速度完全由轮电机负责。
-            Fx_w = 0.0
-            # 轮端力（世界）-> body 矢状面（x, z_down）
-            # v218f: Fz_w 已是世界系向上力（负=下压），不要再取反
-            f_body = body["R"].T @ np.array([Fx_w, 0.0, Fz_w])
+            fw[2] += (self.kp_h * (pz_des - p[2])
+                      - self.kd_h * float(wheel_vel[leg, 2]))
+            f_body = body["R"].T @ fw
             f_sag = np.array([f_body[0], -f_body[2]])       # [x, z_down]
             t_hipy, t_knee = J.T @ f_sag
+            # hipx 侧向力经轮深杠杆 -> 力矩（wrench 已解出 fb[1]）
+            t_hipx = 0.30 * float(f_body[1])
+            # v218f: 姿态正则（零空间 PD 拉回蹲姿，防腿伸到近奇异）
+            qhx = float(qpos[LEG_Q_IDX[b]])
+            t_hipx += (self.kp_pose * (self.pose_target[b] - qhx)
+                       - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b]]))
+            t_hipy += (self.kp_pose * (self.pose_target[b + 1] - q1)
+                       - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b + 1]]))
+            t_knee += (self.kp_pose * (self.pose_target[b + 2] - q2)
+                       - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b + 2]]))
 
-            # hipx：侧倾（压弯）——左腿正/右腿负（符号测试校准）
-            # v218c: hipx 侧倾纠偏符号（实测：左腿负/右腿正才能回正）
+            # v218f: hipx 由 wrench 侧向力接管；S10_VMC_HIPX_TORQUE=1 叠加姿态反馈
             side = -1.0 if leg in (0, 2) else 1.0
             wd_side = -side   # v218: 差速符号与 hipx 相反（实测）
-            if os.environ.get("S10_VMC_HIPX_TORQUE", "0") != "1":
-                t_hipx = 0.0
-            else:
-                # v218j: 目标跟随实测仍反向，hipx 扭矩再取反
-                t_hipx = -side * (self.kp_roll * (self._roll_f - body["roll"])
+            if os.environ.get("S10_VMC_HIPX_TORQUE", "1") == "1":
+                t_hipx += side * (self.kp_roll * (self._roll_f - body["roll"])
                                   - self.kd_roll * roll_rate)
 
             # 轮：差速转向
@@ -239,6 +248,38 @@ class VMCController:
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -14, 14))
         return tau
 
+
+
+    def _static_pose_tau(self, qpos, qvel, cmd, dt):
+        """静态支撑（J^T·m·g/4）+ 姿态 PD 锁蹲姿 + 轮差速（最简稳定基线）。"""
+        k = min(1.0, dt / 0.25)
+        self._vx_f += (float(cmd["vx"]) - self._vx_f) * k
+        self._om_f += (float(cmd["omega"]) - self._om_f) * k
+        tau = np.zeros(16, dtype=np.float64)
+        for leg in range(4):
+            b = leg * 3
+            q1 = float(qpos[LEG_Q_IDX[b + 1]])
+            q2 = float(qpos[LEG_Q_IDX[b + 2]])
+            J = self.fk.jac(q1, q2)
+            f = np.array([0.0, self.m * self.g / 4.0])
+            t = J.T @ f
+            tau[LEG_CTRL_IDX[b + 1]] = t[0]
+            tau[LEG_CTRL_IDX[b + 2]] = t[1]
+            for j in range(3):
+                qi = LEG_Q_IDX[b + j]
+                ci = LEG_CTRL_IDX[b + j]
+                tau[ci] += (self.kp_pose
+                            * (self.pose_target[b + j] - float(qpos[qi]))
+                            - self.kd_pose
+                            * float(qvel[6 + LEG_QV_LEG[b + j]]))
+            wq = float(qvel[WHEEL_QV_IDX[leg]])
+            side = -1.0 if leg in (0, 2) else 1.0
+            v_ref = self._vx_f + side * self._om_f * self.track_half
+            tau[WHEEL_Q_IDX[leg]] = float(np.clip(
+                -(self.wheel_k * (v_ref - wq * self.fk.r)
+                  - self.wheel_d * wq), -14, 14))
+        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -50, 50)
+        return tau
 
 # ==================== 已知地图地形栅格（预计算） ====================
 
