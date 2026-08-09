@@ -584,6 +584,16 @@ class AutoNavFollower:
             # 修正方向：左偏→右转（vyaw 负）；与 pursuit 航向一致性检查
             # （err 符号），避免与航点航向打架形成极限环。cte 纠偏仅在 |err| 小时叠加。
             cte_corr = -self.cte_gain * float(np.clip(cte / 2.0, -1.0, 1.0))
+            # v213: cte low-pass (S10_CTE_LP, 0=off/1=full, default 0.5) to
+            # smooth lateral correction on straights (anti-snake); disabled on
+            # curves where |err|>gate so turning is unaffected.
+            _lp = float(os.environ.get("S10_CTE_LP", "0.5"))
+            if _lp < 1.0:
+                _prev = getattr(self, "_cte_corr_filt", 0.0)
+                self._cte_corr_filt = _prev + _lp * (cte_corr - _prev)
+                cte_corr = self._cte_corr_filt
+            else:
+                self._cte_corr_filt = cte_corr
             if (abs(cte) < 6.0 and abs(err) < float(os.environ.get(
                     "S10_AUTO_CTE_ERR_GATE", "0.6"))
                     and cte_corr * err >= -0.5):
@@ -1070,6 +1080,75 @@ class AutoNavFollower:
                  & (xx >= self.STAIR_ZONE_X[0]) & (xx <= self.STAIR_ZONE_X[1])
                  & (yy < float(rs[-1]) + 0.25))
         return fy.astype(np.float32), valid
+
+    def gait_schedule(self, wheel_y, wheel_z, t, dt=0.005):
+        """v213: 顺序步态调度（按顺序踩楼梯，dial-MPC 自然涌现）。
+
+        对角序列 FL(0)->HR(3)->FR(1)->HL(2)（S10_GAIT_SEQ 可配）。当前序列轮
+        进入其下一级 riser 的接近区（y > next_riser - S10_GAIT_LEAD，默认
+        0.30m）即摆动（swing=1，该轮得到完整抬升/落脚点 cost）；该轮轮心
+        到位（>= 下一级顶+半径-0.02 持续 0.12s）或超时（S10_GAIT_TIMEOUT，
+        默认 1.0s）-> 切换序列下一轮。区外/未进区不推进（等它滚到接近区）。
+        返回 swing flags (4,) float32。
+        """
+        seq = [int(x) for x in os.environ.get(
+            "S10_GAIT_SEQ", "0,3,1,2").replace(" ", "").split(",")]
+        lead = float(os.environ.get("S10_GAIT_LEAD", "0.30"))
+        timeout = float(os.environ.get("S10_GAIT_TIMEOUT", "1.0"))
+        margin = float(os.environ.get("S10_STAIR_LIFT_MARGIN", "0.05"))
+        rs, ts = self._stair_tables()
+        if not hasattr(self, "_gait_pos"):
+            self._gait_pos = 0
+            self._gait_wheel = seq[0]
+            self._gait_t0 = t
+            self._gait_done_t = None
+            self._gait_swing = np.zeros(4, dtype=np.float32)
+        # 每轮下一个未过的 riser（y 方向）
+        nxt = np.full(4, 1e9, dtype=np.float64)
+        nxt_z = np.zeros(4, dtype=np.float64)
+        for k in range(4):
+            idx = int(np.searchsorted(rs, float(wheel_y[k])))
+            if idx < len(rs):
+                nxt[k] = float(rs[idx])
+                nxt_z[k] = float(ts[idx]) + 0.081
+            else:
+                nxt_z[k] = float(wheel_z[k])
+        active = int(self._gait_wheel)
+        in_zone = (nxt[active] < 1e8
+                   and float(wheel_y[active]) > nxt[active] - lead)
+        if in_zone:
+            # 完成判定：到位（轮心 >= 下一级顶+半径-0.02，持续 0.12s）或超时
+            if float(wheel_z[active]) >= nxt_z[active] - 0.02:
+                if self._gait_done_t is None:
+                    self._gait_done_t = t
+                elif t - self._gait_done_t > 0.12:
+                    self._gait_pos = (self._gait_pos + 1) % len(seq)
+                    self._gait_wheel = seq[self._gait_pos]
+                    self._gait_t0 = t
+                    self._gait_done_t = None
+            elif t - self._gait_t0 > timeout:
+                self._gait_pos = (self._gait_pos + 1) % len(seq)
+                self._gait_wheel = seq[self._gait_pos]
+                self._gait_t0 = t
+                self._gait_done_t = None
+            else:
+                self._gait_done_t = None
+        else:
+            self._gait_done_t = None
+        swing = np.zeros(4, dtype=np.float32)
+        if in_zone:
+            swing[active] = 1.0
+        self._gait_swing = swing
+        self._gait_seq = seq
+        if os.environ.get("S10_GAIT_DEBUG", "0") == "1":
+            print(f"[GAIT] t={t:.1f} seq={seq} pos={self._gait_pos} "
+                  f"active={active} inzone={int(in_zone)} "
+                  f"nxt={[round(float(v),2) if v<1e8 else -1 for v in nxt]} "
+                  f"nxtz={[round(float(v),2) for v in nxt_z]} "
+                  f"wz={[round(float(v),2) for v in wheel_z]} "
+                  f"swing={[int(s) for s in swing]}",
+                  flush=True)
+        return swing
 
     def stair_next_riser_ref(self, y, radius=0.081):
         """v208：下一级 riser 的轮心满值参考（供 field-driven bias 用）。
