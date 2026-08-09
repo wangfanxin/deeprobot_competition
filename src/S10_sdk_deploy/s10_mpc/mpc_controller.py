@@ -329,6 +329,8 @@ class MPCController:
                           "S10_STAIR_W_FOOTHOLD", "0.0")),
                       swing_thresh=float(os.environ.get(
                           "S10_SWING_THRESH", "0.04")),
+                      left_boost=float(os.environ.get(
+                          "S10_LEFT_BOOST", "1.0")),
                       w_wheel_ref=float(os.environ.get(
                           "S10_WHEEL_REF_W",
                           str(cfg.get("w_wheel_ref", 0.0)))),

@@ -926,13 +926,29 @@ class AutoNavFollower:
         return out
 
     def stair_wheel_ref(self, y, radius=0.081):
-        """轮心 z 参考场 w_c(y) = 地形+轮半径，riser 前 RAMP_A 平滑抬到 顶+半径+MARGIN。"""
+        """轮心 z 参考场 w_c(y) = 地形+轮半径，riser 前 RAMP_A 平滑抬到 顶+半径+MARGIN。
+
+        v207（S10_STAIR_REF_STEP=1，默认关）：接近段（riser 前
+        S10_STAIR_REF_LEAD，默认 0.20m）直接给"下一级顶+半径+margin"满值
+        （非 ramp 渐进）——卡点实测轮子满足 ramp 部分高度（0.638/0.78）后
+        就停，到棱边仍差 0.125~0.136m；阶梯参考让 MPC 在视界内看到完整
+        抬升需求并提前承诺抬腿。"""
         rs, ts = self._stair_tables()
         a = float(os.environ.get("S10_STAIR_RAMP_A", "0.14"))
         b = float(os.environ.get("S10_STAIR_RAMP_B", "0.10"))
         margin = float(os.environ.get("S10_STAIR_LIFT_MARGIN", "0.05"))
         y = np.asarray(y, dtype=np.float64)
         z = self.stair_terrain(y) + radius
+        if os.environ.get("S10_STAIR_REF_STEP", "0") == "1":
+            lead = float(os.environ.get("S10_STAIR_REF_LEAD", "0.20"))
+            for k, (y_r, z_top) in enumerate(zip(rs, ts)):
+                z_bottom = self.STAIR_GROUND if k == 0 else float(ts[k - 1])
+                lo = y_r - lead
+                hi = y_r + b
+                z_full = z_top + radius + margin
+                z = np.where((y >= lo) & (y <= hi),
+                             np.maximum(z, z_full), z)
+            return z
         for k, (y_r, z_top) in enumerate(zip(rs, ts)):
             z_bottom = self.STAIR_GROUND if k == 0 else float(ts[k - 1])
             lo = y_r - a
