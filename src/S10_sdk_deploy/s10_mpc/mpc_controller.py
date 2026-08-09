@@ -371,6 +371,8 @@ class MPCController:
                           "S10_SUPPORT_MARGIN", "0.06")),
                       support_fz_min=float(os.environ.get(
                           "S10_SUPPORT_FZ_MIN", "20.0")),
+                      support_exclude_lift=float(os.environ.get(
+                          "S10_SUPPORT_EXCLUDE_LIFT", "0.0")),
                       swing_thresh=float(os.environ.get(
                           "S10_SWING_THRESH", "0.04")),
                       left_boost=float(os.environ.get(
@@ -1191,6 +1193,15 @@ class MPCController:
         # sigma × S10_GAIT_SIGMA_BOOST（>1 启用），让采样器更可能搜到
         # 抬腿轨迹；主摆动轮全量放大、对角次选按 utility 比例，其余轮
         # 保持紧致（用户"抬腿 sample variance 调大"落地，纯软探索）。
+        # v215j: HL 关节 sigma 单独放大（S10_HL_SIGMA_BOOST>1）——左后轮
+        # 抬升动作（膝 act≈1.0 满幅）离采样均值 3+σ，bias 满幅会翻车；
+        # 只放大探索方差，让采样器能搜到满幅抬腿而不推均值。
+        _hl_sb = float(os.environ.get("S10_HL_SIGMA_BOOST", "0"))
+        if _hl_sb > 1.0:
+            _sig = np.asarray(self.mbdpi.sigma_dim, dtype=np.float32).copy()
+            _sig[6:9] = _sig[6:9] * _hl_sb
+            _sig = np.clip(_sig, 0.05, 6.0)
+            self.mbdpi.sigma_dim = jnp.asarray(_sig, dtype=jnp.float32)
         _boost = float(os.environ.get("S10_GAIT_SIGMA_BOOST", "0"))
         _gsw2 = getattr(self, "_gait_swing", None)
         if _boost > 1.0 and _gsw2 is not None and float(np.max(_gsw2)) > 0.0:
