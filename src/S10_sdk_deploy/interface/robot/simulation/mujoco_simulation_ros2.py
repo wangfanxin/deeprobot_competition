@@ -698,7 +698,9 @@ class MuJoCoSimulationNode(Node):
             # v217t: 刹车保留当前偏航指令——清零 vyaw 会让压弯目标 roll_tar
             # 塌成 0，车身带着侧倾动量回摆反而翻车（wp1 实测）。
             _vyaw_keep = float(getattr(self, "_last_auto_vyaw", 0.0))
-            self.mpc.set_cmd(0.15, 0.0, _vyaw_keep)
+            # v218d: 急刹不要完全停车（停在倾斜姿态会倒）——保留 0.6m/s 过弯
+            _bkv = float(os.environ.get("S10_AUTO_ROLL_BRAKE_VX", "0.6"))
+            self.mpc.set_cmd(_bkv, 0.0, _vyaw_keep)
             self.get_logger().warn(
                 f"[AUTO] 侧倾 {roll:.2f}rad（阈值 {_rb}），急刹降速（防侧翻）")
             return
