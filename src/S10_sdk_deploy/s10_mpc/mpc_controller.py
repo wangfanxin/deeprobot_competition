@@ -340,6 +340,8 @@ class MPCController:
                           "S10_STAIR_W_FOOTHOLD", "0.0")),
                       w_lift_prog=float(os.environ.get(
                           "S10_STAIR_W_LIFT_PROG", "0.0")),
+                      w_roll_level=float(os.environ.get(
+                          "S10_STAIR_W_ROLL_LEVEL", "0.0")),
                       swing_thresh=float(os.environ.get(
                           "S10_SWING_THRESH", "0.04")),
                       left_boost=float(os.environ.get(
