@@ -349,6 +349,10 @@ class MPCController:
                           "S10_STAIR_W_PITCH_CAP", "0.0")),
                       pitch_cap_rad=float(os.environ.get(
                           "S10_PITCH_CAP_RAD", "0.50")),
+                      lift_pose_fl_hipy=float(os.environ.get(
+                          "S10_LIFT_POSE_FL_HIPY", "1.00")),
+                      lift_pose_fl_knee=float(os.environ.get(
+                          "S10_LIFT_POSE_FL_KNEE", "1.50")),
                       lift_pose_hl_hipy=float(os.environ.get(
                           "S10_LIFT_POSE_HL_HIPY", "1.80")),
                       lift_pose_hl_knee=float(os.environ.get(
@@ -359,6 +363,8 @@ class MPCController:
                           "S10_LIFT_POSE_HR_KNEE", "-1.80")),
                       swing_prox=float(os.environ.get(
                           "S10_SWING_PROX", "1e9")),
+                      ext_hl_boost=float(os.environ.get(
+                          "S10_EXT_HL_BOOST", "1.0")),
                       w_support=float(os.environ.get(
                           "S10_STAIR_W_SUPPORT", "0.0")),
                       support_margin=float(os.environ.get(
