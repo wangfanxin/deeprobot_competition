@@ -275,6 +275,7 @@ class VMCController:
             # v218m: 轮力矩钳制到抓地极限内（μN·r≈3Nm），超限打滑
             _wt = float(os.environ.get("S10_VMC_WHEEL_TMAX", "2.5"))
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -_wt, _wt))
+        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -50, 50)
         return tau
 
 
@@ -374,7 +375,8 @@ class LegPDDrive:
         self.r = r
         self._vx_f, self._om_f = 0.0, 0.0
 
-    def compute_tau(self, qpos, qvel, cmd, dt=0.005):
+    def compute_tau(self, qpos, qvel, wheel_xyz=None, wheel_vel=None,
+                    cmd=None, terrain_h=None, dt=0.005):
         k = min(1.0, dt / 0.80)
         self._vx_f += (float(cmd["vx"]) - self._vx_f) * k
         self._om_f += (float(cmd["omega"]) - self._om_f) * k
@@ -394,6 +396,7 @@ class LegPDDrive:
             side = -1.0 if leg in (0, 2) else 1.0
             v_ref = self._vx_f + side * self._om_f * self.track_half
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(
-                -(self.wheel_k * (v_ref - wq * self.r)
+                -(self.wheel_k * (v_ref + wq * self.r)
                   - self.wheel_d * wq), -14, 14))
+        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -50, 50)
         return tau

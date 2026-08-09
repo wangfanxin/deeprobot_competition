@@ -88,7 +88,12 @@ def main():
         N=int(os.environ.get('VMC_MPPI_N', '256')),
         H=int(os.environ.get('VMC_MPPI_H', '20')),
         vx_max=float(os.environ.get('S10_AUTO_VMAX', '5.0')))
-    vmc = VMCController()
+    if os.environ.get('S10_VMC_MODE', 'wbc') == 'pd':
+        from s10_mpc.vmc_legs import LegPDDrive
+        vmc = LegPDDrive()
+        print('[VMC] LegPDDrive 模式（腿锁蹲姿+轮驱动）', flush=True)
+    else:
+        vmc = VMCController()
 
     # 站起
     t = 0.0
