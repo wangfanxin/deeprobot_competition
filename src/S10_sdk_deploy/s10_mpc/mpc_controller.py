@@ -342,6 +342,12 @@ class MPCController:
                           "S10_STAIR_W_LIFT_PROG", "0.0")),
                       w_roll_level=float(os.environ.get(
                           "S10_STAIR_W_ROLL_LEVEL", "0.0")),
+                      w_support=float(os.environ.get(
+                          "S10_STAIR_W_SUPPORT", "0.0")),
+                      support_margin=float(os.environ.get(
+                          "S10_SUPPORT_MARGIN", "0.06")),
+                      support_fz_min=float(os.environ.get(
+                          "S10_SUPPORT_FZ_MIN", "20.0")),
                       swing_thresh=float(os.environ.get(
                           "S10_SWING_THRESH", "0.04")),
                       left_boost=float(os.environ.get(
@@ -616,9 +622,14 @@ class MPCController:
         info["mode_stair"] = jnp.array(
             1.0 if getattr(self, "_mode", None) == "STAIR" else 0.0,
             dtype=jnp.float32)
-        info["gait_swing"] = jnp.asarray(
-            getattr(self, "_gait_swing", np.zeros(4, dtype=np.float32)),
-            dtype=jnp.float32)
+        # v213/v214: 只有步态调度激活（S10_GAIT=1 固定序列 / S10_GAIT_UTIL=1
+        # utility 选腿）才注入 gait_swing；关闭时省略该键 → rollout 回退
+        # 纯 lift-need 启发式摆动相（v211 基线行为，防止默认全零静音摆动）。
+        if (os.environ.get("S10_GAIT", "0") == "1"
+                or os.environ.get("S10_GAIT_UTIL", "0") == "1"):
+            info["gait_swing"] = jnp.asarray(
+                getattr(self, "_gait_swing", np.zeros(4, dtype=np.float32)),
+                dtype=jnp.float32)
         info["elevation_map"] = self._elev_jnp()
         # E3：地形自适应姿态目标（上坡仰头/下坡低头/过弯压弯）
         p_tar, r_tar = self._terrain_pose_targets()
@@ -1131,6 +1142,20 @@ class MPCController:
                 sigma = sigma * self._ada_se
             sigma = np.clip(sigma, 0.05, 5.0)
             self.mbdpi.sigma_dim = jnp.asarray(sigma, dtype=jnp.float32)
+        # v214: 摆动轮采样方差放大（utility 选腿）——摆动轮的腿关节
+        # sigma × S10_GAIT_SIGMA_BOOST（>1 启用），让采样器更可能搜到
+        # 抬腿轨迹；主摆动轮全量放大、对角次选按 utility 比例，其余轮
+        # 保持紧致（用户"抬腿 sample variance 调大"落地，纯软探索）。
+        _boost = float(os.environ.get("S10_GAIT_SIGMA_BOOST", "0"))
+        _gsw2 = getattr(self, "_gait_swing", None)
+        if _boost > 1.0 and _gsw2 is not None and float(np.max(_gsw2)) > 0.0:
+            _sw = np.asarray(_gsw2, dtype=np.float32)
+            _per_j = np.repeat(_sw, 3)
+            _per_j = _per_j / (float(np.max(_per_j)) + 1e-6)
+            _sig = np.asarray(self.mbdpi.sigma_dim, dtype=np.float32).copy()
+            _sig[:12] = _sig[:12] * (1.0 + (_boost - 1.0) * _per_j)
+            _sig = np.clip(_sig, 0.05, 6.0)
+            self.mbdpi.sigma_dim = jnp.asarray(_sig, dtype=jnp.float32)
         if os.environ.get("S10_MPC_DEBUG"):
             print(f"[ADA] C={c:.0f} Se={se:.3f} "
                   f"se_ema={self._ada_se:.3f} "

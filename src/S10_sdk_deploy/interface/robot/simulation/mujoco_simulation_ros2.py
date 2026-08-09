@@ -722,7 +722,8 @@ class MuJoCoSimulationNode(Node):
                 # v213: 顺序步态调度（S10_GAIT=1 启用，默认关）：当前序列轮
                 # 摆动，其余支撑——只决定 cost 相位（swing flags），MPC 采样
                 # 执行。写入 mpc._gait_swing 供 info 注入 rollout。
-                if os.environ.get("S10_GAIT", "0") == "1":
+                if (os.environ.get("S10_GAIT", "0") == "1"
+                        or os.environ.get("S10_GAIT_UTIL", "0") == "1"):
                     _gsw = _f.gait_schedule(_wy, _wz, self.timestamp)
                     self.mpc._gait_swing = np.asarray(_gsw, dtype=np.float32)
                 _wr = np.asarray(_f.stair_wheel_ref(_wy), dtype=np.float64)

@@ -1091,6 +1091,8 @@ class AutoNavFollower:
         默认 1.0s）-> 切换序列下一轮。区外/未进区不推进（等它滚到接近区）。
         返回 swing flags (4,) float32。
         """
+        if os.environ.get("S10_GAIT_UTIL", "0") == "1":
+            return self._gait_schedule_util(wheel_y, wheel_z, t)
         seq = [int(x) for x in os.environ.get(
             "S10_GAIT_SEQ", "0,3,1,2").replace(" ", "").split(",")]
         lead = float(os.environ.get("S10_GAIT_LEAD", "0.30"))
@@ -1147,6 +1149,78 @@ class AutoNavFollower:
                   f"nxtz={[round(float(v),2) for v in nxt_z]} "
                   f"wz={[round(float(v),2) for v in wheel_z]} "
                   f"swing={[int(s) for s in swing]}",
+                  flush=True)
+        return swing
+
+
+    def _gait_schedule_util(self, wheel_y, wheel_z, t):
+        """v214: utility 选腿（Bjelonic IROS2021 运动学腿效用，软版）。
+
+        每轮计算四腿 lift-need = clip((下一级 riser 轮心目标 - 当前轮心)
+        / S10_GAIT_REACH, 0, 1)，作为连续 swing 权重（0~1）；同侧对
+        （FL-HL / FR-HR）按 S10_GAIT_SS_SUPPRESS 软抑制防支撑线化；
+        低于 S10_GAIT_NEED_THR 清零。只决定 cost 相位权重，无硬门控。
+        """
+        lead = float(os.environ.get("S10_GAIT_LEAD", "0.30"))
+        reach = float(os.environ.get("S10_GAIT_REACH", "0.30"))
+        need_thr = float(os.environ.get("S10_GAIT_NEED_THR", "0.05"))
+        ss_supp = float(os.environ.get("S10_GAIT_SS_SUPPRESS", "0.6"))
+        rs, ts = self._stair_tables()
+        nxt = np.full(4, 1e9, dtype=np.float64)
+        nxt_z = np.zeros(4, dtype=np.float64)
+        for k in range(4):
+            idx = int(np.searchsorted(rs, float(wheel_y[k])))
+            if idx < len(rs):
+                nxt[k] = float(rs[idx])
+                nxt_z[k] = float(ts[idx]) + 0.081
+            else:
+                nxt_z[k] = float(wheel_z[k])
+        in_zone = (nxt < 1e8) & (wheel_y > nxt - lead)
+        util = np.where(
+            in_zone, np.clip((nxt_z - wheel_z) / reach, 0.0, 1.0), 0.0)
+        util = np.asarray(util, dtype=np.float64)
+        # v214b: 对角双轮选择（Bjelonic 邻腿检查软版）——主选 lift-need
+        # 最大的轮（全权重），次选与主选成对角的轮（按需权重）；同侧/同轴
+        # 轮不同时摆动，避免双后轮齐摆把车身压塌（v214-D 实测 body 0.81→
+        # 0.75）。对角：0<->3（FL-HR）、1<->2（FR-HL）。
+        # v214c: S10_GAIT_FRONT_PRIO>1 时前轮在选择中加权（爬梯自然顺序：
+        # 前轮先上 → 车身抬升卸载后轮 → 后轮再上），swing 权重仍按真实
+        # lift-need（不放大 cost）。
+        _fp = float(os.environ.get("S10_GAIT_FRONT_PRIO", "1.0"))
+        _util_sel = util.copy()
+        if _fp > 1.0:
+            _util_sel[:2] = _util_sel[:2] * _fp
+        _diag = {0: 3, 1: 2, 2: 1, 3: 0}
+        _max_swing = int(os.environ.get("S10_GAIT_MAX_SWING", "2"))
+        swing = np.zeros(4, dtype=np.float32)
+        _order = np.argsort(-_util_sel)
+        _prim = int(_order[0])
+        if util[_prim] >= need_thr:
+            swing[_prim] = 1.0
+            if _max_swing >= 2:
+                for _k in _order[1:]:
+                    if util[_k] < need_thr:
+                        break
+                    if _k == _diag[_prim]:
+                        swing[_k] = float(util[_k])
+                        break
+        # 同侧软抑制仍保留（若对角次选低于 need_thr，抑制同侧残余噪声）
+        if ss_supp > 0.0:
+            for a, b in ((0, 2), (1, 3)):
+                if swing[a] > 0.0 and swing[b] > 0.0:
+                    _m = min(swing[a], swing[b]) * ss_supp
+                    if swing[a] <= swing[b]:
+                        swing[a] = max(0.0, swing[a] - _m)
+                    else:
+                        swing[b] = max(0.0, swing[b] - _m)
+        swing = np.asarray(swing, dtype=np.float32)
+        self._gait_swing = swing
+        if os.environ.get("S10_GAIT_DEBUG", "0") == "1":
+            print(f"[GAITU] t={t:.1f} "
+                  f"nxt={[round(float(v), 2) if v < 1e8 else -1 for v in nxt]} "
+                  f"nxtz={[round(float(v), 2) for v in nxt_z]} "
+                  f"wz={[round(float(v), 2) for v in wheel_z]} "
+                  f"util={[round(float(v), 2) for v in swing]}",
                   flush=True)
         return swing
 
