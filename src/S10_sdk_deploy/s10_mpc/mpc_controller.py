@@ -150,7 +150,10 @@ class MPCController:
         self.dial_config = DialConfig(**dial_kw)
 
         # env 配置（yaml + hardware）
-        env_kw = dict(kp=cfg.get("kp", 80.0), kd=cfg.get("kd", 2.0),
+        env_kw = dict(kp=float(os.environ.get(
+            "S10_MPC_KP", str(cfg.get("kp", 80.0)))),
+            kd=float(os.environ.get(
+                "S10_MPC_KD", str(cfg.get("kd", 2.0)))),
                       leg_action_scale=float(os.environ.get(
                           "S10_LEG_ACTION_SCALE",
                           str(cfg.get("leg_action_scale", 0.25)))),

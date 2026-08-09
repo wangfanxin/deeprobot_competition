@@ -734,8 +734,26 @@ class MuJoCoSimulationNode(Node):
                 _Hn = int(self.mpc.Y.shape[0])
                 _dt = float(getattr(self.mpc, "dt", 0.02))
                 _vk = float(vx)
+                # v214f: 摆动轮时序 bias 剖面（软先验，Bjelonic 摆动轨迹软版）——
+                # 静态偏置让 MPC 陷入"永远抬着不放下"局部最优；剖面给摆动轮
+                # 一次"抬→放"周期（S10_BIAS_T_PROFILE: 1=cos 衰减抬-放，
+                # 2=sin 完整抬-放，0=静态）。只作用 swing 权重 >0.3 的轮，
+                # 其余轮保持 need 偏置。MPC 采样仍可偏离（非门控）。
+                _bprof = float(os.environ.get("S10_BIAS_T_PROFILE", "0"))
+                _sww = np.asarray(
+                    getattr(self.mpc, "_gait_swing", np.zeros(4)),
+                    dtype=np.float32)
                 _bH = np.zeros((_Hn, 12), dtype=np.float32)
                 for _k in range(_Hn):
+                    _t = _k / max(_Hn - 1, 1)
+                    _pro = 1.0
+                    if _bprof == 1.0:
+                        _pro = float(np.cos(np.pi * _t / 2.0))
+                    elif _bprof == 2.0:
+                        _pro = float(np.sin(np.pi * _t))
+                    _pw = np.array([
+                        _pro if _sww[i] > 0.3 else 1.0 for i in range(4)],
+                        dtype=np.float32)
                     _yk = _wy + _vk * _k * _dt
                     _wrk = np.asarray(_f.stair_wheel_ref(_yk), dtype=np.float64)
                     # v208: 满值偏置参考（S10_BIAS_FULL_REF=1，默认关）。
@@ -775,14 +793,14 @@ class MuJoCoSimulationNode(Node):
                     _bc[5] = float(os.environ.get("S10_BIAS_HL_KNEE", "0.45"))
                     _bc[6] = float(os.environ.get("S10_BIAS_HR_HIPY", "-0.10"))
                     _bc[7] = float(os.environ.get("S10_BIAS_HR_KNEE", "0.45"))
-                    _b12[1] = _bc[0] * _nk[0]
-                    _b12[2] = _bc[1] * _nk[0]
-                    _b12[4] = _bc[2] * _nk[1]
-                    _b12[5] = _bc[3] * _nk[1]
-                    _b12[7] = _bc[4] * _nk[2]
-                    _b12[8] = _bc[5] * _nk[2]
-                    _b12[10] = _bc[6] * _nk[3]
-                    _b12[11] = _bc[7] * _nk[3]
+                    _b12[1] = _bc[0] * _nk[0] * _pw[0]
+                    _b12[2] = _bc[1] * _nk[0] * _pw[0]
+                    _b12[4] = _bc[2] * _nk[1] * _pw[1]
+                    _b12[5] = _bc[3] * _nk[1] * _pw[1]
+                    _b12[7] = _bc[4] * _nk[2] * _pw[2]
+                    _b12[8] = _bc[5] * _nk[2] * _pw[2]
+                    _b12[10] = _bc[6] * _nk[3] * _pw[3]
+                    _b12[11] = _bc[7] * _nk[3] * _pw[3]
                     _bH[_k] = _b12
                 if hasattr(self.mpc, "set_stair_action_bias"):
                     self.mpc.set_stair_action_bias(_bH)

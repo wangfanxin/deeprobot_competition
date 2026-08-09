@@ -1192,9 +1192,27 @@ class AutoNavFollower:
             _util_sel[:2] = _util_sel[:2] * _fp
         _diag = {0: 3, 1: 2, 2: 1, 3: 0}
         _max_swing = int(os.environ.get("S10_GAIT_MAX_SWING", "2"))
+        # v214g: 主选滞回——HL/HR need 几乎相等时每帧翻转（实测 HR 抬一次
+        # 0.77 后回 0.63），任何轮都没有完整摆动窗口。S10_GAIT_HOLD_TIME
+        # 内保持当前主选（只要其 need 仍有效），新候选需超过
+        # S10_GAIT_SWITCH_MARGIN× 才切换（软时序，非门控）。
+        _hold = float(os.environ.get("S10_GAIT_HOLD_TIME", "0.0"))
+        _sw_m = float(os.environ.get("S10_GAIT_SWITCH_MARGIN", "1.0"))
+        if not hasattr(self, "_gaitu_prim"):
+            self._gaitu_prim = None
+            self._gaitu_t0 = t
         swing = np.zeros(4, dtype=np.float32)
         _order = np.argsort(-_util_sel)
-        _prim = int(_order[0])
+        _cand = int(_order[0])
+        _prim = _cand
+        if (self._gaitu_prim is not None and _hold > 0.0
+                and t - self._gaitu_t0 < _hold
+                and util[self._gaitu_prim] >= need_thr):
+            # 严格保持：主选轮 need 仍有效就不切换（完成/失效才放行）
+            _prim = self._gaitu_prim
+        else:
+            self._gaitu_prim = _prim
+            self._gaitu_t0 = t
         if util[_prim] >= need_thr:
             swing[_prim] = 1.0
             if _max_swing >= 2:
