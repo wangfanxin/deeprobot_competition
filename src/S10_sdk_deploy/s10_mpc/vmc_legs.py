@@ -209,6 +209,8 @@ class VMCController:
             A6[3:6, leg * 3:leg * 3 + 3] = -S
         try:
             f_legs = np.linalg.pinv(A6) @ W
+            if os.environ.get("S10_VMC_QP", "0") == "1":
+                f_legs = self._solve_wbc_qp(A6, W, f_legs)
         except Exception:
             f_legs = np.zeros(12)
             f_legs[2::3] = self.m * self.g / 4.0
@@ -312,6 +314,37 @@ class VMCController:
         return tau
 
 # ==================== 已知地图地形栅格（预计算） ====================
+
+
+    def _solve_wbc_qp(self, A6, W, f0):
+        """v218t: 力分配 QP——摩擦锥 + 腿力上限 + 最小范数（SLSQP，12 变量）。"""
+        from scipy.optimize import minimize
+        mu = float(os.environ.get("S10_VMC_MU", "0.8"))
+        f_max = float(os.environ.get("S10_VMC_F_LEG_MAX", "120.0"))
+
+        def obj(f):
+            d = A6 @ f - W
+            return 0.5 * float(d @ d) + 1e-5 * float(f @ f)
+
+        cons = []
+        for l in range(4):
+            b = l * 3
+            cons.append({"type": "ineq",
+                         "fun": lambda f, b=b: (mu * f[b + 2]
+                                                 - abs(f[b]) - abs(f[b + 1]))})
+            cons.append({"type": "ineq",
+                         "fun": lambda f, b=b: f[b + 2]})
+            cons.append({"type": "ineq",
+                         "fun": lambda f, b=b: (f_max - np.sqrt(
+                    f[b] ** 2 + f[b + 1] ** 2 + f[b + 2] ** 2))})
+        try:
+            res = minimize(obj, f0, method="SLSQP", constraints=cons,
+                           options={"maxiter": 40, "ftol": 1e-4})
+            if res.success or np.isfinite(res.fun):
+                return np.asarray(res.x, dtype=np.float64)
+        except Exception:
+            pass
+        return f0
 
 class TerrainMap:
     """启动时一次性 raycast 赛道地形（机器人移走），运行期 O(1) 查表。"""
