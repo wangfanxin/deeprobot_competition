@@ -438,6 +438,9 @@ class MPCController:
         # v168：场驱动抬腿动作偏置（soft prior, (Hnode+1,12) 或 (12,)）
         self._stair_action_bias = None
         self._ref_valid = False
+        # v213: 顺序步态调度摆动标志（节点侧 gait_schedule 逐帧写入，
+        # 经 info 注入 rollout cost，0=关/纯 lift-need 启发式）
+        self._gait_swing = np.zeros(4, dtype=np.float32)
         # 主线程规划模式：latest_tau 由主循环每步更新；初始化防首帧崩溃
         self.latest_tau = np.zeros(16, dtype=np.float32)
         self.latest_action = np.zeros(16, dtype=np.float32)
@@ -612,6 +615,9 @@ class MPCController:
         info["ang_vel_tar"] = jnp.concatenate([self.cmd_ang, jnp.array([0.0])])[:3]
         info["mode_stair"] = jnp.array(
             1.0 if getattr(self, "_mode", None) == "STAIR" else 0.0,
+            dtype=jnp.float32)
+        info["gait_swing"] = jnp.asarray(
+            getattr(self, "_gait_swing", np.zeros(4, dtype=np.float32)),
             dtype=jnp.float32)
         info["elevation_map"] = self._elev_jnp()
         # E3：地形自适应姿态目标（上坡仰头/下坡低头/过弯压弯）

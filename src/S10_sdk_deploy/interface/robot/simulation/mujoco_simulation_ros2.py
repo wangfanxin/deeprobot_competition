@@ -719,6 +719,12 @@ class MuJoCoSimulationNode(Node):
                 _wpos = self.data.xpos[[5, 9, 13, 17]]
                 _wy = np.asarray(_wpos[:, 1], dtype=np.float64)
                 _wz = np.asarray(_wpos[:, 2], dtype=np.float64)
+                # v213: 顺序步态调度（S10_GAIT=1 启用，默认关）：当前序列轮
+                # 摆动，其余支撑——只决定 cost 相位（swing flags），MPC 采样
+                # 执行。写入 mpc._gait_swing 供 info 注入 rollout。
+                if os.environ.get("S10_GAIT", "0") == "1":
+                    _gsw = _f.gait_schedule(_wy, _wz, self.timestamp)
+                    self.mpc._gait_swing = np.asarray(_gsw, dtype=np.float32)
                 _wr = np.asarray(_f.stair_wheel_ref(_wy), dtype=np.float64)
                 _lift = np.clip(_wr - _wz, 0.0, 0.25)
                 # v171：时变偏置——按视界内轮子前移后的欠抬量生成逐节点抬腿
