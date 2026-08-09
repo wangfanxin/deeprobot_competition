@@ -558,6 +558,17 @@ class MuJoCoSimulationNode(Node):
                 f"[AUTO] 测试起点 wp{start_wp} @ "
                 f"({wp_xy[0]:.1f},{wp_xy[1]:.1f}) "
                 f"ground={h_ground:.2f} next=wp{start_wp + 1}")
+        # v218: 身体层 MPPI（S10_BODY_MPPI=1 启用）——替代 compute_cmd 直出
+        self._bmpi = None
+        if os.environ.get("S10_BODY_MPPI", "0") == "1":
+            try:
+                from s10_mpc.body_mppi import BodyMPPI as _B
+                self._bmpi = _B(
+                    N=int(os.environ.get("S10_BODY_MPPI_N", "256")),
+                    H=int(os.environ.get("S10_BODY_MPPI_H", "20")))
+                self.get_logger().info("[AUTO] 身体层 MPPI 启用")
+            except Exception as _e:
+                self.get_logger().warn(f"[AUTO] 身体层 MPPI 启用失败: {_e}")
         # 先由跟随器给出首个指令，再立即规划——避免沿用进入遥控前的
         # 旧动作（零指令下优化器会生成弱反向差速）导致初始偏航
         self._update_auto_nav()
@@ -697,6 +708,34 @@ class MuJoCoSimulationNode(Node):
             robot_z=float(self.data.xpos[self.track_body_id, 2]),
             yaw_rate=yaw_rate)
         self._last_auto_vyaw = vyaw
+        if getattr(self, "_bmpi", None) is not None and self.track_next_index < 8:
+            # v218: 身体层 MPPI 输出 [vx, omega]（保守缩放，模型比执行乐观）
+            _f = self.follower
+            _ref = []
+            _s0 = float(_f._s_cur)
+            for _ds in np.arange(0.0, 8.0, 0.5):
+                _sp = _s0 + _ds
+                if _sp >= _f.path_total:
+                    break
+                _k = int(np.searchsorted(_f.path_cum, _sp, side="right") - 1)
+                _k = min(max(_k, 0), len(_f.path_pts) - 2)
+                _t = ((_sp - _f.path_cum[_k])
+                      / max(_f.path_cum[_k + 1] - _f.path_cum[_k], 1e-6))
+                _ref.append([
+                    _f.path_pts[_k, 0] + _t * (_f.path_pts[_k + 1, 0] - _f.path_pts[_k, 0]),
+                    _f.path_pts[_k, 1] + _t * (_f.path_pts[_k + 1, 1] - _f.path_pts[_k, 1]),
+                    _f.path_heading[min(_k, len(_f.path_heading) - 1)]])
+            _ref = np.array(_ref) if len(_ref) else np.array([[pos[0], pos[1], yaw]])
+            _Rm = np.asarray(self.data.xmat[self.track_body_id]).reshape(3, 3)
+            _vw = _Rm.T @ np.asarray(self.data.cvel[self.track_body_id][3:6])
+            _st = np.array([pos[0], pos[1], yaw,
+                            float(_vw[0]), float(_vw[1]),
+                            float(self.data.cvel[self.track_body_id][5])])
+            _vx_c, _om_c = self._bmpi.plan(_st, _ref, float(_f._last_vlim))
+            vx = float(_vx_c) * float(os.environ.get(
+                "S10_BODY_MPPI_VX_SCALE", "0.9"))
+            vyaw = float(_om_c) * float(os.environ.get(
+                "S10_BODY_MPPI_OM_SCALE", "0.8"))
 
         # v162：STAIR 已知地图几何剖面（pitch 仰头 / 机身 z / 速度剖面）。
         # pitch 负=仰头（本工程约定）；base_z 世界系；vx 取 zone 限速与剖面较小值

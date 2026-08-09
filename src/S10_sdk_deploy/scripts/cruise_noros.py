@@ -18,6 +18,7 @@ os.environ.setdefault('JAX_COMPILATION_CACHE_DIR',
 
 from s10_mpc.mpc_controller import MPCController
 from s10_mpc.auto_nav import AutoNavFollower
+from s10_mpc.body_mppi import BodyMPPI
 
 DT = 0.005
 MAX_SIM = float(os.environ.get('S10_TEST_MAX_SIM', '120'))
@@ -92,6 +93,38 @@ def main():
         lookahead=float(os.environ.get('S10_AUTO_LOOKAHEAD', '1.5')),
     )
     mpc.set_yaw_gain_lo(float(os.environ.get('S10_AUTO_YAW_FF_GAIN', '20.0')))
+    # 已知地图横脊预扫描（与节点 _scan_ridge_zones 同法）：段内 0.12m+ 棱限速
+    try:
+        _pts = fol.path_pts
+        _hs = np.empty(len(_pts))
+        for _k, _p in enumerate(_pts):
+            _g = np.array([-1], dtype=np.int32)
+            _dist = np.zeros(1); _nrm = np.zeros(3)
+            _hit = mujoco.mj_ray(
+                m, d, [_p[0], _p[1], 8.0], [0, 0, -1],
+                None, False, -1, _g, _nrm)
+            _hs[_k] = (8.0 - _hit) if _g[0] >= 0 else float(_p[2])
+        _dh = np.abs(np.diff(_hs))
+        _skip = float(fol.path_wp_s[1]) - 2.0
+        _ri = np.where((_dh > 0.12)
+                       & (fol.path_cum[:len(_dh)] > _skip))[0]
+        _rv = float(os.environ.get('S10_RIDGE_VX', '2.5'))
+        for _k in _ri:
+            _lo = max(0, _k - int(2.0 / fol.path_res))
+            _hi = min(len(fol.path_vlim), _k + int(1.2 / fol.path_res))
+            fol.path_vlim[_lo:_hi] = np.minimum(
+                fol.path_vlim[_lo:_hi], _rv)
+        print(f'[NOROS] 横脊预扫描 {len(_ri)} 处，限速 {_rv}', flush=True)
+    except Exception as _e:
+        print('[NOROS] 横脊预扫描失败', _e, flush=True)
+
+    # v218: 身体层 MPPI（S10_BODY_MPPI=1 启用）——替代 compute_cmd 直出，输出 [vx,ω]
+    _bmpi = None
+    if os.environ.get('S10_BODY_MPPI', '0') == '1':
+        from s10_mpc.body_mppi import BodyMPPI as _B
+        _bmpi = _B(N=int(os.environ.get('S10_BODY_MPPI_N', '256')),
+                   H=int(os.environ.get('S10_BODY_MPPI_H', '20')))
+        print('[NOROS] 身体层 MPPI 启用', flush=True)
 
     # 进程内 JIT 预热（2026-08-08 修复“卡在起点”）：本机 JAX 持久化编译缓存
     # 跨进程不生效（实测首次 plan_once 仍编译 17.5s），单独预编译对真跑无帮助。
@@ -228,7 +261,31 @@ def main():
                 vx, vyaw = fol.compute_cmd(
                     pos, yaw, next_idx,
                     robot_z=float(d.xpos[track_body][2]), yaw_rate=_wyaw_real)
-                mpc.set_cmd(vx, 0.0, vyaw)
+                if _bmpi is not None:
+                    # 路径参考轨迹（弧长采样）
+                    _ref = []
+                    _s0 = float(fol._s_cur)
+                    for _ds in np.arange(0.0, 8.0, 0.5):
+                        _sp = _s0 + _ds
+                        if _sp >= fol.path_total:
+                            break
+                        _k = int(np.searchsorted(fol.path_cum, _sp, side="right") - 1)
+                        _k = min(max(_k, 0), len(fol.path_pts) - 2)
+                        _t = ((_sp - fol.path_cum[_k])
+                              / max(fol.path_cum[_k + 1] - fol.path_cum[_k], 1e-6))
+                        _ref.append([fol.path_pts[_k, 0] + _t * (fol.path_pts[_k + 1, 0] - fol.path_pts[_k, 0]),
+                                     fol.path_pts[_k, 1] + _t * (fol.path_pts[_k + 1, 1] - fol.path_pts[_k, 1]),
+                                     fol.path_heading[min(_k, len(fol.path_heading) - 1)]])
+                    _ref = np.array(_ref) if len(_ref) else np.array([[pos[0], pos[1], yaw]])
+                    _Rm = np.asarray(d.xmat[track_body]).reshape(3, 3)
+                    _vw = _Rm.T @ np.asarray(d.cvel[track_body][3:6])
+                    _st = np.array([pos[0], pos[1], yaw,
+                                    float(_vw[0]), float(_vw[1]),
+                                    float(d.cvel[track_body][5])])
+                    _vx_c, _om_c = _bmpi.plan(_st, _ref, float(fol._last_vlim))
+                    mpc.set_cmd(float(_vx_c), 0.0, float(_om_c))
+                else:
+                    mpc.set_cmd(vx, 0.0, vyaw)
                 if os.environ.get('S10_CURVE_DEBUG') == '1':
                     _q = d.xquat[track_body]
                     _roll = float(np.arctan2(

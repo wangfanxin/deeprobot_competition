@@ -98,7 +98,7 @@ class VMCController:
 
     def __init__(self, mass=19.0, g=9.81, L1=0.18, L2=0.18, r=0.081,
                  tau_v=0.60, kp_h=300.0, kd_h=60.0, kp_z=800.0, kd_z=80.0,
-                 kp_roll=30.0, kd_roll=4.0,
+                 kp_roll=160.0, kd_roll=12.0,
                  kp_pitch=80.0, kd_pitch=12.0, pitch_ff=0.8,
                  wheel_k=1.2, wheel_d=0.05,
                  track_half=0.24):
@@ -176,20 +176,22 @@ class VMCController:
         else:
             T_pitch = 0.0
         if os.environ.get("S10_VMC_HIPX", "1") == "1":
-            # v218g: 校准 +T_roll→roll 更负，反馈需 (roll - tar)
-            T_roll = (self.kp_roll * (body["roll"] - self._roll_f)
+            # v218i: 目标跟随实测 tar=+0.1→实际-0.1（符号反），翻回 (tar-roll)
+            T_roll = (self.kp_roll * (self._roll_f - body["roll"])
                       - self.kd_roll * roll_rate)
         else:
             T_roll = 0.0
-        # 每腿分担：重力/4 + 俯仰力矩（前+/后-）+ 侧倾力矩（左-/右+，实测符号）
-        fz_dist = np.full(4, Fz_total / 4.0)
-        fz_dist[0:2] += T_pitch / self.wheelbase
-        fz_dist[2:4] -= T_pitch / self.wheelbase
-        # v218e: 侧倾分配符号（实测：roll 负=左侧抬，需左侧加支撑）
-        fz_dist[0] += T_roll / (2.0 * self.track_half)
-        fz_dist[2] += T_roll / (2.0 * self.track_half)
-        fz_dist[1] -= T_roll / (2.0 * self.track_half)
-        fz_dist[3] -= T_roll / (2.0 * self.track_half)
+        # v218h: 几何感知力分配——身体 wrench [Fz,T_pitch,T_roll] 用实际轮位
+        # 最小二乘解到 4 腿垂直力，消除带倾角腿的交叉耦合。
+        r_body = np.einsum("ij,nj->ni", body["R"].T,
+                          wheel_xyz - body["pos"][None, :])  # (4,3) body 系
+        A = np.column_stack([np.ones(4), r_body[:, 0], r_body[:, 1]])
+        W = np.array([Fz_total, T_pitch, T_roll])
+        try:
+            fz_dist = np.linalg.pinv(A) @ W
+            fz_dist = np.maximum(fz_dist, 0.08 * self.m * self.g / 4.0)
+        except Exception:
+            fz_dist = np.full(4, self.m * self.g / 4.0)
 
         for leg in range(4):
             b = leg * 3
@@ -216,11 +218,12 @@ class VMCController:
             # v218c: hipx 侧倾纠偏符号（实测：左腿负/右腿正才能回正）
             side = -1.0 if leg in (0, 2) else 1.0
             wd_side = -side   # v218: 差速符号与 hipx 相反（实测）
-            if os.environ.get("S10_VMC_HIPX", "1") != "1":
+            if os.environ.get("S10_VMC_HIPX_TORQUE", "0") != "1":
                 t_hipx = 0.0
             else:
-                t_hipx = side * (self.kp_roll * (self._roll_f - body["roll"])
-                                 - self.kd_roll * roll_rate)
+                # v218j: 目标跟随实测仍反向，hipx 扭矩再取反
+                t_hipx = -side * (self.kp_roll * (self._roll_f - body["roll"])
+                                  - self.kd_roll * roll_rate)
 
             # 轮：差速转向
             wq = float(qvel[WHEEL_QV_IDX[leg]])
@@ -277,3 +280,50 @@ class TerrainMap:
             v = float(self.h[iy, ix])
             return v if v >= 0.0 else 0.0
         return 0.0
+
+
+# ==================== PD 站姿 + 轮驱动模式（v218k，稳定基线） ====================
+
+class LegPDDrive:
+    """最简可靠执行层：腿 PD 锁站姿（固定悬挂），轮差速驱动。
+
+    身体层 MPPI 给 [vx, omega]；腿保持蹲姿（kp=80/kd=2，与站起 PD 一致），
+    轮子按 v_ref 差速。平地/缓坡稳定（车式），横脊靠"膝目标预抬"。
+    """
+
+    LEG_TARGET = np.array([-0.05, -1.16, 2.30,
+                            0.05, -1.16, 2.30,
+                           -0.05,  1.16, -2.30,
+                            0.05,  1.16, -2.30], dtype=np.float64)
+
+    def __init__(self, kp_leg=30.0, kd_leg=3.0, wheel_k=0.30, wheel_d=0.03,
+                 track_half=0.24, r=0.081):
+        self.kp_leg, self.kd_leg = kp_leg, kd_leg
+        self.wheel_k, self.wheel_d = wheel_k, wheel_d
+        self.track_half = track_half
+        self.r = r
+        self._vx_f, self._om_f = 0.0, 0.0
+
+    def compute_tau(self, qpos, qvel, cmd, dt=0.005):
+        k = min(1.0, dt / 0.80)
+        self._vx_f += (float(cmd["vx"]) - self._vx_f) * k
+        self._om_f += (float(cmd["omega"]) - self._om_f) * k
+        tau = np.zeros(16, dtype=np.float64)
+        # 腿 PD（12 关节，索引见 LEG_Q_IDX/LEG_CTRL_IDX）
+        for leg in range(4):
+            b = leg * 3
+            for j in range(3):
+                qi = LEG_Q_IDX[b + j]
+                ci = LEG_CTRL_IDX[b + j]
+                tau[ci] = (self.kp_leg
+                           * (self.LEG_TARGET[b + j] - float(qpos[qi]))
+                           - self.kd_leg * float(qvel[6 + j + leg * 3]))
+        # 轮差速（索引 WHEEL_QV_IDX 是 qvel[6:22] 内，绝对索引需 +6）
+        for leg in range(4):
+            wq = float(qvel[WHEEL_QV_IDX[leg]])
+            side = -1.0 if leg in (0, 2) else 1.0
+            v_ref = self._vx_f + side * self._om_f * self.track_half
+            tau[WHEEL_Q_IDX[leg]] = float(np.clip(
+                -(self.wheel_k * (v_ref - wq * self.r)
+                  - self.wheel_d * wq), -14, 14))
+        return tau
