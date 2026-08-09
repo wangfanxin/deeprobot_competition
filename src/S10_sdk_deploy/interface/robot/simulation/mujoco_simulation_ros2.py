@@ -1086,6 +1086,7 @@ class MuJoCoSimulationNode(Node):
         assist_on = os.environ.get("S10_LEG_ASSIST", "0") == "1"
         if not assist_on:
             self._leg_assist = np.zeros(12, dtype=np.float32)
+            self._leg_assist_in_zone = False
             return
         # v217: 台阶/横脊航段专用门控（S10_LEG_ASSIST_STEPZONE_ONLY=1）：
         # 弯道里抬膝会破坏转向稳定性（wp2→3 实测侧翻），只在 step/stair
@@ -1095,11 +1096,15 @@ class MuJoCoSimulationNode(Node):
             _fol = getattr(self, "follower", None)
             _in_zone = False
             if _fol is not None and 1 <= _nxt - 1 < len(_fol.step_zone):
+                # v217p: 仅巡航横脊段（step_zone 且非 stair_zone）——台阶区
+                # 交给 stair 技能（v216 轮锁），不叠加 PD 抬膝避免干扰其调优。
                 _in_zone = bool(_fol.step_zone[_nxt - 1]
-                                or _fol.stair_zone[_nxt - 1])
+                                and not _fol.stair_zone[_nxt - 1])
             if not _in_zone:
                 self._leg_assist = np.zeros(12, dtype=np.float32)
                 return
+        self._leg_assist_in_zone = bool(_in_zone)
+
         amp = float(os.environ.get("S10_LEG_ASSIST_AMP", "0.20"))
         amp_rear = float(os.environ.get("S10_LEG_ASSIST_AMP_REAR", "0.15"))
         dist = float(os.environ.get("S10_LEG_ASSIST_DIST", "0.30"))
@@ -1159,7 +1164,9 @@ class MuJoCoSimulationNode(Node):
                         if step_flag is not None and 0 <= bi < hm.shape[0] \
                                 and 0 <= bj < hm.shape[1] and valid[bi, bj]:
                             bstep = float(step_flag[bi, bj])
-                        if diff > 0.05 and bstep >= step_thr:
+                        _thr_eff2 = (step_thr if not getattr(
+                            self, "_leg_assist_in_zone", False) else -1.0)
+                        if diff > 0.05 and bstep >= _thr_eff2:
                             wheel_z = float(self.data.xpos[bid, 2])
                             if wheel_z < h_front + 0.081 - 0.03:
                                 lift = float(np.clip(
@@ -1182,7 +1189,9 @@ class MuJoCoSimulationNode(Node):
                         if step_flag is not None:
                             best_flag = max(
                                 best_flag, float(step_flag[i, j]))
-                    if best > 0.05 and best_flag >= step_thr:
+                    _thr_eff = (step_thr if not getattr(
+                        self, "_leg_assist_in_zone", False) else -1.0)
+                    if best > 0.05 and best_flag >= _thr_eff:
                         wheel_z = float(self.data.xpos[bid, 2])
                         if wheel_z < best + h_now + 0.081 - 0.03:
                             lift = float(np.clip(
