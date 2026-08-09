@@ -338,6 +338,8 @@ class MPCController:
                           "S10_STAIR_WHEEL_BRAKE_W", "0.0")),
                       w_foothold=float(os.environ.get(
                           "S10_STAIR_W_FOOTHOLD", "0.0")),
+                      w_lift_prog=float(os.environ.get(
+                          "S10_STAIR_W_LIFT_PROG", "0.0")),
                       swing_thresh=float(os.environ.get(
                           "S10_SWING_THRESH", "0.04")),
                       left_boost=float(os.environ.get(
@@ -717,9 +719,11 @@ class MPCController:
         # multiplier from path curvature: shrink on straights (samples stick
         # to the nominal straight action -> straighter lines), widen before
         # and inside curves (explore turning, paired with early decel+lean).
-        # S10_ADAPTIVE_SIGMA=1 enables; returns (Hnode+1,) float32 mults.
+        # v213: cruise 默认开启（直线 σ 0.5）；S10_ADAPTIVE_SIGMA=0 关闭；
+        # STAIR 模式始终不调制（楼梯行为不变）。返回 (Hnode+1,) float32 mults.
         n = self.dial_config.Hnode + 1
-        if os.environ.get("S10_ADAPTIVE_SIGMA", "0") != "1":
+        if (getattr(self, "_mode", None) == "STAIR"
+                or os.environ.get("S10_ADAPTIVE_SIGMA", "1") == "0"):
             return np.ones(n, dtype=np.float32)
         _rc = self._ref_curvature()
         if _rc is None:
