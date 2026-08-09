@@ -365,6 +365,12 @@ class MPCController:
                           "S10_SWING_PROX", "1e9")),
                       ext_hl_boost=float(os.environ.get(
                           "S10_EXT_HL_BOOST", "1.0")),
+                      overlift_band=float(os.environ.get(
+                          "S10_OVERLIFT_BAND", "0.05")),
+                      w_pitch_rate_cap=float(os.environ.get(
+                          "S10_W_PITCH_RATE_CAP", "0.0")),
+                      pitch_rate_cap=float(os.environ.get(
+                          "S10_PITCH_RATE_CAP", "0.35")),
                       stair_wheel_lock_w=float(os.environ.get(
                           "S10_STAIR_WHEEL_LOCK_W", "0.0")),
                       w_support=float(os.environ.get(
