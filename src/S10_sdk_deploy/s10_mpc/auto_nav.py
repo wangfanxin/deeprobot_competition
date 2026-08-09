@@ -512,7 +512,13 @@ class AutoNavFollower:
         # 其余时间沿平滑路径前视点瞄准——路径在航点处转向，前视点越过
         # 航点后即提前给出转向指令，避免弯道处 err 突跳触发龟速。
         if d_wp < float(os.environ.get("S10_AUTO_WP_AIM", "0.8")) or passed:
-            target = wp_next
+            # v204: passed 后直接瞄准下一个航点（S10_AUTO_AIM_AHEAD=1），
+            # 避免"为蹭 0.5m 圆门回头绕圈"；默认 0 保持原行为（stair 不受影响）
+            if (os.environ.get("S10_AUTO_AIM_AHEAD", "0") == "1"
+                    and next_idx + 1 < len(self.wp)):
+                target = self.wp[next_idx + 1]
+            else:
+                target = wp_next
         else:
             s_target = min(self._s_cur + self.lookahead, self.path_total)
             target = self._path_point_at(s_target)

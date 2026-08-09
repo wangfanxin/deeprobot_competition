@@ -307,6 +307,22 @@ def main():
                                > fol.path_wp_s[next_idx] - 0.05)
                     if _passed and dist <= _adv:
                         _reached = True
+                # v204: 越过航点平面（沿 wp->wp_next 方向的投影已过 wp）且
+                # 侧向在容差内 -> 视为通过，防"切弯/外漂后回头蹭 0.5m 圆门绕圈"。
+                # S10_WP_ADVANCE_PLANE=0 关闭（默认）。
+                if not _reached:
+                    _pdist = float(os.environ.get(
+                        'S10_WP_ADVANCE_PLANE', '0.0'))
+                    if (_pdist > 0.0 and next_idx >= 1
+                            and next_idx + 1 < len(wps)
+                            and dist <= _pdist):
+                        _d = wps[next_idx + 1][:2] - wps[next_idx][:2]
+                        _L = float(np.linalg.norm(_d))
+                        if _L > 1e-6:
+                            _proj = float(np.dot(
+                                rp - wps[next_idx][:2], _d) / _L)
+                            if _proj >= 0.0:
+                                _reached = True
             if _reached:
                 if next_idx == 0 and t_start is None:
                     t_start = t
