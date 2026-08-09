@@ -102,7 +102,7 @@ class VMCController:
                  kp_roll=200.0, kd_roll=15.0,
                  kp_pitch=250.0, kd_pitch=20.0, pitch_ff=0.8,
                  kp_pose=80.0, kd_pose=6.0,
-                 wheel_k=8.0, wheel_d=0.08,
+                 wheel_k=4.0, wheel_d=0.08,
                  track_half=0.24):
         self.m, self.g = mass, g
         self.fk = S10LegFK(L1, L2, r)
@@ -118,6 +118,7 @@ class VMCController:
                                      0.05,  1.16, -2.30], dtype=np.float64)
         self.wheel_k, self.wheel_d = wheel_k, wheel_d
         self.yaw_k = 30.0
+        self.yaw_k_wheel = 25.0
         self.track_half = track_half
         self.wheelbase = 0.455
         self._vx_f, self._om_f = 0.0, 0.0
@@ -250,8 +251,12 @@ class VMCController:
             v_ref = self._vx_f + wd_side * self._om_f * self.track_half
             # v218: 实测 +轮力矩=倒车（S10 轮轴符号），取反前进
             # v218h: 驱动按校准取反，阻尼必须始终反向（否则负转速时放大）
+            # v218j: 直接 yaw 差速力矩（轮全幅差速，参考 dial-MPC）
+            # v218k: 左转(ω>0)左轮需向后力矩——符号与 wd_side 相反
+            t_yaw = (-self.yaw_k_wheel * (self._om_f - body["omega"])
+                     * wd_side)
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
-                       - self.wheel_d * wq)
+                       - self.wheel_d * wq + t_yaw)
 
             tau[hipx_i] = float(np.clip(t_hipx, -20, 20))
             tau[hipy_i] = float(np.clip(t_hipy, -50, 50))
