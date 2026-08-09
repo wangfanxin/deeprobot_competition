@@ -1101,6 +1101,13 @@ class MPCController:
             return
         ff_vx = float(np.clip(
             vx / (self.env_config.vel_scale * 0.081), -1.0, 1.0))
+        # v215m: 爬越时加轮速（用户提示）——STAIR 模式轮速前馈 ×
+        # S10_STAIR_WHEEL_FF_BOOST（>1）：楼梯区强制更高轮速（滚过棱角
+        # 需要动量），巡航不变。软先验：采样仍可覆盖。
+        if getattr(self, "_mode", None) == "STAIR":
+            _wf = float(os.environ.get("S10_STAIR_WHEEL_FF_BOOST", "1.0"))
+            if abs(_wf - 1.0) > 1e-6:
+                ff_vx = float(np.clip(ff_vx * _wf, -1.0, 1.0))
         # yaw 前馈放大（与 set_cmd 一致）：速度自适应增益，见 set_cmd 注释
         yaw_gain_lo = float(
             self._yaw_gain_lo_override
