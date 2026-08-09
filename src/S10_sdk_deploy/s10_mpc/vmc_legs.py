@@ -239,7 +239,8 @@ class VMCController:
             t_hipy, t_knee = J.T @ f_sag
             # hipx 侧向力经轮深杠杆 -> 力矩（wrench 已解出 fb[1]）
             # v218o: hipx 低通（wrench 侧向力随姿态抖动翻转 → 扑动）
-            t_hipx = 0.30 * float(f_body[1])
+            _hipx_f_on = float(os.environ.get("S10_VMC_HIPX_F", "1.0"))
+            t_hipx = 0.30 * float(f_body[1]) * _hipx_f_on
             if not hasattr(self, "_hipx_f"):
                 self._hipx_f = np.zeros(4)
             self._hipx_f[leg] += 0.15 * (t_hipx - self._hipx_f[leg])
