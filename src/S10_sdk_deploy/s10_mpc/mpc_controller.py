@@ -131,6 +131,17 @@ class MPCController:
         self._ada_bias_on = os.environ.get("S10_ADA_BIAS", "0") == "1"
         self._ada_bias_stuck = float(os.environ.get(
             "S10_STAIR_BIAS_BLEND_STUCK", "0.65"))
+        # v209: MPOPI 式精英协方差自适应（arXiv 2508.11917，默认关）：
+        # 每 plan 取 top-K 精英样本动作，算每维均值/方差 → 更新 sigma_dim
+        #（与基线混合防塌缩）+ 精英均值偏置注入 Y——数据驱动"学习好样本
+        # 分布"，让抬左后轮等动作随迭代自然涌现。
+        self._elite_ada = os.environ.get("S10_ELITE_ADA", "0") == "1"
+        self._elite_frac = float(os.environ.get("S10_ELITE_FRAC", "0.15"))
+        self._elite_alpha = float(os.environ.get("S10_ELITE_ALPHA", "0.5"))
+        self._elite_bias_blend = float(os.environ.get(
+            "S10_ELITE_BIAS_BLEND", "0.25"))
+        self._elite_sigma = None
+        self._elite_bias = None
         self.dt = float(os.environ.get(
             "S10_MPC_DT",
             str(hw_ov.get("dt", cfg.get("dt", 0.02)))))   # MPC 控制周期（dt 属 env，非 DialConfig）
@@ -871,6 +882,8 @@ class MPCController:
         self._sigma_dim_base = np.asarray(
             self.mbdpi.sigma_dim, dtype=np.float32)
         self._ada_se = None
+        self._elite_sigma = None
+        self._elite_bias = None
         # 采样偏置（用户 2026-08-07 平衡项）：STAIR 时给 Y 腿节点注入
         # 软偏置（动作空间）——前膝缩回（抬前轮）、后膝弯曲（抬后轮），
         # 让"抬腿"成为采样均值方向；扩散/M PPI 权重可覆盖（非门控）。
@@ -1114,6 +1127,45 @@ class MPCController:
                   f"slip={slip:.2f} v={v_real:.2f} vcmd={abs(getattr(self, '_last_vx', 0.0)):.2f}",
                   flush=True)
 
+    def _elite_adapt(self, info) -> None:
+        """v209: MPOPI 式精英协方差自适应（host numpy，零 JAX 开销）。
+
+        取 top-K 精英样本动作的每维均值/方差：sigma_dim 与基线混合更新
+        （防塌缩），精英均值作软偏置注入下一次 Y（采样均值向好样本区域
+        走，CMA 式学习循环）。只在 STAIR 模式启用。
+        """
+        if not getattr(self, "_elite_ada", False):
+            return
+        if getattr(self, "_mode", None) != "STAIR":
+            return
+        try:
+            rews = np.asarray(info["rews"])[-1]          # (Ns+1,)
+            Y0s = np.asarray(info["Y0s"])[-1]            # (Ns+1,H+1,16)
+            K = max(2, int(self.dial_config.Nsample * self._elite_frac))
+            idx = np.argsort(-rews)[:K]
+            elite = Y0s[idx]
+            em = elite.mean(axis=(0, 1))                 # (16,)
+            es = elite.std(axis=(0, 1))                  # (16,)
+            if self._elite_sigma is None:
+                self._elite_sigma = es
+            else:
+                self._elite_sigma = (self._elite_alpha * self._elite_sigma
+                                     + (1.0 - self._elite_alpha) * es)
+            base = self._sigma_dim_base
+            if base is None:
+                base = np.asarray(self.mbdpi.sigma_dim, dtype=np.float32)
+            sigma = np.clip(0.5 * base + 0.5 * self._elite_sigma,
+                            0.05, 5.0)
+            self.mbdpi.sigma_dim = jnp.asarray(
+                sigma, dtype=jnp.float32)
+            self._elite_bias = np.clip(em, -1.0, 1.0)
+            if os.environ.get("S10_MPC_DEBUG"):
+                print(f"[ELITE] K={K} es0={es[0]:.3f} es7={es[7]:.3f} "
+                      f"em7={em[7]:+.3f} sigma7={float(sigma[7]):.3f}",
+                      flush=True)
+        except Exception as e:
+            print(f"[ELITE] fail {e}", flush=True)
+
     def plan_once(self, q: np.ndarray, qd: np.ndarray, t: float) -> jnp.ndarray:
         """返回当前最优 action（16 维，供 act2tau 转力矩）。
 
@@ -1169,6 +1221,15 @@ class MPCController:
                     and getattr(self, "_ada_slip_active", False)
                     and getattr(self, "_mode", None) == "STAIR"):
                 _blend = self._ada_bias_stuck
+            # v209: 精英均值软偏置（CMA 式学习：采样均值向好样本区域走）
+            _eb = getattr(self, "_elite_bias", None)
+            if _eb is not None:
+                _blend = max(_blend, self._elite_bias_blend)
+                _lb_a2 = jnp.asarray(_eb, dtype=jnp.float32)
+                self.Y = self.Y.at[:, :12].set(jnp.clip(
+                    self.Y[:, :12]
+                    + self._elite_bias_blend * (_lb_a2[None, :12] - self.Y[:, :12]),
+                    -1.0, 1.0))
             _Yl = self.Y[:, :12]
             self.Y = self.Y.at[:, :12].set(jnp.clip(
                 _Yl + _blend * (_lb_a - _Yl), -1.0, 1.0))
@@ -1222,6 +1283,8 @@ class MPCController:
         # 放在计时区之后：内部 np.asarray(info["rews"]) 会同步 GPU，计入
         # plan 时间会污染频率测量（v200 实测 total 91ms 触发 GPU 守卫）。
         self._ada_update(info)
+        # v209: MPOPI 式精英协方差自适应（同样在计时区之后）
+        self._elite_adapt(info)
         self._last_plan_t = t
         return self.Y[0]
 

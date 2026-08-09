@@ -941,8 +941,13 @@ class AutoNavFollower:
         z = self.stair_terrain(y) + radius
         if os.environ.get("S10_STAIR_REF_STEP", "0") == "1":
             lead = float(os.environ.get("S10_STAIR_REF_LEAD", "0.20"))
+            # v209: 只对高 riser（>S10_STAIR_REF_MINH，默认 0.09m）用满值——
+            # 0.062m 首级可滚过，强抬反而卡 riser1（v207 实测）。
+            _minh = float(os.environ.get("S10_STAIR_REF_MINH", "0.09"))
             for k, (y_r, z_top) in enumerate(zip(rs, ts)):
                 z_bottom = self.STAIR_GROUND if k == 0 else float(ts[k - 1])
+                if (z_top - z_bottom) < _minh:
+                    continue
                 lo = y_r - lead
                 hi = y_r + b
                 z_full = z_top + radius + margin
@@ -1078,8 +1083,13 @@ class AutoNavFollower:
         margin = float(os.environ.get("S10_STAIR_LIFT_MARGIN", "0.05"))
         y = np.asarray(y, dtype=np.float64)
         z = self.stair_terrain(y) + radius
+        _minh = float(os.environ.get("S10_STAIR_REF_MINH", "0.09"))
         for k, (y_r, z_top) in enumerate(zip(rs, ts)):
-            # y 越过本级后（+0.05m），下一目标 = 本级顶满值（+margin）
+            # y 越过本级后（+0.05m），下一目标 = 本级顶满值（+margin）；
+            # 只对高 riser 生效（0.062m 首级可滚过不强抬）
+            z_bottom = self.STAIR_GROUND if k == 0 else float(ts[k - 1])
+            if (z_top - z_bottom) < _minh:
+                continue
             z = np.where(y > y_r + 0.05, z_top + radius + margin, z)
         return z
 
