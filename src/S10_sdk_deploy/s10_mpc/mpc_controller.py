@@ -409,8 +409,16 @@ class MPCController:
         _h_cruise = int(os.environ.get("S10_MPC_H_CRUISE", "20"))
         _h_stair = int(os.environ.get("S10_MPC_H_STAIR", "20"))
         import dataclasses as _dc
-        _cfg14 = _dc.replace(self.dial_config, Hsample=_h_cruise)
-        _cfg20 = _dc.replace(self.dial_config, Hsample=_h_stair)
+        # v217: 巡航/台阶允许不同采样规模（S10_MPC_NSAMPLE_CRUISE/STAIR，
+        # 默认沿用全局 S10_MPC_NSAMPLE）：巡航小 N 提频，台阶保留大 N 稳定。
+        _n_cruise = int(os.environ.get(
+            "S10_MPC_NSAMPLE_CRUISE", "0")) or self.dial_config.Nsample
+        _n_stair = int(os.environ.get(
+            "S10_MPC_NSAMPLE_STAIR", "0")) or self.dial_config.Nsample
+        _cfg14 = _dc.replace(self.dial_config, Hsample=_h_cruise,
+                             Nsample=_n_cruise)
+        _cfg20 = _dc.replace(self.dial_config, Hsample=_h_stair,
+                             Nsample=_n_stair)
         self.mbdpi_h14 = MBDPI(_cfg14, self.env, ctx=self.env._ctx)
         self.mbdpi_h20 = MBDPI(_cfg20, self.env, ctx=self.env._ctx)
         self.mbdpi = self.mbdpi_h14

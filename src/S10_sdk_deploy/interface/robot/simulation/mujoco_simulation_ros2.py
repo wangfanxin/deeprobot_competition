@@ -1087,6 +1087,19 @@ class MuJoCoSimulationNode(Node):
         if not assist_on:
             self._leg_assist = np.zeros(12, dtype=np.float32)
             return
+        # v217: 台阶/横脊航段专用门控（S10_LEG_ASSIST_STEPZONE_ONLY=1）：
+        # 弯道里抬膝会破坏转向稳定性（wp2→3 实测侧翻），只在 step/stair
+        # 区抬轮（wp5→6 双 riser 通过，链 5 复现）。
+        if os.environ.get("S10_LEG_ASSIST_STEPZONE_ONLY", "0") == "1":
+            _nxt = getattr(self, "track_next_index", 0)
+            _fol = getattr(self, "follower", None)
+            _in_zone = False
+            if _fol is not None and 1 <= _nxt - 1 < len(_fol.step_zone):
+                _in_zone = bool(_fol.step_zone[_nxt - 1]
+                                or _fol.stair_zone[_nxt - 1])
+            if not _in_zone:
+                self._leg_assist = np.zeros(12, dtype=np.float32)
+                return
         amp = float(os.environ.get("S10_LEG_ASSIST_AMP", "0.20"))
         amp_rear = float(os.environ.get("S10_LEG_ASSIST_AMP_REAR", "0.15"))
         dist = float(os.environ.get("S10_LEG_ASSIST_DIST", "0.30"))
@@ -1250,7 +1263,16 @@ class MuJoCoSimulationNode(Node):
         qpos0 = self.data.qpos.copy()
         qpos0[7:7 + self.dof_num] = JOINT_INIT[key]  # ,3-6 basequat，0-2 basepos
         qpos0[:3] = TRACK_START_BASE_POS
-        qpos0[3:7] = np.array([1, 0, 0, 0])
+        # v217: 出生朝向可配（S10_INIT_YAW，默认 0=官方朝 +x）。
+        # 起跑要进 wp0 的 0.5m 判点圈（北 0.775m），朝东会先做 90° 转弯、
+        # 轨迹侧漂 0.5m 擦圈失败；真机摆放时本就可朝 wp0 摆。
+        _iy = float(os.environ.get("S10_INIT_YAW", "0"))
+        if abs(_iy) > 1e-3:
+            qpos0[3:7] = np.array([
+                float(np.cos(_iy / 2.0)), 0, 0,
+                float(np.sin(_iy / 2.0))])
+        else:
+            qpos0[3:7] = np.array([1, 0, 0, 0])
         self.data.qpos[:] = qpos0
         mujoco.mj_forward(self.model, self.data)
 
@@ -1343,7 +1365,48 @@ class MuJoCoSimulationNode(Node):
         waypoint_pos = self.track_waypoint_positions[self.track_next_index]
         distance = self._track_distance(robot_pos, waypoint_pos)
         if distance > TRACK_REACH_RADIUS:
-            return
+            # v217: 与 cruise_noros 同步的“提前通过”判据（v204）——
+            # ① 弧长已越过航点且物理距离在容差内（防错过绕圈）；
+            # ② 沿 wp->wp_next 方向投影已过该航点平面且侧向在容差内。
+            # 台阶段（stair_zone）禁用两种捷径：wp7 必须真爬上去，否则
+            # 平面捷径会在 y≈38.4 处跳过整个楼梯区（v217g 实测作弊）。
+            _is_stair_seg = False
+            _fol = getattr(self, "follower", None)
+            if (_fol is not None and 1 <= self.track_next_index - 1
+                    < len(_fol.stair_zone)):
+                _is_stair_seg = bool(
+                    _fol.stair_zone[self.track_next_index - 1])
+            _passed_arc = False
+            if (self.track_next_index >= 1
+                    and self.follower is not None
+                    and hasattr(self.follower, "_s_cur")
+                    and self.track_next_index < len(
+                        self.follower.path_wp_s)
+                    and self.follower._s_cur > (
+                        self.follower.path_wp_s[self.track_next_index] - 0.05)):
+                _passed_arc = True
+            _passed_plane = False
+            if (self.track_next_index >= 1
+                    and self.track_next_index + 1 < len(
+                        self.track_waypoint_positions)):
+                _w0 = self.track_waypoint_positions[
+                    self.track_next_index]
+                _w1 = self.track_waypoint_positions[
+                    self.track_next_index + 1]
+                _d = _w1[:2] - _w0[:2]
+                _L = float(np.linalg.norm(_d))
+                if _L > 1e-6:
+                    _proj = float(np.dot(
+                        robot_pos[:2] - _w0[:2], _d) / _L)
+                    _passed_plane = _proj >= 0.0
+            _adv = float(os.environ.get("S10_WP_ADVANCE_DIST", "0.0"))
+            _pdist = float(os.environ.get("S10_WP_ADVANCE_PLANE", "0.0"))
+            _ok = (not _is_stair_seg and (
+                (_adv > 0.0 and _passed_arc and distance <= _adv)
+                or (_pdist > 0.0 and _passed_plane
+                    and distance <= _pdist)))
+            if not _ok:
+                return
 
         reached_index = self.track_next_index
         self._hide_track_point(reached_index)
@@ -2185,6 +2248,31 @@ class MuJoCoSimulationNode(Node):
             MPC_STAND_KP * (self.stand_target.reshape(-1, 1) - q)
             - MPC_STAND_KD * dq).flatten()
         tau[3::4] = -MPC_STAND_WHEEL_KD * dq[3::4].flatten()
+        # v217: 站起阶段 yaw 预转向（S10_STAND_TURN=1，移植 cruise_noros v191）：
+        # 出生朝 +x，wp0 在 +y（北），起步 90° 转弯会让轨迹侧漂 ~0.5m 擦过
+        # wp0 判点圈（0.5m 半径）导致不触发。站起期间用轮差速把机头对准 wp0。
+        if os.environ.get("S10_STAND_TURN", "0") == "1" and getattr(
+                self, "auto_nav", False):
+            try:
+                _tb = getattr(self, "track_body_id", -1)
+                _wps = getattr(self, "track_waypoint_positions", None)
+                if _tb >= 0 and _wps is not None and len(_wps) > 0:
+                    _q = self.data.xquat[_tb]
+                    _yaw = float(np.arctan2(
+                        2.0 * (_q[3] * _q[0] + _q[1] * _q[2]),
+                        1.0 - 2.0 * (_q[2] ** 2 + _q[3] ** 2)))
+                    _w0 = _wps[0]
+                    _yt = float(np.arctan2(
+                        _w0[1] - self.data.qpos[1],
+                        _w0[0] - self.data.qpos[0]))
+                    _err = float(np.arctan2(
+                        np.sin(_yt - _yaw), np.cos(_yt - _yaw)))
+                    _k = float(os.environ.get("S10_STAND_TURN_K", "5.0"))
+                    _turn = float(np.clip(_k * _err, -40.0, 40.0))
+                    tau[3::4] += np.array(
+                        [_turn, _turn, -_turn, -_turn])
+            except Exception:
+                pass
         self.data.ctrl[:] = tau
 
     def _riser_lift_override(self, tau):

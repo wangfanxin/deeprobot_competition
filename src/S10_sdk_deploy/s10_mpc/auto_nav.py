@@ -477,6 +477,19 @@ class AutoNavFollower:
         if next_idx >= len(self.wp):
             return 0.0, 0.0
         wp_next = self.wp[next_idx]
+        # v217: 模式化参数（巡航/台阶各自调优的前视/转向增益/最大偏航率）
+        _lk = float(os.environ.get(
+            "S10_AUTO_LOOKAHEAD_STAIR"
+            if self.mode == "STAIR" else "S10_AUTO_LOOKAHEAD",
+            str(self.lookahead)))
+        _yg = float(os.environ.get(
+            "S10_AUTO_YAW_GAIN_STAIR"
+            if self.mode == "STAIR" else "S10_AUTO_YAW_GAIN",
+            str(self.yaw_gain)))
+        _vm = float(os.environ.get(
+            "S10_AUTO_VYAW_MAX_STAIR"
+            if self.mode == "STAIR" else "S10_AUTO_VYAW_MAX",
+            str(self.vyaw_max)))
         d_wp = float(np.linalg.norm(robot_xy - wp_next[:2]))
 
         # 纯 pursuit（全局导航层，2026-08-06）：机器人到**平滑圆角路径**
@@ -520,7 +533,7 @@ class AutoNavFollower:
             else:
                 target = wp_next
         else:
-            s_target = min(self._s_cur + self.lookahead, self.path_total)
+            s_target = min(self._s_cur + _lk, self.path_total)
             target = self._path_point_at(s_target)
         err = np.arctan2(target[1] - robot_xy[1],
                          target[0] - robot_xy[0]) - yaw
@@ -540,7 +553,7 @@ class AutoNavFollower:
         # 复现证明 4.5 m/s 可连续过台阶（台阶区由 step_zone 单独限速）。
         elev_k = float(os.environ.get("S10_AUTO_ELEV_K", "0.6"))
         elev_factor = 1.0 / (1.0 + elev_k * max(0.0, z_ahead - 0.4))
-        vyaw_max_eff = self.vyaw_max * elev_factor
+        vyaw_max_eff = _vm * elev_factor
         # 弯道 yaw 前馈（2026-08-07 赛用摩托/MPPI 参考）：按前视点路径
         # 曲率给出恒定转向率 v/R，err 只做修正——弯道内不靠纯反馈追线，
         # 避免 err 突跳触发龟速。vx 在函数末尾才算出，用上一拍指令
@@ -597,7 +610,7 @@ class AutoNavFollower:
             if (abs(cte) < 6.0 and abs(err) < float(os.environ.get(
                     "S10_AUTO_CTE_ERR_GATE", "0.6"))
                     and cte_corr * err >= -0.5):
-                vyaw = float(self.yaw_gain * err + yaw_ff
+                vyaw = float(_yg * err + yaw_ff
                              - self.yaw_damp * yaw_rate + cte_corr)
             else:
                 vyaw = float(self.yaw_gain * err + yaw_ff
@@ -697,6 +710,37 @@ class AutoNavFollower:
             return 0.0
         return float(self.speed_limit[idx])
 
+    def _seg_in_stair_band(self, i):
+        """段 i (wp[i]->wp[i+1]) 是否穿越已知 riser 走廊带（x/y 窗口）。
+
+        原始地图只有 wp6→7 是真楼梯；wp17→18/22→23/25→26/27→28 等
+        z 升>0.25 航段是连续缓坡（无离散 riser），纯 dz 触发会把 STAIR
+        权重误开在大坡上。用 riser 表 y 窗口 + STAIR_ZONE_X 走廊判定；
+        S10_STAIR_BAND_GATE=0 关闭（回到纯 dz 触发）。
+        """
+        if os.environ.get("S10_STAIR_BAND_GATE", "1") != "1":
+            return True
+        if i < 0 or i >= len(self.wp) - 1:
+            return False
+        try:
+            risers, _tops = self._stair_tables()
+        except Exception:
+            risers = self.STAIR_RISERS
+        if len(risers) == 0:
+            return False
+        y0 = float(risers.min()) - 1.0
+        y1 = float(risers.max()) + 1.2
+        bx0, bx1 = self.STAIR_ZONE_X
+        xa, ya = self.wp[i, :2]
+        xb, yb = self.wp[i + 1, :2]
+        for k in range(21):
+            t = k / 20.0
+            x = xa + (xb - xa) * t
+            y = ya + (yb - ya) * t
+            if bx0 <= x <= bx1 and y0 <= y <= y1:
+                return True
+        return False
+
     def update_mode(self, robot_xy, next_idx, yaw=None, local_map=None):
         """双模式判定：已知航段 z 大升（>0.25）**且感知确认离散台阶** →
         STAIR_SEQUENCE。2026-08-06 修复：仅按航点 z 升会把大坡度（wp0→1
@@ -730,7 +774,8 @@ class AutoNavFollower:
             # Perception confirmation only triggers EARLIER (S10_STAIR_CONFIRM_DIST).
             _confirm_dist = float(os.environ.get(
                 "S10_STAIR_CONFIRM_DIST", "6.0"))
-            _use_global = d_wp < self.stair_mode_dist
+            _use_global = (d_wp < self.stair_mode_dist
+                           and self._seg_in_stair_band(next_idx - 1))
             _use_percept = (d_wp < _confirm_dist
                             and self._stair_confirmed(
                                 robot_xy, yaw, local_map))
