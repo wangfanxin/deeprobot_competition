@@ -732,10 +732,13 @@ class MPCController:
         # v215: STAIR 恒定 roll 偏置（S10_STAIR_ROLL_BIAS，默认 0）——
         # M10 左后轮 9mm 不对称，3 轮上台后 HL 被压（roll 负=左低）；
         # 正偏置抬高左侧卸载左轮（软目标，与 roll_level 通过权重平衡）。
+        # v215n: 自适应欠抬差偏置（sim 节点注入 _stair_roll_override）
         if getattr(self, "_mode", None) == "STAIR":
             _srb = float(os.environ.get("S10_STAIR_ROLL_BIAS", "0.0"))
-            if abs(_srb) > 1e-6:
-                roll_tar = float(np.clip(roll_tar + _srb, -0.35, 0.35))
+            _sro = getattr(self, "_stair_roll_override", 0.0)
+            if abs(_srb) > 1e-6 or abs(_sro) > 1e-6:
+                roll_tar = float(np.clip(
+                    roll_tar + _srb + float(_sro), -0.35, 0.35))
         # v199: curve lean lookahead (moto-style). Base roll on path curvature
         # ahead of the robot instead of only the current command, so the body
         # pre-leans before entering the corner. S10_ROLL_FF_DIST=0 disables.

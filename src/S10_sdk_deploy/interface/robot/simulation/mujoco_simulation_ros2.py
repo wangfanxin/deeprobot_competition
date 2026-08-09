@@ -741,6 +741,19 @@ class MuJoCoSimulationNode(Node):
                     pass
                 _wr = np.asarray(_f.stair_wheel_ref(_wy), dtype=np.float64)
                 _lift = np.clip(_wr - _wz, 0.0, 0.25)
+                # v215n: 自适应 roll 偏置——左轮（FL/HL）欠抬量 > 右轮时
+                # roll 目标左高（卸载左轮，HL 专项），随欠抬差连续变化。
+                # 软目标：MPC 可偏离；与 roll_level 通过权重平衡。
+                try:
+                    _lneed = max(float(_lift[0]), float(_lift[2]))
+                    _rneed = max(float(_lift[1]), float(_lift[3]))
+                    _imb = float(np.clip(
+                        (_lneed - _rneed)
+                        * float(os.environ.get("S10_ROLL_IMB_GAIN", "0.8")),
+                        -0.15, 0.15))
+                    self.mpc._stair_roll_override = _imb
+                except Exception:
+                    pass
                 # v171：时变偏置——按视界内轮子前移后的欠抬量生成逐节点抬腿
                 # 剖面（H+1,12），给采样器完整"抬-落"先验；欠抬 <0.05m 视为
                 # 到位不注入（防过早/过猛）。
