@@ -118,7 +118,7 @@ class VMCController:
                                      0.05,  1.16, -2.30], dtype=np.float64)
         self.wheel_k, self.wheel_d = wheel_k, wheel_d
         self.yaw_k = 30.0
-        self.yaw_k_wheel = 25.0
+        self.yaw_k_wheel = 20.0
         self.track_half = track_half
         self.wheelbase = 0.455
         self._vx_f, self._om_f = 0.0, 0.0
@@ -263,7 +263,9 @@ class VMCController:
             tau[hipx_i] = float(np.clip(t_hipx, -20, 20))
             tau[hipy_i] = float(np.clip(t_hipy, -50, 50))
             tau[knee_i] = float(np.clip(t_knee, -50, 50))
-            tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -14, 14))
+            # v218m: 轮力矩钳制到抓地极限内（μN·r≈3Nm），超限打滑
+            _wt = float(os.environ.get("S10_VMC_WHEEL_TMAX", "4.0"))
+            tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -_wt, _wt))
         return tau
 
 

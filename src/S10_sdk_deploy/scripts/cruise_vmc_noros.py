@@ -73,6 +73,13 @@ def main():
         skip_s = float(fol.path_wp_s[1]) - 2.0
         ridge_idx = np.where((dh > 0.12) & (fol.path_cum[:len(dh)] > skip_s))[0]
         ridge_arcs = [(float(fol.path_cum[k]), float(dh[k])) for k in ridge_idx]
+        # v218m: 横脊限速（同节点 _scan_ridge_zones）——防高速冲棱
+        _rv = float(os.environ.get('S10_RIDGE_VX', '1.5'))
+        for _k in ridge_idx:
+            _lo = max(0, _k - int(2.0 / fol.path_res))
+            _hi = min(len(fol.path_vlim), _k + int(1.2 / fol.path_res))
+            fol.path_vlim[_lo:_hi] = np.minimum(
+                fol.path_vlim[_lo:_hi], _rv)
         print(f'[VMC] 预扫描横脊 {len(ridge_arcs)} 处', flush=True)
     except Exception as e:
         print('[VMC] 横脊预扫描失败', e, flush=True)
