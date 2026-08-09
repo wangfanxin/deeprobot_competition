@@ -102,7 +102,7 @@ class VMCController:
                  kp_roll=200.0, kd_roll=15.0,
                  kp_pitch=250.0, kd_pitch=20.0, pitch_ff=0.8,
                  kp_pose=80.0, kd_pose=6.0,
-                 wheel_k=1.2, wheel_d=0.05,
+                 wheel_k=8.0, wheel_d=0.08,
                  track_half=0.24):
         self.m, self.g = mass, g
         self.fk = S10LegFK(L1, L2, r)
@@ -117,6 +117,7 @@ class VMCController:
                                     -0.05,  1.16, -2.30,
                                      0.05,  1.16, -2.30], dtype=np.float64)
         self.wheel_k, self.wheel_d = wheel_k, wheel_d
+        self.yaw_k = 30.0
         self.track_half = track_half
         self.wheelbase = 0.455
         self._vx_f, self._om_f = 0.0, 0.0
@@ -187,7 +188,11 @@ class VMCController:
         _tmax = float(os.environ.get("S10_VMC_TMAX", "25.0"))
         T_roll_b = float(np.clip(T_roll_b, -_tmax, _tmax))
         T_pitch_b = float(np.clip(T_pitch_b, -_tmax, _tmax))
-        T_des_w = body["R"] @ np.array([T_roll_b, T_pitch_b, 0.0])
+        # v218j: yaw 力矩入 wrench（经腿侧向力执行，轮差速辅助）
+        T_yaw_b = (self.yaw_k * (self._om_f - body["omega"])
+                   - 0.5 * body["omega"])
+        T_yaw_b = float(os.environ.get("S10_VMC_YAW_W", "0.0")) * T_yaw_b
+        T_des_w = body["R"] @ np.array([T_roll_b, T_pitch_b, T_yaw_b])
         W = np.concatenate([F_des_w, T_des_w])
         A6 = np.zeros((6, 12))
         for leg in range(4):
@@ -233,14 +238,15 @@ class VMCController:
 
             # v218f: hipx 由 wrench 侧向力接管；S10_VMC_HIPX_TORQUE=1 叠加姿态反馈
             side = -1.0 if leg in (0, 2) else 1.0
-            wd_side = -side   # v218: 差速符号与 hipx 相反（实测）
+            wd_side = side   # v218j: 左转(ω>0)需左轮慢右轮快
             if os.environ.get("S10_VMC_HIPX_TORQUE", "1") == "1":
                 t_hipx += side * (self.kp_roll * (self._roll_f - body["roll"])
                                   - self.kd_roll * roll_rate)
 
             # 轮：差速转向
             wq = float(qvel[WHEEL_QV_IDX[leg]])
-            v_wheel = wq * self.fk.r
+            # v218j: 校准正 wq=倒车，前进速度 = -wq*r（此前符号反导致超速失控）
+            v_wheel = -wq * self.fk.r
             v_ref = self._vx_f + wd_side * self._om_f * self.track_half
             # v218: 实测 +轮力矩=倒车（S10 轮轴符号），取反前进
             # v218h: 驱动按校准取反，阻尼必须始终反向（否则负转速时放大）
@@ -281,7 +287,7 @@ class VMCController:
             side = -1.0 if leg in (0, 2) else 1.0
             v_ref = self._vx_f + side * self._om_f * self.track_half
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(
-                -(self.wheel_k * (v_ref - wq * self.fk.r))
+                -(self.wheel_k * (v_ref + wq * self.fk.r))
                 - self.wheel_d * wq, -14, 14))
         tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -50, 50)
         return tau
