@@ -938,6 +938,9 @@ def main():
                       kd_scale=(float(os.environ.get(
                           'S10_STAIR_KD_SCALE', '2.5'))
                                 if _in_stairzone_now else 1.0),
+                      att_scale=(float(os.environ.get(
+                          'S10_STAIR_ATT_SCALE', '2.5'))
+                                 if _in_stairzone_now else 1.0),
                       pure_fwd=(1.0 if (float(os.environ.get(
                           'S10_STAIR_PURE_FWD', '0')) > 0
                                         and _in_stairzone_now

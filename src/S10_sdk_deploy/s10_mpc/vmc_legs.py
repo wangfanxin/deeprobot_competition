@@ -780,11 +780,13 @@ class CarVMC:
         else:
             self._ground_f = 1.0
 
-        # 姿态力矩（腿长差）
-        R = (self.kp_roll * (self._roll_f - body["roll"])
-             - self.kd_roll * roll_rate)
-        P = (self.kp_pitch * (self._pitch_f - body["pitch"])
-             - self.kd_pitch * pitch_rate)
+        # 姿态力矩（腿长差）——楼梯区 att_scale 加倍保持水平（载荷分配，
+        # 防单轮着地 fn=[43,0,0,0]）
+        _asc = float(cmd.get("att_scale", 1.0))
+        R = _asc * (self.kp_roll * (self._roll_f - body["roll"])
+                    - self.kd_roll * roll_rate)
+        P = _asc * (self.kp_pitch * (self._pitch_f - body["pitch"])
+                    - self.kd_pitch * pitch_rate)
         _tmax = float(os.environ.get("S10_CAR_ATT_TMAX", "40.0"))
         R = float(np.clip(R, -_tmax, _tmax))
         P = float(np.clip(P, -_tmax, _tmax))
