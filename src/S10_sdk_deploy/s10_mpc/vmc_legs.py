@@ -396,12 +396,12 @@ class VMCController:
                 if _sp3 > 0.0 and float(cmd.get("z_min", 0.0)) > 0.0:
                     _spamp = float(os.environ.get(
                         "S10_VMC_STAIR_POSE", "1.0"))
-                    if _qs < 0.0:   # 前腿：只膝伸直(z_down 增 0.146→0.20)，
-                        # 不加 q1 前摆（0.35 会让轮心飞高 1.02 弹跳实测）
-                        _q2_tgt += _sp3 * -0.45 * _spamp
-                    else:           # 后腿：膝屈(z_down 减)——q2 增大=伸长
-                        # 方向错（0.146→0.181 前后腿都伸 body 不低头实测）；
-                        # q2 减小才是收缩（-2.30→-2.52 → z_down 0.109）
+                    if _qs < 0.0:   # 前腿：膝屈(z_down 减)——前轮在台面(高)
+                        # 腿应收短保 body 水平 4 轮接触（伸太长 body 低头
+                        # 后轮翘起悬空无推实测）；q2 2.30→2.55 → z_down 0.12
+                        _q2_tgt += _sp3 * 0.25 * _spamp
+                    else:           # 后腿：膝伸直(z_down 增)——后轮地面(低)
+                        # 腿伸长贴地；q2 -2.30→-2.08 → z_down 0.18
                         _q2_tgt += _sp3 * -0.22 * _spamp
             t_hipy += (self.kp_pose * (_q1_tgt - q1)
                        - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b + 1]]))

@@ -836,10 +836,9 @@ def main():
                 # 伸长（body 低头、前轮贴台面）打架，WBC 追抬头把前轮抬
                 # 离台面悬空（pitch -0.16 vs tar +0.137 实测）。前轮在
                 # 台面时 body 应低头（前低后高），后轮地面推。
-                _pfr = float(np.mean(terr[0:2])); _prr = float(np.mean(terr[2:4]))
-                pitch_tar = float(np.clip(
-                    np.arctan2(_prr - _pfr, 0.456) + _stair_pose * 0.08,
-                    -0.30, 0.08))
+                # v753: stair_pose 腿长差(前收缩后伸长)已让 body 水平 4 轮
+                # 接触，pitch 参考回 0（低头会翘后轮、抬头会悬前轮实测）
+                pitch_tar = 0.0
             else:
                 pitch_tar = float(np.clip(
                     np.arctan2(h_a - h_b, 1.2), -0.35, 0.35))
