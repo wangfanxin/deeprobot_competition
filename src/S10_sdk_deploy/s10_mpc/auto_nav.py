@@ -709,8 +709,13 @@ class AutoNavFollower:
 
         # 限速：平滑路径速度剖面（全局导航层，曲率/坡度/台阶已编码；
         # 8m 前瞻 = 4m/s 下提前 2s 减速，弯道转向跟得上）
-        _k_far = min(self._k_near + int(float(os.environ.get(
-            "S10_AUTO_VLIM_LOOKAHEAD", "5.0")) / self.path_res),
+        # v617: STAIR 模式 vlim 前视收窄到 2m——楼梯是直道，5m 前视会
+        # 看到 wp7 出口弯（κ2.66→1.73）把爬楼速度压到 1.74（实测）
+        _vll = float(os.environ.get(
+            "S10_AUTO_VLIM_LOOKAHEAD" + ("_STAIR" if self.mode == "STAIR"
+                                         else ""),
+            "2.0" if self.mode == "STAIR" else "5.0"))
+        _k_far = min(self._k_near + int(_vll / self.path_res),
                      len(self.path_vlim) - 1)
         v_lim = float(np.min(self.path_vlim[self._k_near:_k_far + 1]))
         # v340: 导航不做 err 分级限速——速度只由几何任务剖面决定。
