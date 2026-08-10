@@ -933,7 +933,7 @@ def main():
                       z_min=1.0 if _in_stairzone_now else 0.0,
                       fp_place=1.0 if _in_stairzone_now else 0.0,
                       wheel_press=(float(os.environ.get(
-                          'S10_WHEEL_PRESS', '0.12'))
+                          'S10_WHEEL_PRESS', '0.25'))
                                    if _in_stairzone_now else 0.0),
                       kd_scale=(float(os.environ.get(
                           'S10_STAIR_KD_SCALE', '2.5'))

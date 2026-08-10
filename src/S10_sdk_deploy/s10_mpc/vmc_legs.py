@@ -832,7 +832,10 @@ class CarVMC:
                         _own = float(_sl_all[leg])
                         _opp = (float(np.max(_sl_all[2:4])) if leg in (0, 1)
                                 else float(np.max(_sl_all[0:2])))
-                        _wp_eff = _wp * (0.3 * (1.0 - _own) + _opp)
+                        # v728: 本轴不抬即满压（原 0.3 稀释只给 7N，
+                        # 轮子承重不足腿撑车身）；本轴抬时卸载（对侧抬则
+                        # 对侧也压不住）
+                        _wp_eff = _wp * max(1.0 - _own, _opp)
                     pz_des = (float(terrain_h[leg]) + self.fk.r - _wp_eff)
                     F += (self.kp_h * (pz_des - p[2])
                           - self.kd_h * float(cmd.get("kd_scale", 1.0))
