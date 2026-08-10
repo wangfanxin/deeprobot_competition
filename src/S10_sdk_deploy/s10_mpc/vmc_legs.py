@@ -279,11 +279,23 @@ class VMCController:
             qhx = float(qpos[LEG_Q_IDX[b]])
             t_hipx += (self.kp_pose * (self.pose_target[b] - qhx)
                        - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b]]))
-            # v220g: 迈步腿 hipy 前摆+knee 伸直。前腿 q1 -1.16->-0.5(+0.66)、
-            # 后腿 +1.16->+0.5(-0.66)，符号按腿分（此前统一减号=后摆 bug）
             _qs = -1.0 if leg in (0, 1) else 1.0
-            _q1_tgt = self.pose_target[b + 1] - _sl * 0.66 * _qs
-            _q2_tgt = self.pose_target[b + 2] + _sl * 0.42
+            if float(cmd.get("stair_lift", 0.0)) > 0.0:
+                # v236: 台阶抬放姿态（FK 验证：前轮抬 0.141m、后轮抬 0.144m，
+                # 够 0.125m riser+余量；后轮=髋前摆+膝直，修复 v220g 后轮方向）
+                _amp = float(os.environ.get(
+                    "S10_VMC_STAIR_LIFT_AMP", "1.0"))
+                if _qs < 0.0:   # 前腿：髋前摆+膝屈
+                    _q1_tgt = self.pose_target[b + 1] + _sl * 0.80 * _amp
+                    _q2_tgt = self.pose_target[b + 2] + _sl * 0.60 * _amp
+                else:           # 后腿：髋大幅前摆+膝伸直
+                    _q1_tgt = self.pose_target[b + 1] + _sl * 1.10 * _amp
+                    _q2_tgt = self.pose_target[b + 2] - _sl * 0.65 * _amp
+            else:
+                # v220g: 横脊迈步（保持原行为）。前腿 q1 -1.16->-0.5(+0.66)、
+                # 后腿 +1.16->+0.5(-0.66)，符号按腿分
+                _q1_tgt = self.pose_target[b + 1] - _sl * 0.66 * _qs
+                _q2_tgt = self.pose_target[b + 2] + _sl * 0.42
             t_hipy += (self.kp_pose * (_q1_tgt - q1)
                        - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b + 1]]))
             t_knee += (self.kp_pose * (_q2_tgt - q2)
@@ -309,11 +321,10 @@ class VMCController:
             # 差速振荡（v219m/n 实测 60→5/15），转弯大增益保证转向力。
             _yk = self.yaw_k_wheel * (0.3 + 0.7 * min(
                 abs(self._om_f) / 0.4, 1.0))
-            # v235: 显式 yaw-rate 阻尼——高速差速转向 yaw 振荡掉头侧翻
-            # （RobuROC6/观测器文献：滑模/阻尼抑制振荡）
+            # v237: yaw 高频阻尼——v235 符号修正（-kd 削弱恢复力矩）
             _kd_yaw = float(os.environ.get("S10_CAR_KD_YAW", "2.0"))
             t_yaw = ((-_yk * (self._om_f - body["omega"])
-                      - _kd_yaw * body["omega"]) * wd_side
+                      + _kd_yaw * body["omega"]) * wd_side
                      * _ysc * getattr(self, "_ground_f", 1.0))
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
                        - self.wheel_d * wq + t_yaw)
@@ -646,8 +657,14 @@ class CarVMC:
                                 1.0 - 2.0 * (x * x + y * y)))
         pitch = float(np.arctan2(2.0 * (w * y - z * x),
                                  1.0 - 2.0 * (y * y + x * x)))
+        # v237: body 系 yaw 率（世界系 qvel[5] 会被地形俯仰/横滚污染）
+        w, x, y, z = q
+        z_axis = np.array([2.0 * (x * z + w * y),
+                           2.0 * (y * z - w * x),
+                           1.0 - 2.0 * (x * x + y * y)])
+        omega_body = float(np.dot(qvel[3:6], z_axis))
         return dict(yaw=yaw, roll=roll, pitch=pitch,
-                    omega=float(qvel[5]))
+                    omega=float(qvel[5]), omega_body=omega_body)
 
     def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel,
                     cmd, terrain_h, dt=0.005):
@@ -750,10 +767,16 @@ class CarVMC:
             v_wheel = -wq * self.fk.r
             side = -1.0 if leg in (0, 2) else 1.0
             v_ref = self._vx_f + side * self._om_f * self.track_half
-            # v235: yaw-rate damping (CarVMC) - high-speed diff-steer yaw oscillation
+            # v237: yaw 高频阻尼——修正 v235 符号（-kd 削弱恢复力矩），
+            # body 系 yaw 率 + 高通（只阻尼振荡，稳态零偏置；RobuROC6 思路）
             _kd_yaw = float(os.environ.get("S10_CAR_KD_YAW", "2.0"))
+            _om_b = body.get("omega_body", body["omega"])
+            if not hasattr(self, "_omega_lp"):
+                self._omega_lp = _om_b
+            _om_hf = _om_b - self._omega_lp
+            self._omega_lp += (_om_b - self._omega_lp) * min(1.0, dt / 0.05)
             t_yaw = ((-_yk * (self._om_f - body["omega"])
-                      - _kd_yaw * body["omega"]) * side
+                      + _kd_yaw * _om_hf) * side
                      * _ysc * self._ground_f)
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
                        - self.wheel_d * wq + t_yaw)

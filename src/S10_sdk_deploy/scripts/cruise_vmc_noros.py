@@ -85,6 +85,15 @@ def main():
         print(f'[VMC] 预扫描横脊 {len(ridge_arcs)} 处', flush=True)
     except Exception as e:
         print('[VMC] 横脊预扫描失败', e, flush=True)
+    # v236: 台阶几何预扫描——wp6->7 楼梯区 riser 弧长表（已知地图，供相位步态）
+    stair_risers = []
+    try:
+        _s6 = float(fol.path_wp_s[6]); _s7 = float(fol.path_wp_s[7])
+        stair_risers = [(sr, dhv) for (sr, dhv) in ridge_arcs
+                        if _s6 <= sr <= _s7 and dhv >= 0.09]
+        print(f'[VMC] 楼梯区 riser {len(stair_risers)} 处', flush=True)
+    except Exception as e:
+        print('[VMC] 楼梯预扫描失败', e, flush=True)
 
     mppi = BodyMPPI(
         N=int(os.environ.get('VMC_MPPI_N', '256')),
@@ -233,10 +242,28 @@ def main():
             terr = _terr_f
         s_cur = float(getattr(fol, '_s_cur', 0.0))
 
-        # v220a: 单步跨越状态机——横脊 0.125m > 轮半径 0.081，轮滚不上，
-        # 前轮抬膝跨脊（0.45s）后轮跟抬（0.45s），迈步时关 RIDGE_LIFT 防叠加
+        # v236: 台阶相位步态——按弧长对每级 riser 调度前轴/后轴抬放
+        # （几何已知，无硬模式：仅当台阶 riser 在前方窗口内才产生抬放量）。
+        # 前轴窗口 = 棱边前 0.40m -> 棱边后 0.30m；后轴按半轴距 0.228m 延后。
         step_lift = np.zeros(4)
-        if float(os.environ.get('S10_VMC_STEP_OVER', '0')) > 0:
+        stair_lift_flag = 0.0
+        if (float(os.environ.get('S10_VMC_STAIR_GAIT', '0')) > 0
+                and stair_risers):
+            _fl_max, _rl_max = 0.0, 0.0
+            for (sr, dhv) in stair_risers:
+                _df = s_cur - (sr - 0.228)   # 前轴到棱边
+                _dr = s_cur - (sr + 0.228)   # 后轴到棱边
+                _fl = (float(np.clip((0.40 - _df) / 0.15, 0.0, 1.0))
+                       * float(np.clip((_df + 0.30) / 0.25, 0.0, 1.0)))
+                _rl = (float(np.clip((0.40 - _dr) / 0.15, 0.0, 1.0))
+                       * float(np.clip((_dr + 0.30) / 0.25, 0.0, 1.0)))
+                _fl_max = max(_fl_max, _fl); _rl_max = max(_rl_max, _rl)
+            if _fl_max + _rl_max > 0.02:
+                step_lift[:] = [_fl_max, _fl_max, _rl_max, _rl_max]
+                stair_lift_flag = 1.0
+        elif float(os.environ.get('S10_VMC_STEP_OVER', '0')) > 0:
+            # v220a: 单步跨越状态机——横脊 0.125m > 轮半径 0.081，轮滚不上，
+            # 前轮抬膝跨脊（0.45s）后轮跟抬（0.45s），迈步时关 RIDGE_LIFT
             _near_ridge = any(
                 0.2 <= sr - s_cur <= 0.9 for (sr, dhv) in ridge_arcs)
             _step_dur = float(os.environ.get('S10_VMC_STEP_DUR', '0.8'))
@@ -323,7 +350,7 @@ def main():
             hop = np.zeros(4, dtype=np.float64)
             _in_hop_zone = any(
                 -1.0 <= sr - s_cur <= 1.5 for (sr, dhv) in ridge_arcs)
-            if _in_hop_zone:
+            if _in_hop_zone and stair_lift_flag <= 0.0:
                 _fwd2 = d.xmat[1][0:2]
                 _fx, _fy = _fwd2[0], _fwd2[1]
                 _fn = float(np.hypot(_fx, _fy)) + 1e-9
@@ -340,7 +367,8 @@ def main():
                       pitch_tar=pitch_tar,
                       yaw_scale=1.0 - _lift_act, hop=hop,
                       step_lift=step_lift,
-                      body_lift=_body_lift)
+                      body_lift=_body_lift,
+                      stair_lift=stair_lift_flag)
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
