@@ -759,7 +759,8 @@ class CarVMC:
             # v453: 抬轮摆动幅度可调（S10_VMC_LIFT_SWING 默认 0.66）——
             # wp5→6 台阶实测 0.66rad 只抬轮 0.045m，不够 0.125m 台阶。
             _qs = -1.0 if leg in (0, 1) else 1.0
-            _lsw = float(os.environ.get("S10_VMC_LIFT_SWING", "0.66"))
+            _lsw = float(cmd.get(
+                "lift_swing", os.environ.get("S10_VMC_LIFT_SWING", "0.66")))
             _q1_tgt = self.pose_target[b + 1] - sl * _lsw * _qs
             _q2_tgt = self.pose_target[b + 2] + sl * 0.42
             # v221i: 车身抬升（过脊用）——0.05 只到 0.68(差 5mm)，改 0.08

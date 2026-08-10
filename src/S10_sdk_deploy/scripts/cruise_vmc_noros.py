@@ -719,17 +719,22 @@ def main():
             # 永久升面需保牵引爬升）用 S10_VMC_LIFT_F_SCALE_STEP；巡航平脊
             # 段（z 不升，动量冲过）用默认 1.0 硬抬轮。地形属性=技能切换。
             _lfs = 1.0
+            _lsw = float(os.environ.get('S10_VMC_LIFT_SWING', '0.66'))
             if (next_idx >= 2 and next_idx - 1 < len(fol.step_zone)
                     and fol.step_zone[next_idx - 1]):
                 _lfs = float(os.environ.get(
                     'S10_VMC_LIFT_F_SCALE_STEP', '0.3'))
+                # v457: 台阶区加大抬轮摆动（0.66rad 只抬 0.05m < 0.13m 台阶）
+                _lsw = float(os.environ.get(
+                    'S10_VMC_LIFT_SWING_STEP', '1.5'))
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
                       yaw_scale=1.0 - _lift_act, hop=hop,
                       step_lift=step_lift,
                       body_lift=_body_lift,
                       stair_lift=stair_lift_flag,
-                      lift_f_scale=_lfs)
+                      lift_f_scale=_lfs,
+                      lift_swing=_lsw)
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         _tleg = float(np.abs(tau[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]]).max())
         _twh = float(np.abs(tau[[3, 7, 11, 15]]).max())
