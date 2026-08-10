@@ -99,6 +99,21 @@ class AutoNavFollower:
         （安全走廊 x∈[-14.6,-13.9]，两侧余量 0.25m+）。0=关闭。
         """
         out = np.asarray(xy, dtype=np.float64).copy()
+        # v371: 起步门架走廊偏移——wp0->wp1 段在 45% 弧长处（实测门架墙
+        # y~4.95，开口 x∈(-1.0,+0.7)）西移 S10_START_CORRIDOR_X，两端
+        # 高斯归零（wp0/wp1 位置不动，0.3m 判点不受影响）。狗稳定走开口
+        # 中线，避免漂到 x>=0.7 撞墙（此前"起步坡自旋"实为撞门架扰动）。
+        _sx = float(os.environ.get("S10_START_CORRIDOR_X", "0.0"))
+        if _sx > 0.0 and len(self.cum_len) > 1:
+            _s_end = float(self.cum_len[1])
+            for _i in range(len(out)):
+                _s = float(self.cum_len[_i])
+                if _s < _s_end:
+                    _u = _s / max(_s_end, 1e-3)
+                    # v373: 峰 42%、σ0.20——门架前达峰、y~9.4 前回归名义线；
+                    # 偏移量 0.5（狗东漂 0.4-0.65，路径需 <=-0.1 才稳开口内）
+                    _w = float(np.exp(-((_u - 0.42) / 0.20) ** 2))
+                    out[_i, 0] -= _sx * _w
         amp = float(os.environ.get("S10_STAIR_CORRIDOR_X", "0.6"))
         if amp <= 0.0:
             return out
@@ -332,6 +347,28 @@ class AutoNavFollower:
             p3 = xy[min(i + 2, n - 1)]
             m1 = (p2 - p0) * _tk
             m2 = (p3 - p1) * _tk
+            # v377: 弯后长直段切线拉直——段起点转角>0.6rad 且段长>4m
+            #（wp1->2 弓 0.88m 绕圈根因）；直道延续段保留原线。
+            _lt = float(os.environ.get("S10_PATH_STRAIGHT_LEN", "4.0"))
+            _kp = float(os.environ.get("S10_PATH_PERP_K", "0.25"))
+            _seg12 = p2 - p1
+            _Ls = float(np.linalg.norm(_seg12))
+            _turn0 = 0.0
+            if i > 0:
+                _a = p1 - p0
+                _b = p2 - p1
+                _La = float(np.linalg.norm(_a))
+                if _La > 1e-6 and _Ls > 1e-6:
+                    _turn0 = abs(float(np.arctan2(
+                        _a[0] * _b[1] - _a[1] * _b[0],
+                        _a[0] * _b[0] + _a[1] * _b[1])))
+            if _Ls > _lt and _turn0 > float(os.environ.get(
+                    "S10_PATH_STRAIGHT_TURN", "0.6")):
+                _us = _seg12 / max(_Ls, 1e-6)
+                _m1p = float(np.dot(m1, _us)) * _us
+                _m2p = float(np.dot(m2, _us)) * _us
+                m1 = _m1p + _kp * (m1 - _m1p)
+                m2 = _m2p + _kp * (m2 - _m2p)
             for k in range(1, n_per):
                 t = k / n_per
                 t2 = t * t
@@ -518,6 +555,20 @@ class AutoNavFollower:
                         "S10_AUTO_LOOKAHEAD_MAX", "3.2"))))
                 s_target = min(self._s_cur + _lk_eff, self.path_total)
                 target = self._path_point_at(s_target)
+        # v374b: 过点后出口瞄准——刚过 wp[i-1]（3m 内）时目标 = 出口方向点
+        # （wp[i]-wp[i-1] 方向 2.5m），与脚本侧"过点后光束"一致，拉直出弯。
+        # 仅 wp1 之后生效（起点 wp0 在 3m 内会误触发）。
+        if next_idx >= 2:
+            _pw = self.wp[next_idx - 1][:2]
+            _dd = float(np.linalg.norm(robot_xy - _pw))
+            _after_len = float(os.environ.get("S10_AUTO_BEAM_AFTER", "3.0"))
+            if _dd < _after_len:
+                _ex = self.wp[next_idx][:2] - _pw
+                _Le = float(np.linalg.norm(_ex))
+                if _Le > 1e-3:
+                    _exit_len = float(os.environ.get(
+                        "S10_AUTO_BEAM_AFTER_EXIT", "2.5"))
+                    target = _pw + (_ex / _Le) * _exit_len
         err = np.arctan2(target[1] - robot_xy[1],
                          target[0] - robot_xy[0]) - yaw
         err = float(np.arctan2(np.sin(err), np.cos(err)))

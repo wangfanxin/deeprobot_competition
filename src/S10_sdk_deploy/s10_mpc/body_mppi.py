@@ -59,6 +59,7 @@ class BodyMPPI:
         self.lam = lam
         self.sigma_vx0, self.sigma_om0 = sigma_vx, sigma_om
         self.w_dist, self.w_v, self.w_h, self.w_s = w_dist, w_v, w_h, w_s
+        self.w_g = float(_os.environ.get('S10_MPPI_W_GUIDE', '0.5'))
         self.ada_alpha, self.ada_min, self.ada_max = ada_alpha, ada_min, ada_max
         self.rng = np.random.default_rng(seed)
         self._u = np.zeros(2)
@@ -89,8 +90,10 @@ class BodyMPPI:
             s[:, h + 1, 5] = s[:, h, 5] + (om_c - s[:, h, 5]) * dt / self.tau_w
         return s
 
-    def _cost(self, s, u_seq, prev_u, ref, v_ref):
-        """ref: (R,3) [x, y, heading] 路径参考轨迹；v_ref: 标量限速。"""
+    def _cost(self, s, u_seq, prev_u, ref, v_ref, guide=None):
+        """ref: (R,3) [x, y, heading] 路径参考轨迹；v_ref: 标量限速；
+        guide: (2,) 导航期望 [vx, om]——v376 指令跟踪：MPPI 在执行层
+        约束内跟随导航转向，距离成本只做辅助（wp1 后 donut 实测）。"""
         R = ref.shape[0]
         xy = s[:, :, 0:2]                               # (N,H+1,2)
         d2 = np.sum((xy[:, :, None, :] - ref[None, None, :, 0:2]) ** 2,
@@ -109,6 +112,10 @@ class BodyMPPI:
                 + self.w_h * h_err ** 2
                 + self.w_v * v_err ** 2)
         cost = cost.sum(axis=1)
+        if guide is not None and self.w_g > 0.0:
+            cost += self.w_g * np.sum(
+                (u_seq - np.asarray(guide, dtype=np.float64)[None, None, :])
+                ** 2, axis=(1, 2))
         cost += self.w_s * np.sum((u_seq - prev_u[None, None, :]) ** 2,
                                   axis=(1, 2))
         return cost
@@ -145,7 +152,8 @@ class BodyMPPI:
         # 中强制执行（软实现：超限样本经摩擦锥/输出钳制吸收）。
         u_seq[0] = prev_u
         s = self._rollout(s0, u_seq, prev_u)
-        cost = self._cost(s, u_seq, prev_u, ref, v_ref)
+        cost = self._cost(s, u_seq, prev_u, ref, v_ref,
+                          guide=[guide_vx, guide_om])
         cmin = float(cost.min())
         w = np.exp(-(cost - cmin) / max(self.lam, 1e-6))
         w = w / (w.sum() + 1e-9)

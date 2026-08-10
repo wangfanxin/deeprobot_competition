@@ -547,10 +547,17 @@ class LidarTerrain:
         n = len(L)
         geomid = np.full(n, -1, dtype=np.int32)
         dist = np.full(n, -1.0, dtype=np.float64)
+        norm = np.zeros((n * 3,), dtype=np.float64)
         mujoco.mj_multiRay(m, d, pos.copy(), vec.reshape(-1),
-                           self.geomgroup, True, 1, geomid, dist, None,
+                           self.geomgroup, True, 1, geomid, dist, norm,
                            n, self.cutoff)
         hit = dist > 0.0
+        # v369: 只建"近水平面"图——高程图服务于腿阻抗/台阶踏面，必须排除
+        # 竖直结构（起步坡门架壁/边缘掠射 0.6-1.0m 虚高读数 -> 前腿过度
+        # 伸展 -> yaw 自旋）。|nz|>0.6 视为地面/踏面；竖直面 nz~0 丢弃。
+        _nz_min = float(os.environ.get("S10_LIDAR_NZ_MIN", "0.6"))
+        _nz = np.abs(norm.reshape(n, 3)[:, 2])
+        hit = hit & (_nz >= _nz_min)
         if hit.any():
             pts = pos + dist[:, None] * vec
             for i in np.where(hit)[0]:
