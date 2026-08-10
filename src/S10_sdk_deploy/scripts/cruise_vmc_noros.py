@@ -225,9 +225,10 @@ def main():
                 _dmin = 1e9
                 _tng_near = None
                 for (_rp, _tng, _sr, _dh) in ridge_world:
-                    _dd = float(abs(np.dot(_fa0 - _rp, _tng)))
-                    if _dd < _dmin:
-                        _dmin = _dd
+                    # v262: 只考虑**前方**的脊（沿路径切线投影为负=脊在前）
+                    _dd = float(np.dot(_fa0 - _rp, _tng))
+                    if _dd < 0.0 and abs(_dd) < _dmin:
+                        _dmin = abs(_dd)
                         _tng_near = _tng
                 if _dmin < 2.5 and _tng_near is not None:
                     _k_st = float(np.clip((2.5 - _dmin) / 2.0, 0.0, 1.0))
