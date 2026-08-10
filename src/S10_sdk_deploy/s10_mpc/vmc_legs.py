@@ -609,10 +609,20 @@ class CarVMC:
         self.wheel_d = float(os.environ.get("S10_VMC_WHEEL_D", str(wheel_d)))
         self.yaw_k_wheel = float(os.environ.get(
             "S10_VMC_YAW_K_WHEEL", "60.0"))
-        self.pose_target = np.array([-0.05, -1.16, 2.30,
-                                      0.05, -1.16, 2.30,
-                                     -0.05,  1.16, -2.30,
-                                      0.05,  1.16, -2.30], dtype=np.float64)
+        # v234: 巡航半蹲（轮足姿态总结）——knee 2.30->1.90 降质心 ~6cm，
+        # 减侧翻矩、保四轮法向均载、弱化微起伏传递。S10_CAR_SQUAT=0 回站立
+        if os.environ.get("S10_CAR_SQUAT", "1") == "1":
+            self.pose_target = np.array([-0.05, -1.10, 1.90,
+                                          0.05, -1.10, 1.90,
+                                         -0.05,  1.10, -1.90,
+                                          0.05,  1.10, -1.90],
+                                        dtype=np.float64)
+        else:
+            self.pose_target = np.array([-0.05, -1.16, 2.30,
+                                          0.05, -1.16, 2.30,
+                                         -0.05,  1.16, -2.30,
+                                          0.05,  1.16, -2.30],
+                                        dtype=np.float64)
         # roll 分配符号：左腿 +，右腿 -
         self.roll_sign = np.array([1.0, -1.0, 1.0, -1.0])
         # pitch 分配符号：前腿 -，后腿 +

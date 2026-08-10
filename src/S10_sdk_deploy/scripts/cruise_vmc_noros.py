@@ -294,10 +294,9 @@ def main():
             terr[2:] = np.maximum(terr[2:], terr[2:] + _lift * 0.8)
 
 
-        # v233: 压弯（向心加速度来自重力分量）——左转(om>0)内倾(roll<0)，
-        # 此前符号反了(外倾与离心力同向→高速翻车根因)。0.35 猛倾干扰
-        # 差速(单测 yaw 0.5rad/s+轮振荡)，降 0.25
-        roll_tar = float(np.clip(-0.25 * om_c * abs(vx_c), -0.40, 0.40))
+        # v234: 巡航转弯=差速为主 + hip 微 roll ±3.5°(0.06 rad)协调——
+        # 不采用腿足式压弯（轮足深压弯→后轮打滑/无悬架抖动，用户总结）
+        roll_tar = float(np.clip(-0.06 * om_c * abs(vx_c), -0.06, 0.06))
         pitch_tar = 0.0
         try:
             fwd = d.xmat[1][0:2]
