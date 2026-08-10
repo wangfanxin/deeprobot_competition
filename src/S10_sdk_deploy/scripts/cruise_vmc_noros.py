@@ -480,6 +480,7 @@ def main():
                 if -_twin <= _dr9 <= 0.15:
                     terr[2:4] = np.maximum(terr[2:4], _top + 0.02)
         s_cur = float(getattr(fol, '_s_cur', 0.0))
+
         # v292: 台阶窗 vx 连续插值到 STAIR_WIN_VX（默认 1.8，不归零）——
         # 窗内只换腿控制（几何相位）与轮力矩模式，vx 参考保持连续
         if stair_risers:
@@ -507,6 +508,25 @@ def main():
         # 巡航横脊抬轮/后轮跟抬/地形 bump 全部禁用（防前后轴双抬+塌身）。
         _in_stairzone_now = (next_idx >= 2 and next_idx - 1 < len(fol.stair_zone)
                              and bool(fol.stair_zone[next_idx - 1]))
+        # v752: USC 关键姿态插值因子——前轴到最近棱距离的连续量：
+        # 棱前 0.10m 起、过棱后 0.10m 满。驱动 WBC/CarVMC 前腿伸长+后腿
+        # 收缩（几何 body 前倾），让前轮在台面上接触而非悬空（三执行层
+        # 卡死根因：body 后倾→前轮悬空 0.003m→单点支撑）。
+        _stair_pose = 0.0
+        if _in_stairzone_now and stair_world:
+            _fwdsp = np.array([d.xmat[1][0], d.xmat[1][3]])
+            _fnsp = float(np.hypot(_fwdsp[0], _fwdsp[1])) + 1e-9
+            _fxsp, _fysp = _fwdsp[0] / _fnsp, _fwdsp[1] / _fnsp
+            _axsp = body_pos[:2] + np.array([_fxsp * 0.228, _fysp * 0.228])
+            _dsp_min = 1e9
+            for (_rp, _tng, _sr, _dhv, _top) in stair_world:
+                _dsp = float(np.dot(_axsp - _rp, _tng))
+                if abs(_dsp) < abs(_dsp_min):
+                    _dsp_min = _dsp
+            # 窗口：棱前 0.05m 起抬、过棱 0.05m 满（原 (0.10-d)/0.20 在
+            # d 为负(棱前)时反而满幅→前轮在棱前 0.32m 就趴下卡死实测）
+            _stair_pose = float(np.clip(
+                (_dsp_min + 0.05) / 0.10, 0.0, 1.0))
         # v264: 连续前瞻抬轮（无门控）——按"轴前 0.35m 地形高 - 轴下地形高"
         # 连续抬放（比例 clamp 0.15m）。纯几何连续量，替代 hop 冲量/横脊
         # 步态等离散触发（用户原则：除 cruise/stair 切换外无门控）。
@@ -811,12 +831,15 @@ def main():
             # 反向——车身**抬头**匹配台阶坡度，抬升前髋让抬轮过 0.13m 棱
             # （低头会把前髋压低，前轮差 1cm 卡棱实测）。
             if _in_stairzone_now:
-                # v750: 楼梯 pitch 统一用轴距坡度（USC 纯滚动姿态）——前轮
-                # 上台面时 body 前倾让前轮够台面+后轮贴地推；不再依赖
-                # step_lift 标志（NO_LIFT 纯滚动时也生效）。
+                # v752: 楼梯 pitch 随 stair_pose 低头（前轮压台面）——
+                # 原 atan2(前terr-后terr) 是抬头方向，与 stair_pose 前腿
+                # 伸长（body 低头、前轮贴台面）打架，WBC 追抬头把前轮抬
+                # 离台面悬空（pitch -0.16 vs tar +0.137 实测）。前轮在
+                # 台面时 body 应低头（前低后高），后轮地面推。
                 _pfr = float(np.mean(terr[0:2])); _prr = float(np.mean(terr[2:4]))
                 pitch_tar = float(np.clip(
-                    np.arctan2(_pfr - _prr, 0.456), 0.05, 0.30))
+                    np.arctan2(_prr - _pfr, 0.456) + _stair_pose * 0.08,
+                    -0.30, 0.08))
             else:
                 pitch_tar = float(np.clip(
                     np.arctan2(h_a - h_b, 1.2), -0.35, 0.35))
@@ -1076,6 +1099,7 @@ def main():
                                         and float(np.max(step_lift)) > 0.3)
                                 else 0.0),
                       lift_swing=_lsw,
+                      stair_pose=_stair_pose,
                       z_des=_zd,
                       place_z=place_z,
                       place_margin=float(os.environ.get(

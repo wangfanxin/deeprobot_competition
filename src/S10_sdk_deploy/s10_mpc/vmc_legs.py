@@ -317,6 +317,17 @@ class VMCController:
             J = self.fk.jac(q1, q2)
             # WBC 腿力（世界系）+ 地形阻抗（垂直跟随，横脊预抬经 terrain_h）
             fw = f_legs[leg * 3:leg * 3 + 3].copy()
+            if (float(os.environ.get('S10_WBC_FW_DEBUG', '0')) > 0
+                    and float(cmd.get('z_min', 0.0)) > 0.0
+                    and leg == 0):
+                self._fwdbg_n = getattr(self, '_fwdbg_n', 0) + 1
+                if self._fwdbg_n % 100 == 1:
+                    print('[FWDBG] leg=%d fw=%s wz=%.3f terr=%.3f '
+                          'pitch=%.2f f_legs=%s'
+                          % (leg, np.round(fw, 1),
+                             float(wheel_xyz[leg, 2]),
+                             float(terrain_h[leg]), body['pitch'],
+                             np.round(f_legs, 1)), flush=True)
             p = wheel_xyz[leg]
             # v220k: 单步跨越——迈步腿完全卸载（wrench 支撑力+地形阻抗都清零，
             # 否则 J^T 支撑力矩抵消 knee 位置 PD，轮抬不起来）
@@ -378,6 +389,20 @@ class VMCController:
                 # 后腿 +1.16->+0.5(-0.66)，符号按腿分
                 _q1_tgt = self.pose_target[b + 1] - _sl * 0.66 * _qs
                 _q2_tgt = self.pose_target[b + 2] + _sl * 0.42
+                # v752: USC 关键姿态——前轴近棱时前腿伸长(膝直)+后腿
+                # 收缩(膝屈)，几何 body 前倾让前轮接触台面（三执行层
+                # 卡死根因：body 后倾→前轮悬空）。幅度 S10_VMC_STAIR_POSE。
+                _sp3 = float(cmd.get("stair_pose", 0.0))
+                if _sp3 > 0.0 and float(cmd.get("z_min", 0.0)) > 0.0:
+                    _spamp = float(os.environ.get(
+                        "S10_VMC_STAIR_POSE", "1.0"))
+                    if _qs < 0.0:   # 前腿：只膝伸直(z_down 增 0.146→0.20)，
+                        # 不加 q1 前摆（0.35 会让轮心飞高 1.02 弹跳实测）
+                        _q2_tgt += _sp3 * -0.45 * _spamp
+                    else:           # 后腿：膝屈(z_down 减)——q2 增大=伸长
+                        # 方向错（0.146→0.181 前后腿都伸 body 不低头实测）；
+                        # q2 减小才是收缩（-2.30→-2.52 → z_down 0.109）
+                        _q2_tgt += _sp3 * -0.22 * _spamp
             t_hipy += (self.kp_pose * (_q1_tgt - q1)
                        - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b + 1]]))
             t_knee += (self.kp_pose * (_q2_tgt - q2)
