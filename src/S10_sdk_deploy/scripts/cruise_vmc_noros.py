@@ -308,8 +308,12 @@ def main():
                     np.clip((0.45 - _drr) / 0.15, 0.0, 1.0)
                     * np.clip((_drr - 0.02) / 0.15, 0.0, 1.0)))
             if _fl2 + _rl2 > 0.02:
+                # v256: 横脊步态激活时用轮下地形（禁前瞻）——前瞻抬轮 +
+                # step_lift 抬轮双重叠加致腿饱和侧翻（wp4→5 实测）
+                if 'terr_foot' in locals():
+                    terr = terr_foot.copy()
                 # v255: 横脊只抬前轮，后轮滚动/蹬过（斜过脊时后轮单侧先触
-                # 脊，双侧同抬反而侧翻，wp4→5 roll -2.75 实测；"前挂后蹬"）
+                # 脊，双侧同抬反而侧翻；"前挂后蹬"）
                 if float(os.environ.get(
                         "S10_VMC_RIDGE_REAR_LIFT", "0.0")) > 0:
                     step_lift[:] = [_fl2, _fl2, _rl2, _rl2]
