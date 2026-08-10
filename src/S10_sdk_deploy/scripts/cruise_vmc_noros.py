@@ -12,7 +12,7 @@ PKG = '/home/wfx/DR_competition/deeprobot_competition/src/S10_sdk_deploy'
 sys.path.insert(0, PKG)
 from s10_mpc.auto_nav import AutoNavFollower
 from s10_mpc.body_mppi import BodyMPPI
-from s10_mpc.vmc_legs import (VMCController, LEG_ATTACH, WHEEL_BODY,
+from s10_mpc.vmc_legs import (VMCController, CarVMC, LEG_ATTACH, WHEEL_BODY,
     WHEEL_Q_IDX, LidarTerrain)
 
 DT = 0.005
@@ -94,6 +94,9 @@ def main():
         from s10_mpc.vmc_legs import LegPDDrive
         vmc = LegPDDrive()
         print('[VMC] LegPDDrive 模式（腿锁蹲姿+轮驱动）', flush=True)
+    elif os.environ.get('S10_VMC_MODE', 'wbc') == 'car':
+        vmc = CarVMC()
+        print('[VMC] CarVMC 模式（车化：轮驱动/差速，腿=主动悬架姿态）', flush=True)
     else:
         vmc = VMCController()
 

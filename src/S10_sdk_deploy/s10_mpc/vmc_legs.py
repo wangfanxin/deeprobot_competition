@@ -566,6 +566,179 @@ class LidarTerrain:
         return 0.0
 
 
+class CarVMC:
+    """v221: 车化巡航控制器——轮=驱动+差速转向，腿=刚性主动悬架(姿态)。
+
+    文献依据：
+    - BIT "Enhancing high-speed steering stability of wheel-legged vehicles by
+      active roll control"（yaw-roll 耦合模型，主动 roll 控制=压弯）：
+      高速转向稳定性核心是 roll 控制，不是腿力 wrench。
+    - "Static Stability ... Wheel-Legged Agricultural Robot"：leg-height 主动
+      调节提高最大可容许 roll 角 85-90%、改善 pitch——腿长差=姿态悬架。
+    - skid-steering 简单控制（BIT 2023）：vx PID + yaw rate 反馈即可。
+
+    结构（比 wrench/pinv 简单一个量级）：
+    1. 轮：v_ref = vx +- omega*track_half；vx 速度跟踪 + yaw rate 差速反馈
+    2. 腿：每腿独立垂直力 F = mg/4 + roll分配 + pitch分配 + 地形阻抗
+       roll: 左+右- 差 = kp_roll*(roll_tar-roll) - kd_roll*roll_rate
+       pitch: 前-后+ 差 = kp_pitch*(pitch_tar-pitch) - kd_pitch*pitch_rate
+    3. 压弯：roll_tar 随 vx*omega（弯内倾），由腿长差执行
+    4. hipx：位置 PD + 侧身微调（随 roll_tar）
+    5. 轮力矩动态抓地钳制（按 F_leg 实际载荷）
+    """
+
+    def __init__(self, mass=19.0, g=9.81, L1=0.18, L2=0.18, r=0.081,
+                 track_half=0.24, kp_leg=80.0, kd_leg=6.0,
+                 kp_h=200.0, kd_h=40.0,
+                 kp_roll=120.0, kd_roll=12.0,
+                 kp_pitch=150.0, kd_pitch=15.0,
+                 wheel_k=4.0, wheel_d=0.08):
+        import os
+        self.m, self.g = mass, g
+        self.fk = S10LegFK(L1, L2, r)
+        self.track_half = track_half
+        self.kp_leg, self.kd_leg = kp_leg, kd_leg
+        self.kp_h = float(os.environ.get("S10_VMC_KPH", str(kp_h)))
+        self.kd_h = float(os.environ.get("S10_VMC_KDH", str(kd_h)))
+        self.kp_roll = float(os.environ.get("S10_CAR_KP_ROLL", str(kp_roll)))
+        self.kd_roll = float(os.environ.get("S10_CAR_KD_ROLL", str(kd_roll)))
+        self.kp_pitch = float(os.environ.get("S10_CAR_KP_PITCH", str(kp_pitch)))
+        self.kd_pitch = float(os.environ.get("S10_CAR_KD_PITCH", str(kd_pitch)))
+        self.wheel_k = float(os.environ.get("S10_VMC_WHEEL_K", str(wheel_k)))
+        self.wheel_d = float(os.environ.get("S10_VMC_WHEEL_D", str(wheel_d)))
+        self.yaw_k_wheel = float(os.environ.get(
+            "S10_VMC_YAW_K_WHEEL", "60.0"))
+        self.pose_target = np.array([-0.05, -1.16, 2.30,
+                                      0.05, -1.16, 2.30,
+                                     -0.05,  1.16, -2.30,
+                                      0.05,  1.16, -2.30], dtype=np.float64)
+        # roll 分配符号：左腿 +，右腿 -
+        self.roll_sign = np.array([1.0, -1.0, 1.0, -1.0])
+        # pitch 分配符号：前腿 -，后腿 +
+        self.pitch_sign = np.array([-1.0, -1.0, 1.0, 1.0])
+        self._vx_f, self._om_f = 0.0, 0.0
+        self._roll_f, self._pitch_f = 0.0, 0.0
+        self._roll_prev = None
+        self._pitch_prev = None
+        self._ground_f = 1.0
+
+    def _body_state(self, qpos, qvel):
+        q = qpos[3:7]
+        w, x, y, z = q
+        yaw = float(np.arctan2(2.0 * (w * z + x * y),
+                               1.0 - 2.0 * (y * y + z * z)))
+        roll = float(np.arctan2(2.0 * (w * x + y * z),
+                                1.0 - 2.0 * (x * x + y * y)))
+        pitch = float(np.arctan2(2.0 * (w * y - z * x),
+                                 1.0 - 2.0 * (y * y + x * x)))
+        return dict(yaw=yaw, roll=roll, pitch=pitch,
+                    omega=float(qvel[5]))
+
+    def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel,
+                    cmd, terrain_h, dt=0.005):
+        body = self._body_state(qpos, qvel)
+        k = min(1.0, dt / 0.10)
+        self._vx_f += (float(cmd["vx"]) - self._vx_f) * k
+        self._om_f += (float(cmd["omega"]) - self._om_f) * k
+        roll_tar = float(cmd.get("roll_tar", 0.0))
+        pitch_tar = float(cmd.get("pitch_tar", 0.0))
+        self._roll_f += (roll_tar - self._roll_f) * k
+        self._pitch_f += (pitch_tar - self._pitch_f) * k
+        roll_rate = ((body["roll"] - self._roll_prev) / max(dt, 1e-4)
+                     if self._roll_prev is not None else 0.0)
+        pitch_rate = ((body["pitch"] - self._pitch_prev) / max(dt, 1e-4)
+                      if self._pitch_prev is not None else 0.0)
+        self._roll_prev = body["roll"]
+        self._pitch_prev = body["pitch"]
+
+        # 腾空衰减（横脊/跳跃时关 yaw 反馈）
+        if wheel_xyz is not None and terrain_h is not None:
+            _lift_amt = float(np.mean(
+                wheel_xyz[:, 2] - (np.asarray(terrain_h) + self.fk.r)))
+            self._ground_f = float(np.clip(
+                1.0 - max(0.0, _lift_amt - 0.02) / 0.05, 0.0, 1.0))
+        else:
+            self._ground_f = 1.0
+
+        # 姿态力矩（腿长差）
+        R = (self.kp_roll * (self._roll_f - body["roll"])
+             - self.kd_roll * roll_rate)
+        P = (self.kp_pitch * (self._pitch_f - body["pitch"])
+             - self.kd_pitch * pitch_rate)
+        _tmax = float(os.environ.get("S10_CAR_ATT_TMAX", "40.0"))
+        R = float(np.clip(R, -_tmax, _tmax))
+        P = float(np.clip(P, -_tmax, _tmax))
+
+        # 轮差速 yaw 反馈（自适应：转弯大、直行小）
+        _ysc = float(cmd.get("yaw_scale", 1.0))
+        _yk = self.yaw_k_wheel * (0.3 + 0.7 * min(abs(self._om_f) / 0.4, 1.0))
+
+        tau = np.zeros(16, dtype=np.float64)
+        step_lift = np.asarray(cmd.get("step_lift", np.zeros(4)))
+        hop = cmd.get("hop")
+        for leg in range(4):
+            b = leg * 3
+            hipx_i, hipy_i, knee_i = (
+                LEG_CTRL_IDX[b], LEG_CTRL_IDX[b + 1], LEG_CTRL_IDX[b + 2])
+            q0 = float(qpos[LEG_Q_IDX[b]])
+            q1 = float(qpos[LEG_Q_IDX[b + 1]])
+            q2 = float(qpos[LEG_Q_IDX[b + 2]])
+            J = self.fk.jac(q1, q2)
+            sl = float(step_lift[leg])
+
+            # 腿垂直支撑力：mg/4 + 姿态分配 + 地形阻抗
+            F = self.m * self.g / 4.0
+            # v221c: 压弯——符号以实验为准（F+roll_sign 在 car1 全程无侧翻；
+            # 取反后实测更右倾+wq 振荡，回退）
+            F += self.roll_sign[leg] * R
+            F += self.pitch_sign[leg] * P
+            p = wheel_xyz[leg] if wheel_xyz is not None else None
+            if p is not None and terrain_h is not None:
+                pz_des = float(terrain_h[leg]) + self.fk.r
+                F += (1.0 - sl) * (
+                    self.kp_h * (pz_des - p[2])
+                    - self.kd_h * float(wheel_vel[leg, 2]))
+            F = max(F, 2.0) * (1.0 - sl)
+            if hop is not None:
+                F += float(hop[leg])
+
+            # 腿关节力矩（J^T 垂直力）+ 位置 PD
+            t_hipy, t_knee = J.T @ np.array([0.0, F])
+            # 迈步：hipy 前摆 + knee 伸直
+            _qs = -1.0 if leg in (0, 1) else 1.0
+            _q1_tgt = self.pose_target[b + 1] - sl * 0.66 * _qs
+            _q2_tgt = self.pose_target[b + 2] + sl * 0.42
+            t_hipy += (self.kp_leg * (_q1_tgt - q1)
+                       - self.kd_leg * float(qvel[6 + LEG_QV_LEG[b + 1]]))
+            t_knee += (self.kp_leg * (_q2_tgt - q2)
+                       - self.kd_leg * float(qvel[6 + LEG_QV_LEG[b + 2]]))
+            # hipx：位置 PD + 侧身（压弯时弯内 hipx 外展）
+            _q0_tgt = self.pose_target[b] - 0.12 * self.roll_sign[leg] * self._roll_f
+            t_hipx = (self.kp_leg * (_q0_tgt - q0)
+                      - self.kd_leg * float(qvel[6 + LEG_QV_LEG[b]]))
+
+            tau[hipx_i] = float(np.clip(t_hipx, -20, 20))
+            tau[hipy_i] = float(np.clip(t_hipy, -50, 50))
+            tau[knee_i] = float(np.clip(t_knee, -50, 50))
+
+            # 轮：差速 + yaw 反馈 + 动态抓地钳制
+            wq = float(qvel[WHEEL_QV_IDX[leg]])
+            v_wheel = -wq * self.fk.r
+            side = -1.0 if leg in (0, 2) else 1.0
+            v_ref = self._vx_f + side * self._om_f * self.track_half
+            t_yaw = (-_yk * (self._om_f - body["omega"]) * side
+                     * _ysc * self._ground_f)
+            t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
+                       - self.wheel_d * wq + t_yaw)
+            # 动态钳制：按该腿实际分配载荷
+            _fz_load = max(F, 0.5 * self.m * self.g / 4.0)
+            _mu_w = float(os.environ.get("S10_VMC_WHEEL_MU", "0.9"))
+            _wt = float(np.clip(_mu_w * _fz_load * self.fk.r, -14.0, 14.0))
+            tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -_wt, _wt))
+        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -50, 50)
+        return tau
+
+
 class LegPDDrive:
     """最简可靠执行层：腿 PD 锁站姿（固定悬挂），轮差速驱动。
 
