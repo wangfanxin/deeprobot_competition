@@ -743,10 +743,17 @@ def main():
             if (next_idx - 1 < len(fol.stair_zone)
                     and fol.stair_zone[next_idx - 1]):
                 _shf = float(os.environ.get('S10_VMC_STAIR_HOP_F', '0'))
-                if _shf > 0.0 and stair_risers:
-                    for (sr, dhv) in stair_risers:
-                        _dfh = s_cur - (sr - 0.228)   # 前轴到棱边
-                        _drh = s_cur - (sr + 0.228)   # 后轴到棱边
+                if _shf > 0.0 and stair_world:
+                    # v624: hop 改用**物理轴-棱距离**触发——原 s_cur 超前 6m
+                    # 导致 _dfh 恒在窗外（-7.8），hop 从未生效
+                    _fwdh = np.array([d.xmat[1][0], d.xmat[1][3]])
+                    _fnh = float(np.hypot(_fwdh[0], _fwdh[1])) + 1e-9
+                    _fxh, _fyh = _fwdh[0] / _fnh, _fwdh[1] / _fnh
+                    _faxh = body_pos[:2] + np.array([_fxh * 0.228, _fyh * 0.228])
+                    _raxh = body_pos[:2] - np.array([_fxh * 0.228, _fyh * 0.228])
+                    for (_rp, _tng, _sr, _dhv, _top) in stair_world:
+                        _dfh = float(np.dot(_faxh - _rp, _tng))
+                        _drh = float(np.dot(_raxh - _rp, _tng))
                         if -0.12 <= _dfh <= 0.02:
                             hop[0:2] = _shf
                         if -0.12 <= _drh <= 0.02:
