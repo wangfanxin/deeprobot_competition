@@ -271,6 +271,29 @@ def main():
         # 前轴窗口 = 棱边前 0.40m -> 棱边后 0.30m；后轴按半轴距 0.228m 延后。
         step_lift = np.zeros(4)
         stair_lift_flag = 0.0
+        # v264: 连续前瞻抬轮（无门控）——按"轴前 0.35m 地形高 - 轴下地形高"
+        # 连续抬放（比例 clamp 0.15m）。纯几何连续量，替代 hop 冲量/横脊
+        # 步态等离散触发（用户原则：除 cruise/stair 切换外无门控）。
+        _lk_c = float(os.environ.get('S10_VMC_TERRAIN_LOOKAHEAD', '0.15'))
+        if _lk_c > 0.05:
+            _fwd4 = d.xmat[1][0:2]
+            _fn4 = float(np.hypot(_fwd4[0], _fwd4[1])) + 1e-9
+            _fx4, _fy4 = _fwd4[0] / _fn4, _fwd4[1] / _fn4
+            for _ai in range(2):
+                _sgn = 1.0 if _ai == 0 else -1.0
+                _ax = np.array([body_pos[0] + _fx4 * 0.228 * _sgn,
+                                body_pos[1] + _fy4 * 0.228 * _sgn])
+                _ha = terrain_at(_ax[0] + _fx4 * 0.35,
+                                 _ax[1] + _fy4 * 0.35)
+                _hb = terrain_at(_ax[0], _ax[1])
+                _rise = float(np.clip((_ha - _hb) / 0.15, 0.0, 1.0))
+                if _rise > 0.02:
+                    if _ai == 0:
+                        step_lift[0:2] = np.maximum(step_lift[0:2], _rise)
+                    else:
+                        step_lift[2:4] = np.maximum(step_lift[2:4], _rise)
+            if float(np.max(step_lift)) > 0.02:
+                stair_lift_flag = 1.0
         if (float(os.environ.get('S10_VMC_STAIR_GAIT', '0')) > 0
                 and stair_risers
                 and stair_risers[0][0] - 1.0 <= s_cur
