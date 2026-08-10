@@ -804,7 +804,12 @@ class CarVMC:
                      * _ysc * self._ground_f)
             # v246: yaw 力矩限速——滑移权威（YAW_TMAX）下首次过冲瞬态太快
             # （实测 ω 冲到 3.6 翻车）；限 t_yaw 变化率，平滑起转与刹车。
-            _tslew = float(os.environ.get("S10_CAR_YAW_SLEW", "30.0"))
+            # v280: 动态 yaw slew——|yaw 误差|大时放开（高速/大 err 需激进
+            # 转向，30→60+；连续 err 驱动，非门控）
+            _yerr = abs(self._om_f - body["omega"])
+            _tslew = float(os.environ.get("S10_CAR_YAW_SLEW", "30.0")) * float(
+                np.clip(1.0 + _yerr / float(os.environ.get(
+                    "S10_CAR_YAW_SLEW_K", "1.0")), 1.0, 4.0))
             if not hasattr(self, "_t_yaw_prev"):
                 self._t_yaw_prev = np.zeros(4)
             _ty = float(np.clip(

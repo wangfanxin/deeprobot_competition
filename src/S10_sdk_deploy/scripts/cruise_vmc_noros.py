@@ -481,6 +481,22 @@ def main():
         # 不采用腿足式压弯（轮足深压弯→后轮打滑/无悬架抖动，用户总结）
         roll_tar = float(np.clip(-0.06 * om_c * abs(vx_c), -0.06, 0.06))
         pitch_tar = 0.0
+        # v281: 脊前减速——已知横脊 0.5m 内连续压 vx（car42 过脊 1.5 验证；
+        # 用户建议 1.0；连续距离驱动，非门控）
+        if ridge_world:
+            _fwd6 = np.array([d.xmat[1][0], d.xmat[1][3]])
+            _fn6 = float(np.hypot(_fwd6[0], _fwd6[1])) + 1e-9
+            _fx6, _fy6 = _fwd6[0] / _fn6, _fwd6[1] / _fn6
+            for _sgn6 in (1.0, -1.0):
+                _ax6 = np.array([body_pos[0] + _fx6 * 0.228 * _sgn6,
+                                 body_pos[1] + _fy6 * 0.228 * _sgn6])
+                for (_rp, _tng, _sr, _dh) in ridge_world:
+                    _dd6 = float(np.dot(_ax6 - _rp, _tng))
+                    if -0.1 <= _dd6 <= 0.5:
+                        _vr = float(os.environ.get(
+                            "S10_RIDGE_APPR_VX", "1.0"))
+                        vx_c = min(vx_c, _vr)
+                        break
         try:
             fwd = np.array([d.xmat[1][0], d.xmat[1][3]])
             fx, fy = fwd[0], fwd[1]
@@ -495,6 +511,10 @@ def main():
             # v218o: 横脊抬前轮时顺坡仰头（防 pitch 控制器对抗抬升导致腿饱和）
             if _lift_act > 0.05:
                 pitch_tar = max(pitch_tar, 0.25 * _lift_act)
+            # v282: 后轮抬脊时轻微前倾（前轮推身，抗抬头——用户"前挂后蹬"）
+            if float(np.max(step_lift[2:4])) > 0.4:
+                pitch_tar = min(
+                    pitch_tar, -0.12 * float(np.max(step_lift[2:4])))
         except Exception:
             pass
 
