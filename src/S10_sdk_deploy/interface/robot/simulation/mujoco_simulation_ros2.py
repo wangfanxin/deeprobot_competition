@@ -1,4 +1,4 @@
-﻿"""
+"""
  * @file mujoco_simulation.py
  * @brief simulation in mujoco
  * @author Bo (Percy) Peng

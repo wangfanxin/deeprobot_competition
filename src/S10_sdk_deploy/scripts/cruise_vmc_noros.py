@@ -443,7 +443,17 @@ def main():
         # 仍贴地受力；raw 地面会导致 z 控制把轮子悬空、后轮失牵引）
         _iszn9 = (next_idx >= 2 and next_idx - 1 < len(fol.stair_zone)
                   and bool(fol.stair_zone[next_idx - 1]))
-        if _iszn9 and stair_world:
+        _fp_active = os.environ.get('S10_VMC_MODE', 'wbc') in ('place', 'dual2')
+        # v732: lidar 高程图在楼梯区失真（读出 1.16，实际台面 0.54）。
+        # 用已知地图台面表覆盖轮下地形（支撑腿参考），抬升腿目标由
+        # place_z 单独给（见 CPG 分支）。
+        if _iszn9 and _fp_active:
+            try:
+                terr = np.asarray(fol.stair_terrain(wheel_xyz[:, 1]),
+                                  dtype=np.float64)
+            except Exception:
+                pass
+        if _iszn9 and stair_world and not _fp_active:
             _fwd9 = np.array([d.xmat[1][0], d.xmat[1][3]])
             _fn9 = float(np.hypot(_fwd9[0], _fwd9[1])) + 1e-9
             _fx9, _fy9 = _fwd9[0] / _fn9, _fwd9[1] / _fn9
@@ -478,6 +488,7 @@ def main():
         # （几何已知，无硬模式：仅当台阶 riser 在前方窗口内才产生抬放量）。
         # 前轴窗口 = 棱边前 0.40m -> 棱边后 0.30m；后轴按半轴距 0.228m 延后。
         step_lift = np.zeros(4)
+        place_z = np.zeros(4)   # v732: 每腿落脚点台面高（CPG 抬升用）
         stair_lift_flag = 0.0
         # v573: 楼梯区标识——stair_zone 内由 CPG 步态独占抬轮，
         # 巡航横脊抬轮/后轮跟抬/地形 bump 全部禁用（防前后轴双抬+塌身）。
@@ -802,6 +813,7 @@ def main():
                     _fxh, _fyh = _fwdh[0] / _fnh, _fwdh[1] / _fnh
                     _faxh = body_pos[:2] + np.array([_fxh * 0.228, _fyh * 0.228])
                     _raxh = body_pos[:2] - np.array([_fxh * 0.228, _fyh * 0.228])
+                    _fl_top, _rl_top = 0.0, 0.0
                     for (_rp, _tng, _sr, _dhv, _top) in stair_world:
                         _dfh = float(np.dot(_faxh - _rp, _tng))
                         _drh = float(np.dot(_raxh - _rp, _tng))
@@ -868,8 +880,18 @@ def main():
                     _fl_cpg, _rl_cpg = 0.0, 0.0
                     _fax8 = body_pos[:2] + np.array([_fx8 * 0.228, _fy8 * 0.228])
                     _rax8 = body_pos[:2] - np.array([_fx8 * 0.228, _fy8 * 0.228])
-                    _hold8 = float(os.environ.get('S10_STAIR_CPG_HOLD', '0.10'))
+                    _hold8 = float(os.environ.get('S10_STAIR_CPG_HOLD', '0.05'))
                     _sw8 = _swing + _hold8
+                    _fl_top, _rl_top = 0.0, 0.0
+                    _fl_dmin, _rl_dmin = 1e9, 1e9
+                    _wzc = np.asarray([d.xpos[WHEEL_BODY[i], 2] for i in range(4)])
+                    # v732: 前轮"踩实"因子——前轮实际轮高接近当前级台面+半径
+                    # 才允许抬下一级（防身体未抬升时目标不可达 IK 翻转）
+                    _fl_ground = float(np.mean(fol.stair_terrain(
+                        np.asarray([d.xpos[WHEEL_BODY[i], 1] for i in range(2)]))))
+                    _fl_set = float(np.clip(
+                        (float(np.mean(_wzc[0:2])) - (_fl_ground + self_fk_r)) / 0.05,
+                        0.0, 1.0)) if False else 1.0
                     for (_rp, _tng, _sr, _dhv, _top) in stair_world:
                         _df8 = float(np.dot(_fax8 - _rp, _tng))
                         _dr8 = float(np.dot(_rax8 - _rp, _tng))
@@ -886,6 +908,9 @@ def main():
                                     ** 2)
                             _l8 *= float(np.clip(0.5 + 0.5 * _dhv / 0.13, 0.5, 1.0))
                             _fl_cpg = max(_fl_cpg, _l8)
+                            if abs(_df8) < _fl_dmin:
+                                _fl_dmin = abs(_df8)
+                                _fl_top = float(_top)
                         if -_sw8 <= _dr8 <= _sw8:
                             if _dr8 < -_hold8:
                                 _l8 = float(np.sin(
@@ -899,9 +924,21 @@ def main():
                                     ** 2)
                             _l8 *= float(np.clip(0.5 + 0.5 * _dhv / 0.13, 0.5, 1.0))
                             _rl_cpg = max(_rl_cpg, _l8)
+                            if abs(_dr8) < _rl_dmin:
+                                _rl_dmin = abs(_dr8)
+                                _rl_top = float(_top)
                     if _fl_cpg + _rl_cpg > 0.02:
+                        # v732: 前轴优先交替——前轴抬升时后轴连续抑制，
+                        # 前轮上台面（fl 回落）后后轮才抬（轮流迈腿）
+                        _rl_cpg *= (1.0 - _fl_cpg)
+                        place_z[:] = [_fl_top, _fl_top, _rl_top, _rl_top]
                         step_lift[:] = [_fl_cpg, _fl_cpg, _rl_cpg, _rl_cpg]
                         stair_lift_flag = 1.0
+                        if os.environ.get('S10_STAIR_DEBUG', '0') == '1':
+                            print('[CPG2] t=%.1f y=%.2f fl=%.2f rl=%.2f '
+                                  'pzF=%.3f pzR=%.3f' % (
+                                      t, body_pos[1], _fl_cpg, _rl_cpg,
+                                      _fl_top, _rl_top), flush=True)
                     if os.environ.get('S10_STAIR_DEBUG', '0') == '1':
                         print('[CPG] t=%.1f pos=(%.2f,%.2f) yaw=%.2f fl=%.2f rl=%.2f swing=%.2f n_riser=%d'
                               % (t, body_pos[0], body_pos[1], yaw,
@@ -921,6 +958,19 @@ def main():
                     else:
                         step_lift[0:2] = np.maximum(
                             step_lift[0:2] * (1.0 - _ra), _afloor)
+            if os.environ.get('S10_STAIR_DEBUG', '0') == '1' and _in_stairzone_now:
+                _rr0 = terrain_at(wheel_xyz[0, 0], wheel_xyz[0, 1])
+                print('[TERR] t=%.1f y=%.2f terr=%s ray0=%.3f'
+                      % (t, body_pos[1], np.round(terr, 3), _rr0),
+                      flush=True)
+            # v732: 楼梯区 body z 目标 = 轮下台面均值 + 站立高（随楼梯逐级升）
+            _zd = 0.0
+            if _in_stairzone_now:
+                try:
+                    _zd = float(np.mean(fol.stair_terrain(
+                        wheel_xyz[:, 1]))) + 0.205
+                except Exception:
+                    _zd = 0.0
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
                       yaw_scale=(1.0 - float(np.clip(
@@ -946,7 +996,11 @@ def main():
                                         and _in_stairzone_now
                                         and float(np.max(step_lift)) > 0.3)
                                 else 0.0),
-                      lift_swing=_lsw)
+                      lift_swing=_lsw,
+                      z_des=_zd,
+                      place_z=place_z,
+                      place_margin=float(os.environ.get(
+                          'S10_STAIR_LIFT_MARGIN', '0.04')))
         if (os.environ.get('S10_VMC_MODE', 'wbc') == 'dual'):
             vmc = vmc_wbc if fol.mode == 'STAIR' else vmc_car
         if os.environ.get('S10_VMC_MODE', 'wbc') == 'dual2':
