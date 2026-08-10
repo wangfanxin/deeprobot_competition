@@ -7,6 +7,11 @@
 import os, sys, time
 import numpy as np
 import mujoco
+try:
+    import mujoco.viewer
+    _HAS_VIEWER = True
+except Exception:
+    _HAS_VIEWER = False
 
 PKG = '/home/wfx/DR_competition/deeprobot_competition/src/S10_sdk_deploy'
 sys.path.insert(0, PKG)
@@ -43,6 +48,19 @@ def main():
                              -0.438,  1.16, -2.45, 0.0,
                               0.438,  1.16, -2.45, 0.0])
     mujoco.mj_forward(m, d)
+
+    _viewer = None
+    if os.environ.get('S10_USE_VIEWER', '0') == '1' and _HAS_VIEWER:
+        try:
+            _tb = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, 'base_link')
+            _viewer = mujoco.viewer.launch_passive(m, d)
+            with _viewer.lock():
+                _viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                _viewer.cam.trackbodyid = _tb if _tb >= 0 else 1
+            print('[VMC] viewer 已打开（关窗口即停止）', flush=True)
+        except Exception as _e:
+            print('[VMC] viewer 打开失败，无头运行:', _e, flush=True)
+            _viewer = None
 
     wps = []
     for gid in range(m.ngeom):
@@ -622,6 +640,11 @@ def main():
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
         t += DT
+        if _viewer is not None:
+            if not _viewer.is_running():
+                print('[VMC] viewer 已关闭，结束', flush=True)
+                break
+            _viewer.sync()
 
         # 航点推进（0.5m + v204 捷径）
         if next_idx < len(wp):
