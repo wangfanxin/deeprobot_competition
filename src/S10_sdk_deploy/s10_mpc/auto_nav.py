@@ -707,6 +707,15 @@ class AutoNavFollower:
                     float(os.environ.get("S10_AUTO_NEAR_MIN", "1.2")),
                     self.max_speed * d_wp
                     / float(os.environ.get("S10_AUTO_NEAR_RAMP", "2.0"))))
+        # v315: 到达制动——aim 窗口内 err 大且贴近航点时把速度压到
+        # r=v/omega<=0.3m 判点半径以内（差速转向轨道半径），消除绕航点转圈
+        # （wp1 0.8m 距航点空转 6s 实测）与切内弯错过航点。连续量驱动
+        # （d_wp/err），仅过点瞬间生效，不拖慢航段。
+        if (d_wp < float(os.environ.get('S10_AUTO_ARRIVE_DIST', '1.0'))
+                and abs(err) > float(os.environ.get(
+                    'S10_AUTO_ARRIVE_ERR', '0.8'))):
+            v_lim = min(v_lim, float(os.environ.get(
+                'S10_AUTO_ARRIVE_VX', '0.55')))
         # 台阶区限速（航点 z 兜底，已知地图，无感知滞后）：目标航段是陡升
         # 且机器人已越过前一航点（或接近该航点）→ 限速 step_vx。
         # 解决 §3.7 翻车机制：3.1 m/s 撞 0.125m riser → 前轮爬升翘头后仰翻。

@@ -36,6 +36,10 @@ class BodyMPPI:
         mu = float(_os.environ.get('S10_MPPI_MU', mu))
         omega_max = float(_os.environ.get('S10_MPPI_OMAX', omega_max))
         vx_max = float(_os.environ.get('S10_MPPI_VMAX', vx_max))
+        w_dist = float(_os.environ.get('S10_MPPI_W_DIST', w_dist))
+        w_v = float(_os.environ.get('S10_MPPI_W_V', w_v))
+        w_h = float(_os.environ.get('S10_MPPI_W_HEAD', w_h))
+        w_s = float(_os.environ.get('S10_MPPI_W_S', w_s))
         self.N, self.H, self.dt = N, H, dt
         self.tau_v, self.tau_w = tau_v, tau_w
         self.mu, self.g = mu, g
@@ -136,4 +140,12 @@ class BodyMPPI:
             1.0 + self.ada_alpha * (cm - self._cost_ref)
             / max(self._cost_ref, 1e-3),
             self.ada_min, self.ada_max))
-        return u_new[0], u_new[1]
+        # v314: 输出钳制——u_new 是未钳制样本的加权平均，会超过 vx_max/
+        # omega_max（起步 3.65 m/s 实测在缓坡上触发 VMC 轮层自旋 om -4.37）。
+        # rollout 内的钳制只作用于动力学，最终指令必须落在执行包线内。
+        # v318: vx 额外钳到当前 v_ref——MPPI 加权平均会因路径距离收益
+        # 系统性超速 0.2-0.3 m/s（坡顶 3.5 vs vlim 3.23 过脊离地自旋实测）。
+        _vcap = min(self.vx_max, guide_vx)
+        u_out = np.array([np.clip(u_new[0], 0.0, _vcap),
+                          np.clip(u_new[1], -self.omega_max, self.omega_max)])
+        return float(u_out[0]), float(u_out[1])

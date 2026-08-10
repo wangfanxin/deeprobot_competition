@@ -234,6 +234,38 @@ def main():
                 _hd = fol.path_heading[min(_k, len(fol.path_heading) - 1)]
                 _ref.append([_x, _y, _hd])
             _ref = np.array(_ref) if len(_ref) else np.array([[pos2[0], pos2[1], yaw]])
+            # v316: 瞄航点期间 MPPI 参考 = 指向航点的光束（狗→wp→出口延长）。
+            # 纯路径参考的航向成本会把狗往路径航向（过弯后朝西）拉，错过
+            # wp1 北侧 0.6m（实测）；瞄航点（_last_tgt==当前 wp）时让 MPPI
+            # 以 wp 为终点规划，过点后恢复路径参考。
+            try:
+                _aim_tgt = np.asarray(getattr(fol, '_last_tgt', [0, 0, 0])[:2])
+                _aim_wp = np.asarray(fol.wp[next_idx][:2])
+                if (np.abs(_aim_tgt[0] - _aim_wp[0]) < 0.05
+                        and np.abs(_aim_tgt[1] - _aim_wp[1]) < 0.05):
+                    _dvec = _aim_wp - pos2
+                    _L = float(np.hypot(_dvec[0], _dvec[1]))
+                    # v322: 出口方向 = 过点后的路径方向（wp[i+1]-wp[i]），
+                    # 不是狗→wp 的接近方向——wp1 处接近方向指向西南（南坡），
+                    # 会引导狗过点后滑下南坡（v321 实测）。
+                    if next_idx + 1 < len(fol.wp):
+                        _ex = np.asarray(fol.wp[next_idx + 1][:2]) - _aim_wp
+                        _Le = float(np.hypot(_ex[0], _ex[1]))
+                        _uv = (_ex / _Le) if _Le > 1e-3 else (_dvec / _L)
+                    else:
+                        _uv = _dvec / _L
+                    if _L > 1e-3:
+                        _hd = float(np.arctan2(_uv[1], _uv[0]))
+                        # 局部零代价陷阱：最近点距离=0、航向=当前 yaw——
+                        # 不能放狗当前位置/航向点：最近点距离=0、航向=当前
+                        # yaw -> MPPI 视为已在目标上，om 恒 0（wp1 旁漂 46s
+                        # 实测）。只给 wp + 出口延长两点。
+                        _ref = np.array([
+                            [_aim_wp[0], _aim_wp[1], _hd],
+                            [_aim_wp[0] + 1.0 * _uv[0],
+                             _aim_wp[1] + 1.0 * _uv[1], _hd]])
+            except Exception:
+                pass
             st = np.array([pos2[0], pos2[1], yaw,
                            float(d.cvel[1][3]), float(d.cvel[1][4]), float(qvel[5])])
             if os.environ.get('S10_NAV_DEBUG', '0') == '1' and next_idx <= 3:
@@ -250,15 +282,16 @@ def main():
             else:
                 # v270: MPPI 采样中心加曲率前馈 κ·v_ref（导航放开、MPPI
                 # 约束兜底；样本围绕正确转向率，约束仍在摩擦锥内）
-                _g_om = 0.0
-                try:
-                    _kn0 = int(getattr(fol, '_k_near', 0))
-                    _kn0 = min(max(_kn0, 0), len(fol.path_curv_signed) - 1)
-                    _g_om = float(fol.path_curv_signed[_kn0]) * max(v_ref, 0.5)
-                except Exception:
-                    pass
+                # v315: MPPI 采样中心 = 导航完整转向指令（err + 曲率FF + cte）
+                # ——纯路径跟踪会切内弯错过航点（wp1 最近 0.6m 实测）；导航的
+                # 瞄航点逻辑保证 0.3m 判点，MPPI 负责平滑 + 摩擦锥约束兜底。
+                _g_om = float(vyaw) if vyaw is not None else 0.0
                 vx_c, om_c = mppi.plan(
                     st, _ref, v_ref, prev_u, guide_om=_g_om)
+                if (os.environ.get('S10_NAV_DEBUG', '0') == '1'
+                        and next_idx <= 3):
+                    print('[MPPI] g_om=%.2f out=(%.2f,%.2f) vref=%.2f'
+                          % (_g_om, vx_c, om_c, v_ref), flush=True)
             # v218p: omega 上限匹配 VMC yaw 能力（防指令远超执行导致振荡）
             # v245: 速度相关上限——横向加速度包线 a_lat=ω·v 防高速大 ω 侧翻
             # （实测 YAW_TMAX 滑移权威下 ω 可达 3.6+，v=1.9 时 a_lat 7m/s2 翻车）
