@@ -766,7 +766,17 @@ class CarVMC:
             wq = float(qvel[WHEEL_QV_IDX[leg]])
             v_wheel = -wq * self.fk.r
             side = -1.0 if leg in (0, 2) else 1.0
-            v_ref = self._vx_f + side * self._om_f * self.track_half
+            # v243: yaw 反馈并入轮速参考（根治差速过冲）——原设计差速前馈
+            # v_ref 按 om_f 永不反向，过冲时只能靠饱和的 t_yaw 刹，实测
+            # yaw 振荡 ±1.6~2.4（ray4）。改为 om_eff=om_f+k_fb*(om_f-ω)：
+            # 滞后时差速加强，过冲时差速自动反向，回路带宽由轮速 PD 承担。
+            _kfb = float(os.environ.get("S10_CAR_YAW_FB_REF", "1.0"))
+            _om_eff = (self._om_f
+                       + _kfb * (self._om_f - body.get("omega_body",
+                                                       body["omega"])))
+            # 抬轮/腾空时减弱差速（yaw_scale）
+            v_ref = (self._vx_f
+                     + side * _om_eff * _ysc * self.track_half)
             # v237: yaw 高频阻尼——修正 v235 符号（-kd 削弱恢复力矩），
             # body 系 yaw 率 + 高通（只阻尼振荡，稳态零偏置；RobuROC6 思路）
             _kd_yaw = float(os.environ.get("S10_CAR_KD_YAW", "2.0"))
@@ -783,9 +793,9 @@ class CarVMC:
             if not hasattr(self, "_om_ff_lp"):
                 self._om_ff_lp = 0.0
             self._om_ff_lp += (self._om_f - self._om_ff_lp) * min(1.0, dt / 0.15)
-            # 符号与比例项命令分量同向（左转 om_f>0 -> 左轮向后力矩）
-            t_yaw = ((-_yk * (self._om_f - body["omega"])
-                      + _kd_yaw * _om_hf - _kff * self._om_ff_lp) * side
+            # v243: t_yaw 只留高频阻尼 + 可选摩擦前馈（比例项已并入 v_ref）；
+            # 符号：阻尼 = +kd*ω_hf（左转ω>0 -> 左轮向后力矩）
+            t_yaw = ((_kd_yaw * _om_hf - _kff * self._om_ff_lp) * side
                      * _ysc * self._ground_f)
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
                        - self.wheel_d * wq + t_yaw)
