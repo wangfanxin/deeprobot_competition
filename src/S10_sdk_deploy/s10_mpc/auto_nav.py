@@ -576,8 +576,14 @@ class AutoNavFollower:
         _aim_eff = float(os.environ.get("S10_AUTO_WP_AIM", "2.5"))
         if _acv > 0.0:
             _aim_eff = _aim_eff / (1.0 + _acv * _aim_k)
+        # v524: WP_AIM 只对起步生效（S10_WP_AIM_LAST，默认 1）——平滑路径
+        # 实测经过所有航点（最近距离 <0.02m），wp1+ 无需瞄点、纯路径跟随
+        # 即可 0.3m 过点且更早入弯（修 wp1 超调）；起步门架/走廊偏移路径
+        # 曲线需要瞄 wp1 直穿（纯路径跟随起步翻车实测）。
         if (d_wp < _aim_eff
-                and os.environ.get("S10_AUTO_WP_AIM_ON", "1") == "1"):
+                and os.environ.get("S10_AUTO_WP_AIM_ON", "1") == "1"
+                and next_idx <= int(os.environ.get(
+                    "S10_WP_AIM_LAST", "99"))):
             target = wp_next
         else:
             # v267: 已越过航点（passed）或未接近 → 一律瞄**路径前视点**
