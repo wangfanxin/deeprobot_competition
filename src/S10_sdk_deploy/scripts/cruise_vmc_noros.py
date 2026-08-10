@@ -575,6 +575,17 @@ def main():
                     and stair_risers[0][0] - 0.6 <= s_cur
                     <= stair_risers[-1][0] + 1.2):
                 _fl_max = max(_fl_max, 1.0)
+            # v470: 真正实现 v406 防同抬（原只有注释）——六级楼梯前后轴
+            # 同时抬升（sl 都 0.8-1.0）→ 无轮接地卡死（v469 走廊修复后
+            # 卡第一级实测）。交替：前轴抬升时连续抑制后轴（前轴回落时
+            # 后轴接管），后轴同理。S10_STAIR_ANTI=0 关闭。
+            if float(os.environ.get('S10_STAIR_ANTI', '0')) > 0:
+                _fa = float(np.clip((_fl_max - 0.15) / 0.35, 0.0, 1.0))
+                _ra = float(np.clip((_rl_max - 0.15) / 0.35, 0.0, 1.0))
+                if _fa >= _ra:
+                    _rl_max *= (1.0 - _fa)
+                else:
+                    _fl_max *= (1.0 - _ra)
             if _fl_max + _rl_max > 0.02:
                 step_lift[:] = [_fl_max, _fl_max, _rl_max, _rl_max]
                 stair_lift_flag = 1.0
@@ -744,9 +755,36 @@ def main():
                     and fol.step_zone[next_idx - 1]):
                 _lfs = float(os.environ.get(
                     'S10_VMC_LIFT_F_SCALE_STEP', '0.3'))
-                # v457: 台阶区加大抬轮摆动（0.66rad 只抬 0.05m < 0.13m 台阶）
-                _lsw = float(os.environ.get(
-                    'S10_VMC_LIFT_SWING_STEP', '1.5'))
+                # v475: stair_zone 滚上模式（S10_VMC_STAIR_NO_LIFT=1）——
+                # 连续六级台阶用"腿伸长压面+动量滚上"替代悬空抬轮（hoist
+                # 让前轮悬空 0.06m 下不来卡死实测）；仅 stair_zone 生效，
+                # step_zone（wp5→6）保持抬轮。
+                if (float(os.environ.get('S10_VMC_STAIR_NO_LIFT', '0')) > 0
+                        and next_idx - 1 < len(fol.stair_zone)
+                        and fol.stair_zone[next_idx - 1]):
+                    step_lift[:] = 0.0
+                # v473: 摆动按台阶类型分档——step_zone（wp5→6 双级，2m 间距）
+                # 用 1.0（大摆动会过度旋转卡死）；stair_zone（wp6→7 六级
+                # 连续 riser）用 S10_VMC_LIFT_SWING_STAIR（前轮需抬足 0.13m）。
+                if (next_idx - 1 < len(fol.stair_zone)
+                        and fol.stair_zone[next_idx - 1]):
+                    _lsw = float(os.environ.get(
+                        'S10_VMC_LIFT_SWING_STAIR', '1.4'))
+                else:
+                    _lsw = float(os.environ.get(
+                        'S10_VMC_LIFT_SWING_STEP', '1.0'))
+                # v471: 终局防同抬（放在 crest/相位/连续抬轮全部之后）——
+                # 前轴抬升时后轴按比例抑制，后轴同理；交替抬升保至少一轴
+                # 接地牵引（六级楼梯 sl=[0.8,1] 同抬卡死实测）。
+                if float(os.environ.get('S10_STAIR_ANTI', '0')) > 0:
+                    _fln = float(np.mean(step_lift[0:2]))
+                    _rln = float(np.mean(step_lift[2:4]))
+                    _fa = float(np.clip((_fln - 0.15) / 0.35, 0.0, 1.0))
+                    _ra = float(np.clip((_rln - 0.15) / 0.35, 0.0, 1.0))
+                    if _fa >= _ra:
+                        step_lift[2:4] *= (1.0 - _fa)
+                    else:
+                        step_lift[0:2] *= (1.0 - _ra)
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
                       yaw_scale=1.0 - _lift_act, hop=hop,

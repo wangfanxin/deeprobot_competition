@@ -185,7 +185,11 @@ class VMCController:
         tau = np.zeros(16, dtype=np.float64)
         # v218f: 完整 6D 身体 wrench -> 12 腿力（世界系，最小范数）——含水平分量，
         # 用实际轮位几何解耦俯仰/侧倾（此前仅垂直力 3 约束，带倾角腿强耦合）。
-        z_des = float(np.mean(terrain_h)) + 0.205
+        # v467: WBC 站高偏移可调（原 0.205 是 dial-MPC 时代低站姿——当前
+        # CarVMC 巡航站姿 body≈terrain+0.74，WBC 按 0.205 会把狗压到离地
+        # 0.12m 腿折叠爬行卡死，v466 双技能卡 y=36.5 实测）。
+        z_des = float(np.mean(terrain_h)) + float(os.environ.get(
+            "S10_VMC_Z_DES_OFFSET", "0.205"))
         F_des_w = np.array([
             0.0, 0.0,
             self.m * self.g + self.kp_z * (z_des - body["pos"][2])
