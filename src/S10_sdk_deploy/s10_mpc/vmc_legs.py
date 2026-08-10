@@ -352,8 +352,15 @@ class VMCController:
             v_wheel = -wq * self.fk.r
             # v589: 抬轮期间差速淡出（ysc 由 cmd.yaw_scale 传入）——前轮
             # 抬起时左右对转只会空耗推力，四轮统一向前推才能跨棱
-            v_ref = (self._vx_f
-                     + wd_side * self._om_f * self.track_half * _ysc)
+            # v625: 楼梯攀爬区纯前向轮速控制（cmd.pure_fwd=1）——去掉差速
+            # 与 yaw 反馈，打破"驱动-yaw-滑转"死结（62 组实验定位：差速/yaw
+            # 反馈在轮速滑至 v_ref 后只剩对转，车原地不动）
+            _pf9 = float(cmd.get("pure_fwd", 0.0))
+            if _pf9 > 0.0:
+                v_ref = self._vx_f
+            else:
+                v_ref = (self._vx_f
+                         + wd_side * self._om_f * self.track_half * _ysc)
             # v218: 实测 +轮力矩=倒车（S10 轮轴符号），取反前进
             # v218h: 驱动按校准取反，阻尼必须始终反向（否则负转速时放大）
             # v218j: 直接 yaw 差速力矩（轮全幅差速，参考 dial-MPC）
@@ -366,9 +373,12 @@ class VMCController:
             # v237: yaw 高频阻尼——v235 符号修正（-kd 削弱恢复力矩）
             _kd_yaw = float(os.environ.get("S10_CAR_KD_YAW", "2.0"))
             _om_b = body.get("omega_body", body["omega"])
-            t_yaw = ((-_yk * (self._om_f - _om_b)
-                      + _kd_yaw * _om_b) * wd_side
-                     * _ysc * getattr(self, "_ground_f", 1.0))
+            if _pf9 > 0.0:
+                t_yaw = 0.0
+            else:
+                t_yaw = ((-_yk * (self._om_f - _om_b)
+                          + _kd_yaw * _om_b) * wd_side
+                         * _ysc * getattr(self, "_ground_f", 1.0))
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
                        - self.wheel_d * wq + t_yaw)
 

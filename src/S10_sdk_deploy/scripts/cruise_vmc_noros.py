@@ -115,9 +115,15 @@ def main():
         _s6 = float(fol.path_wp_s[6]); _s7 = float(fol.path_wp_s[7])
         # v587: 楼梯 riser 只取**上升沿**（dh_s>=0.12）——wp5→6 第二级是
         # 0.60 平台降到 0.48 的**下降沿**，|dh| 误判为台阶导致 CPG 空转。
-        stair_risers = [(sr, _ridge_signed.get(sr, dhv))
-                        for (sr, dhv) in ridge_arcs
-                        if _s6 <= sr <= _s7 and _ridge_signed.get(sr, dhv) >= 0.12]
+        # v627: 楼梯区 riser 阈值 0.12→0.05——y=37.94 的 0.06m 小台阶是
+        # 第一个真障碍（前轮上平台后后轮卸载爬不动）；下降沿仍排除。
+        # v630: 直接用 signed dh_s 扫全路径 [s6,s7]——旧法从 ridge_arcs
+        # 派生（ridge 扫描 |dh|>0.12），0.06m 小台阶进不了表
+        _stair_idx = np.where((dh_s >= 0.05)
+                              & (fol.path_cum[:len(dh_s)] >= _s6)
+                              & (fol.path_cum[:len(dh_s)] <= _s7))[0]
+        stair_risers = [(float(fol.path_cum[k]), float(dh_s[k]))
+                        for k in _stair_idx]
         print(f'[VMC] 楼梯区 riser {len(stair_risers)} 处', flush=True)
     except Exception as e:
         print('[VMC] 楼梯预扫描失败', e, flush=True)
@@ -142,17 +148,22 @@ def main():
     # 卡死时不可靠，用轮轴到 riser 面的沿路径物理距离触发）
     stair_world = []
     try:
-        for (_pt, _tng, _sr, _dhv) in ridge_world:
-            if stair_risers and (stair_risers[0][0] - 1.0
-                                 <= _sr <= stair_risers[-1][0] + 1.0):
-                _g9 = np.array([-1], dtype=np.int32)
-                _d9 = np.zeros(1); _n9 = np.zeros(3)
-                _hit9 = mujoco.mj_ray(
-                    m, d, [_pt[0] + _tng[0] * 0.06,
-                          _pt[1] + _tng[1] * 0.06, 8.0],
-                    [0, 0, -1], None, False, -1, _g9, _n9)
-                _top9 = (8.0 - _hit9) if _hit9 > 0 else 0.0
-                stair_world.append((_pt, _tng, _sr, _dhv, float(_top9)))
+        # v629: 直接从 stair_risers（0.05 阈值）构建——旧版从 ridge_world
+        # 派生（0.12 阈值），0.06m 小台阶不在 ridge_world，CPG 看不到它
+        for (sr, dhv) in stair_risers:
+            _k = int(np.searchsorted(fol.path_cum, sr, side='right') - 1)
+            _k = min(max(_k, 0), len(fol.path_pts) - 2)
+            _pt = fol.path_pts[_k, :2].copy()
+            _th = float(fol.path_heading[_k])
+            _tng = np.array([np.cos(_th), np.sin(_th)])
+            _g9 = np.array([-1], dtype=np.int32)
+            _d9 = np.zeros(1); _n9 = np.zeros(3)
+            _hit9 = mujoco.mj_ray(
+                m, d, [_pt[0] + _tng[0] * 0.06,
+                      _pt[1] + _tng[1] * 0.06, 8.0],
+                [0, 0, -1], None, False, -1, _g9, _n9)
+            _top9 = (8.0 - _hit9) if _hit9 > 0 else 0.0
+            stair_world.append((_pt, _tng, sr, float(dhv), float(_top9)))
         print(f'[VMC] 楼梯世界坐标 {len(stair_world)} 处', flush=True)
     except Exception as e:
         print('[VMC] 楼梯坐标表失败', e, flush=True)
@@ -833,6 +844,7 @@ def main():
                                 _l8 = float(np.sin(
                                     0.5 * np.pi * (_sw8 - _df8) / _swing)
                                     ** 2)
+                            _l8 *= float(np.clip(_dhv / 0.13, 0.25, 1.0))
                             _fl_cpg = max(_fl_cpg, _l8)
                         if -_sw8 <= _dr8 <= _sw8:
                             if _dr8 < -_hold8:
@@ -845,6 +857,7 @@ def main():
                                 _l8 = float(np.sin(
                                     0.5 * np.pi * (_sw8 - _dr8) / _swing)
                                     ** 2)
+                            _l8 *= float(np.clip(_dhv / 0.13, 0.25, 1.0))
                             _rl_cpg = max(_rl_cpg, _l8)
                     if _fl_cpg + _rl_cpg > 0.02:
                         step_lift[:] = [_fl_cpg, _fl_cpg, _rl_cpg, _rl_cpg]
@@ -878,6 +891,11 @@ def main():
                       stair_lift=stair_lift_flag,
                       lift_f_scale=_lfs,
                       z_min=1.0 if _in_stairzone_now else 0.0,
+                      pure_fwd=(1.0 if (float(os.environ.get(
+                          'S10_STAIR_PURE_FWD', '0')) > 0
+                                        and _in_stairzone_now
+                                        and float(np.max(step_lift)) > 0.3)
+                                else 0.0),
                       lift_swing=_lsw)
         if (os.environ.get('S10_VMC_MODE', 'wbc') == 'dual'):
             vmc = vmc_wbc if fol.mode == 'STAIR' else vmc_car
