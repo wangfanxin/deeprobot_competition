@@ -833,7 +833,8 @@ class CarVMC:
                         _wp_eff = _wp * (0.3 * (1.0 - _own) + _opp)
                     pz_des = (float(terrain_h[leg]) + self.fk.r - _wp_eff)
                     F += (self.kp_h * (pz_des - p[2])
-                          - self.kd_h * float(wheel_vel[leg, 2]))
+                          - self.kd_h * float(cmd.get("kd_scale", 1.0))
+                          * float(wheel_vel[leg, 2]))
                 F = max(F, 2.0) * (1.0 - _fscale * sl)
             else:
                 if p is not None and terrain_h is not None:
@@ -841,7 +842,8 @@ class CarVMC:
                               - float(cmd.get("wheel_press", 0.0)))
                     F += (1.0 - sl) * (
                         self.kp_h * (pz_des - p[2])
-                        - self.kd_h * float(wheel_vel[leg, 2]))
+                        - self.kd_h * float(cmd.get("kd_scale", 1.0))
+                        * float(wheel_vel[leg, 2]))
                 F = max(F, 2.0) * (1.0 - sl)
             if hop is not None:
                 F += float(hop[leg])
