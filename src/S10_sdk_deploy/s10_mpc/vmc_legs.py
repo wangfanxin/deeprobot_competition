@@ -482,7 +482,7 @@ class LidarTerrain:
     """
 
     def __init__(self, model, data, x0=-25.0, x1=40.0, y0=-5.0, y1=55.0,
-                 res=0.10, th_n=32, phi_n=12, fov_h=None, cutoff=20.0):
+                 res=0.10, th_n=48, phi_n=24, fov_h=None, cutoff=20.0):
         import mujoco
         self.m, self.d = model, data
         self.res = float(res)

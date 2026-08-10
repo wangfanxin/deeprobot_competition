@@ -197,10 +197,17 @@ def main():
             _by = d.xmat[1][1]
             _bn = float(np.hypot(_bx, _by)) + 1e-9
             _bx, _by = _bx / _bn, _by / _bn
-            terr = np.array([
+            # v223f: 默认纯前瞻（car12 成功配置）。可选混合：前方/脚下按
+            # S10_VMC_TERRAIN_AHEAD_W（0=纯脚下，1=纯前方）
+            _w = float(os.environ.get('S10_VMC_TERRAIN_AHEAD_W', '1.0'))
+            terr_foot = np.array([terrain_at(wheel_xyz[i, 0],
+                                             wheel_xyz[i, 1])
+                                  for i in range(4)])
+            terr_ahead = np.array([
                 terrain_at(wheel_xyz[i, 0] + _bx * _lk,
                            wheel_xyz[i, 1] + _by * _lk)
                 for i in range(4)])
+            terr = (1.0 - _w) * terr_foot + _w * terr_ahead
         else:
             terr = np.array([terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
                              for i in range(4)])
