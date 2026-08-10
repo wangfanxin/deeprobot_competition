@@ -213,14 +213,21 @@ class VMCController:
         if _lb > 0.0:
             z_des += _lb * float(np.mean(
                 np.asarray(cmd.get("step_lift", np.zeros(4)))))
-        # v605: 楼梯区（z_min>0）**取消全局 z 抬升**——只留重力+阻尼，车高
-        # 由逐轮落脚点阻抗决定（前轮=台面高、后轮=地面高，姿态自然形成），
-        # 后轮保载荷不失牵引（此前 kp_z 抬车身→后轮 wt=1.7Nm 空转实测）。
+        # v605: 楼梯区（z_min>0）全局 z 抬升强度可调——原完全取消导致
+        # body 不随台阶升高、前轮伸长时后轮翘起悬空（fn 单点卡死实测）。
+        # S10_VMC_WBC_Z_KP>0 时恢复温和抬升（z_des=最低地形+offset，body
+        # 随台阶逐级升高，4 轮保持接触）。
+        _zwk = float(os.environ.get("S10_VMC_WBC_Z_KP", "0.0"))
+        if _zm9 > 0.0 and _zwk > 0.0:
+            _z_eff = z_des - body["pos"][2]
+            _z_eff = float(np.clip(_z_eff, -0.08, 0.12))
+            _z_force = _zwk * _z_eff
+        else:
+            _z_force = (0.0 if _zm9 > 0.0
+                        else self.kp_z * (z_des - body["pos"][2]))
         F_des_w = np.array([
             0.0, 0.0,
-            self.m * self.g
-            + (0.0 if _zm9 > 0.0
-               else self.kp_z * (z_des - body["pos"][2]))
+            self.m * self.g + _z_force
             - self.kd_z * float(qvel[2])])
         # v218k: 驱动 25% 由腿分担（轮为主），全轮在坡上推力不足
         _dsh = float(os.environ.get("S10_VMC_DRIVE_SHARE", "0.25"))
@@ -275,6 +282,17 @@ class VMCController:
             for leg in range(4):
                 if leg not in _support_legs:
                     f_legs[leg * 3:leg * 3 + 3] = 0.0
+            # v750: WBC 支撑腿垂直力保底（默认 0 关=v746 恒等）——楼梯区
+            # 前轮上台面后 T_pitch/Fx 会把后轮（支撑腿）减载到悬空
+            # （fn=[-16,-20,0,0] 无推卡死实测）；保底覆盖后轮载荷防悬空。
+            if _zm9 > 0.0:
+                _zmin = float(os.environ.get("S10_VMC_WBC_Z_MIN", "0.0"))
+                if _zmin > 0.0:
+                    _base_w = self.m * self.g / 4.0
+                    for _l2 in range(4):
+                        if float(_sl_all[_l2]) <= 0.3:
+                            f_legs[_l2 * 3 + 2] = max(
+                                f_legs[_l2 * 3 + 2], _zmin * _base_w)
             _qpm = os.environ.get("S10_VMC_QP", "0")
             if _qpm == "1":
                 f_legs = self._solve_wbc_qp(A6, W, f_legs)
@@ -309,7 +327,11 @@ class VMCController:
             _hop = cmd.get("hop")
             if _hop is not None:
                 fw[2] += float(_hop[leg])
-            pz_des = float(terrain_h[leg]) + self.fk.r
+            # v750: WBC 压轮（S10_VMC_WBC_PRESS，默认 0）——楼梯区前轮距
+            # 台面 0.003m 悬空不接触→body 后倾死锁实测；压 0.008m 让轮
+            # 贴台面（mujoco 接触间隙），与 CarVMC wheel_press 同理。
+            pz_des = float(terrain_h[leg]) + self.fk.r - float(
+                os.environ.get("S10_VMC_WBC_PRESS", "0.0"))
             # v602: 抬轮时地形阻抗**不随 sl 衰减**（(1-zk*sl)）——楼梯落脚点
             # 把前轮地形置为台面高，阻抗把轮拉到 pz_des=台面+r，轮直接
             # 落上台面（原 (1-sl) 在 sl=1 时清零，抬轮只剩姿态 PD、够不到）

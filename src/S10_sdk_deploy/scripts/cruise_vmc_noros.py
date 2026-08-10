@@ -273,6 +273,7 @@ def main():
     prev_u = np.zeros(2)
     dbg = 0
     last_log = 0.0
+    last_log_st = 0.0
     # v220a: 单步跨越状态机（0=off, 1=前轮抬, 2=后轮抬）
     _step_state = 0
     _step_t0 = 0.0
@@ -466,12 +467,17 @@ def main():
             _fx9, _fy9 = _fwd9[0] / _fn9, _fwd9[1] / _fn9
             _fax9 = body_pos[:2] + np.array([_fx9 * 0.228, _fy9 * 0.228])
             _rax9 = body_pos[:2] - np.array([_fx9 * 0.228, _fy9 * 0.228])
+            # v750: 台面表覆盖窗口收窄（S10_STAIR_TERR_WIN 默认 0.30 保
+            # 原行为）——原 [-0.30,+0.15] 在棱前 0.3m 就把前轮地形置为台面
+            # 高，WBC 阻抗把前轮提前抬空悬空卡死（fn=0 实测）。收窄到棱边
+            # 附近：前轮贴地滚到棱前才"看到"台面，被拉上去（接触连续）。
+            _twin = float(os.environ.get('S10_STAIR_TERR_WIN', '0.30'))
             for (_rp, _tng, _sr, _dhv, _top) in stair_world:
                 _df9 = float(np.dot(_fax9 - _rp, _tng))
                 _dr9 = float(np.dot(_rax9 - _rp, _tng))
-                if -0.30 <= _df9 <= 0.15:
+                if -_twin <= _df9 <= 0.15:
                     terr[0:2] = np.maximum(terr[0:2], _top + 0.02)
-                if -0.30 <= _dr9 <= 0.15:
+                if -_twin <= _dr9 <= 0.15:
                     terr[2:4] = np.maximum(terr[2:4], _top + 0.02)
         s_cur = float(getattr(fol, '_s_cur', 0.0))
         # v292: 台阶窗 vx 连续插值到 STAIR_WIN_VX（默认 1.8，不归零）——
@@ -804,12 +810,13 @@ def main():
             # v225/v583: 巡航段爬坡前倾匹配坡度（轮推力对准）；楼梯区
             # 反向——车身**抬头**匹配台阶坡度，抬升前髋让抬轮过 0.13m 棱
             # （低头会把前髋压低，前轮差 1cm 卡棱实测）。
-            if _in_stairzone_now and float(np.max(step_lift)) > 0.02:
-                # v746: 楼梯 pitch 只在 CPG 实际抬轮时生效，且上限 0.30——
-                # 前轮上台面后后轮必须贴地推（fn 单轮悬空卡死实测）。
+            if _in_stairzone_now:
+                # v750: 楼梯 pitch 统一用轴距坡度（USC 纯滚动姿态）——前轮
+                # 上台面时 body 前倾让前轮够台面+后轮贴地推；不再依赖
+                # step_lift 标志（NO_LIFT 纯滚动时也生效）。
                 _pfr = float(np.mean(terr[0:2])); _prr = float(np.mean(terr[2:4]))
                 pitch_tar = float(np.clip(
-                    np.arctan2(_pfr - _prr, 0.456), 0.10, 0.30))
+                    np.arctan2(_pfr - _prr, 0.456), 0.05, 0.30))
             else:
                 pitch_tar = float(np.clip(
                     np.arctan2(h_a - h_b, 1.2), -0.35, 0.35))
@@ -940,7 +947,13 @@ def main():
                                 _l8 = float(np.sin(
                                     0.5 * np.pi * (_sw8 - _df8) / _swing)
                                     ** 2)
-                            _l8 *= float(np.clip(0.5 + 0.5 * _dhv / 0.13, 0.5, 1.0))
+                            # v750: CPG 抬轮幅度随台阶高（小台阶也满抬）——
+                            # 0.74 系数让第一级(0.063m)前轮只抬到 0.64 差
+                            # 台面顶 0.035 过不了棱卡死实测；满幅 1.0 前轮
+                            # 可到 0.684>台面顶。
+                            _l8 *= float(np.clip(
+                                0.6 + 0.4 * min(float(_dhv) / 0.10, 1.0),
+                                0.6, 1.0))
                             _fl_cpg = max(_fl_cpg, _l8)
                             if abs(_df8) < _fl_dmin:
                                 _fl_dmin = abs(_df8)
@@ -956,7 +969,9 @@ def main():
                                 _l8 = float(np.sin(
                                     0.5 * np.pi * (_sw8 - _dr8) / _swing)
                                     ** 2)
-                            _l8 *= float(np.clip(0.5 + 0.5 * _dhv / 0.13, 0.5, 1.0))
+                            _l8 *= float(np.clip(
+                                0.6 + 0.4 * min(float(_dhv) / 0.10, 1.0),
+                                0.6, 1.0))
                             _rl_cpg = max(_rl_cpg, _l8)
                             if abs(_dr8) < _rl_dmin:
                                 _rl_dmin = abs(_dr8)
@@ -969,6 +984,23 @@ def main():
                         place_z[:] = [_fl_top, _fl_top, _rl_top, _rl_top]
                         step_lift[:] = [_fl_cpg, _fl_cpg, _rl_cpg, _rl_cpg]
                         stair_lift_flag = 1.0
+                        # v750: 前轮"踩实"释放（连续量）——前轮物理上台面
+                        # 且接近/越过棱边（_df8>-0.05）后 CPG 投影滞后仍给
+                        # 0.7 抬轮→WBC 屏蔽前轮不承重→单点支撑死锁。wz
+                        # 达台面顶+r 才释放；棱前抬轮（wz 0.62-0.65）不
+                        # 释放（775 提前释放掉回实测）。
+                        _fdf8 = 1e9
+                        for (_rp2, _tng2, _sr2, _dhv2, _top2) in stair_world:
+                            _d2 = float(np.dot(_fax8 - _rp2, _tng2))
+                            if abs(_d2) < abs(_fdf8):
+                                _fdf8 = _d2
+                        _pzr = float(place_z[0]) + 0.081 + 0.03
+                        if _pzr > 0.3 and _fdf8 > -0.05:
+                            _fl_set = float(np.clip(
+                                (float(np.mean(_wzc[0:2])) - _pzr) / 0.03,
+                                0.0, 1.0))
+                            if _fl_set > 0.0:
+                                step_lift[0:2] *= (1.0 - _fl_set)
                         if os.environ.get('S10_STAIR_DEBUG', '0') == '1':
                             print('[CPG2] t=%.1f y=%.2f fl=%.2f rl=%.2f '
                                   'pzF=%.3f pzR=%.3f' % (
@@ -1116,6 +1148,19 @@ def main():
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[VMC-T] *** 侧翻/摔倒 ***', flush=True)
                 break
+            if _in_stairzone_now and t - last_log_st >= 1.0:
+                last_log_st = t
+                _stq = np.asarray(d.xquat[1])
+                _stpitch = float(np.arctan2(
+                    2.0 * (_stq[0] * _stq[2] - _stq[3] * _stq[1]),
+                    1.0 - 2.0 * (_stq[1] ** 2 + _stq[2] ** 2)))
+                print('[STAIRDBG] t=%.1f y=%.2f bz=%.3f pitch=%.2f '
+                      'wz=%s sl=%s terrF=%.3f terrR=%.3f cmd=(%.2f,%.2f)'
+                      % (t, body_pos[1], body_pos[2], _stpitch,
+                         np.round([d.xpos[WHEEL_BODY[i], 2]
+                                   for i in range(4)], 2),
+                         np.round(step_lift, 1), terr[0], terr[2],
+                         vx_c, om_c), flush=True)
             traj.append([t, body_pos[0], body_pos[1], float(d.cvel[1][3])])
             if _stuck_timeout > 0.0 and t - _last_adv_t > _stuck_timeout:
                 print('[VMC-T] *** 卡死 %.0fs 无航点推进 (wp=%d) ***'
