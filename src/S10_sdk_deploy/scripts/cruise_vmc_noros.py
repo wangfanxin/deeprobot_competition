@@ -157,28 +157,6 @@ def main():
 
     # v219f: 地形感知来源。ray=上帝视角实时 raycast（调试，零噪声）；
     # lidar=lidar_site 扇形射线局部栅格（传感器视角，10Hz 更新，部署同款）
-    _vis_hf = None
-    if os.environ.get('S10_VMC_TERRAIN', 'ray') == 'lidar':
-        lterr = LidarTerrain(m, d)
-        if (os.environ.get('S10_VMC_VIEW_TERRAIN', '0') == '1'
-                and os.environ.get('S10_USE_VIEWER', '0') == '1'):
-            _g_hf = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, 'lidar_hf_geom')
-            _h_hf = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_HFIELD, 'lidar_hf')
-            if _g_hf >= 0 and _h_hf >= 0:
-                _vis_hf = (_g_hf, _h_hf)
-                print('[VMC] lidar 高程图可视化开启 (20Hz hfield)', flush=True)
-            else:
-                print('[VMC] 警告: 模型无 lidar_hf_geom，'
-                      '请用 S10_XML=.../S10_track_lidar.xml', flush=True)
-            _pal = [(0.90,0.15,0.15),(0.95,0.55,0.10),(0.90,0.85,0.10),
-                    (0.25,0.75,0.30),(0.15,0.75,0.80),(0.20,0.35,0.90),
-                    (0.60,0.25,0.90),(0.85,0.20,0.60),(0.95,0.90,0.90),
-                    (0.45,0.45,0.45)]
-            for _wi in range(min(10, len(wp))):
-                _gwi = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM,
-                                         'track_waypoint_%03d' % _wi)
-                if _gwi >= 0:
-                    m.geom_rgba[_gwi, 0:3] = _pal[_wi]
         _lupd = -1.0
         def terrain_at(x, y):
             nonlocal _lupd
@@ -697,26 +675,6 @@ def main():
                 print('[VMC] viewer 已关闭，结束', flush=True)
                 break
             _viewer.sync()
-        if _vis_hf is not None and int(t * 200) % 10 == 0:
-            _g_hf, _h_hf = _vis_hf
-            _cx = body_pos[0] + float(d.xmat[1][0]) * 3.0
-            _cy = body_pos[1] + float(d.xmat[1][3]) * 3.0
-            m.geom_pos[_g_hf, 0] = _cx
-            m.geom_pos[_g_hf, 1] = _cy
-            _nrow = int(m.hfield_nrow[_h_hf]); _ncol = int(m.hfield_ncol[_h_hf])
-            _hrx = 12.0 / _ncol; _hry = 10.0 / _nrow
-            _x0 = _cx - 6.0; _y0 = _cy - 5.0
-            _data = np.full(_nrow * _ncol, -0.3, dtype=np.float64)
-            for _jy in range(_nrow):
-                _iy = int(np.floor((_y0 + (_jy + 0.5) * _hry - lterr.oy) / lterr.res))
-                if 0 <= _iy < lterr.ny:
-                    for _jx in range(_ncol):
-                        _ix = int(np.floor((_x0 + (_jx + 0.5) * _hrx - lterr.ox) / lterr.res))
-                        if 0 <= _ix < lterr.nx and lterr.valid[_iy, _ix]:
-                            # +0.02 浮高：避免与真实地形 z-fighting
-                            _data[_jy * _ncol + _jx] = float(lterr.h[_iy, _ix]) - 0.3 + 0.02
-            _off = _h_hf * _nrow * _ncol
-            m.hfield_data[_off:_off + len(_data)] = _data
 
         # 航点推进（0.5m + v204 捷径）
         if next_idx < len(wp):

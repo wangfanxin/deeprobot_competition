@@ -1,6 +1,0 @@
-<mujoco model="S10_track_lidar">
-    <include file="./S10.xml"/>
-    <include file="./scene.xml"/>
-    <include file="./track_overlay.xml"/>
-    <include file="./lidar_vis_overlay.xml"/>
-</mujoco>
