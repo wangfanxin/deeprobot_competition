@@ -202,6 +202,15 @@ def main():
             _ref = np.array(_ref) if len(_ref) else np.array([[pos2[0], pos2[1], yaw]])
             st = np.array([pos2[0], pos2[1], yaw,
                            float(d.cvel[1][3]), float(d.cvel[1][4]), float(qvel[5])])
+            if os.environ.get('S10_NAV_DEBUG', '0') == '1' and next_idx == 5:
+                print('[NAV] t=%.1f pos=(%.2f,%.2f) yaw=%.2f err=%.2f '
+                      'tgt=(%.2f,%.2f) s_cur=%.2f vyaw=%.2f cte=%.2f'
+                      % (t, body_pos[0], body_pos[1], yaw,
+                         getattr(fol, '_last_err', 0.0),
+                         getattr(fol, '_last_tgt', [0, 0, 0])[0],
+                         getattr(fol, '_last_tgt', [0, 0, 0])[1],
+                         getattr(fol, '_s_cur', 0.0), vyaw,
+                         getattr(fol, '_last_cte', 0.0)), flush=True)
             if os.environ.get('S10_VMC_USE_NAV', '0') == '1':
                 vx_c, om_c = vx, vyaw   # 直接导航指令（无 MPPI 随机性）
             else:
@@ -288,6 +297,10 @@ def main():
                 _ha = terrain_at(_ax[0] + _fx4 * _lk_c,
                                  _ax[1] + _fy4 * _lk_c)
                 _hb = terrain_at(_ax[0], _ax[1])
+                if (os.environ.get('S10_LIFT_DEBUG', '0') == '1'
+                        and next_idx == 5 and 20.5 < t < 24.0):
+                    print('[LIFT] t=%.1f ai=%d ha=%.3f hb=%.3f ax=(%.2f,%.2f)'
+                          % (t, _ai, _ha, _hb, _ax[0], _ax[1]), flush=True)
                 # v265: 上升量带通——只对 0.02~0.5m 可爬台阶响应（0.12m 脊
                 # →满抬；起点高架 2m 伪尖峰→0，连续光滑无硬阈值）
                 _rise0 = float(_ha - _hb)
