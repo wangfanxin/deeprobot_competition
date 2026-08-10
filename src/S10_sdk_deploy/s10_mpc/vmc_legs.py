@@ -470,34 +470,42 @@ class TerrainMap:
 # ==================== PD 站姿 + 轮驱动模式（v218k，稳定基线） ====================
 
 class LidarTerrain:
-    """v223: lidar 传感器增量建世界高程图（可部署，地图变化鲁棒）。
+    """v228: lidar 前方长方形局部高程图（借鉴爬楼梯版本 points_to_heightmap）。
 
-    从 lidar_site 按机器人航向发射扇形射线（mj_multiRay 批量），命中点
-    累积写入**固定世界栅格**（min-z 去噪）——像真机 lidar SLAM 建图：
-      - 数据随时间累积，起步坡/远处地形保留（此前局部栅格每帧清空，
-        10Hz 更新间隔 0.15m 导致脚下无数据 → 腿塌，wp0→1 卡死根因）
-      - geomgroup 只留 group 0（地形），排除机器人/赛道标记
-      - 前向扇形 ±fov_h × 俯仰 +10°~-55°（近场地面到远场高台）
-      - 高度查询 O(1)；未覆盖格返回 0（真机近场盲区同样存在）
+    建图契约（与 perception/points_to_heightmap.py 一致）：
+      - 机器人 base 系：x 前、y 左、z 重力方向相对机身高度
+      - ROI 前方多/后方少：x ∈ [-back, fwd]（默认后 0.3m、前 2.0m），
+        y ∈ [-half, half]（±0.8m），0.1m 栅格
+      - 每格 min-z = 地面；悬空点(相对机身 z>0.5)滤除（机器人腿/标记）
+      - 世界命中点经 R^T 转 base 系投影，射线加密(64x32)填满格子
+
+    查询：
+      - height_at(x_w,y_w,yaw)：世界点 -> base 系查图；空洞返回 fill_value
+      - 脚下(后方少)通常无数据，由调用方运动学估计(轮心-r)兜底
     """
 
-    def __init__(self, model, data, x0=-25.0, x1=40.0, y0=-5.0, y1=55.0,
-                 res=0.10, th_n=64, phi_n=32, fov_h=None, cutoff=20.0):
+    def __init__(self, model, data, fwd=2.0, back=0.3, half=0.8,
+                 res=0.10, th_n=64, phi_n=32, fov_h=None, cutoff=20.0,
+                 max_hang=1.5):
+        # v229: max_hang 1.5（local_map 契约）——楼梯/高台需看前上，
+        # 0.5 会滤掉楼梯（wp7 高 1.16 相对机身 ~0.46 已接近边界）
         import mujoco
         self.m, self.d = model, data
         self.res = float(res)
-        self.ox, self.oy = float(x0), float(y0)
-        self.nx = int(round((x1 - x0) / res)) + 1
-        self.ny = int(round((y1 - y0) / res)) + 1
+        self.fwd, self.back = float(fwd), float(back)
+        self.half = float(half)
+        self.nx = int(round((fwd + back) / res))
+        self.ny = int(round(2.0 * half / res))
         self.h = np.full((self.ny, self.nx), np.inf, dtype=np.float64)
         self.valid = np.zeros((self.ny, self.nx), dtype=np.int32)
+        self.max_hang = float(max_hang)
         self.sid = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_SITE, "lidar_site")
         if self.sid < 0:
             raise ValueError("lidar_site not found in model")
         self.cutoff = float(cutoff)
         if fov_h is None:
-            fov_h = float(np.radians(55))
+            fov_h = float(np.radians(60))
         ths = np.linspace(-fov_h, fov_h, int(th_n))
         phs = np.linspace(np.radians(10.0), np.radians(-55.0), int(phi_n))
         dirs = []
@@ -509,6 +517,13 @@ class LidarTerrain:
         self.dirs_local = np.asarray(dirs, dtype=np.float64)
         self.geomgroup = np.zeros((mujoco.mjNGROUP,), dtype=np.ubyte)
         self.geomgroup[0] = 1
+        # 世界栅格累积（供历史/跨帧稳定，与局部图双通道）
+        self._wx0, self._wy0 = -25.0, -5.0
+        self._wres = 0.1
+        self._wnx = int(round(65.0 / self._wres)) + 1
+        self._wny = int(round(60.0 / self._wres)) + 1
+        self._wh = np.full((self._wny, self._wnx), np.inf)
+        self._wvalid = np.zeros((self._wny, self._wnx), dtype=np.int32)
 
     def _yaw(self):
         q = self.d.xquat[1]
@@ -517,7 +532,6 @@ class LidarTerrain:
             1.0 - 2.0 * (q[2] ** 2 + q[3] ** 2)))
 
     def update(self):
-        """发射一帧射线，命中点累积入世界栅格（min-z）。"""
         import mujoco
         m, d = self.m, self.d
         pos = np.asarray(d.site_xpos[self.sid], dtype=np.float64)
@@ -536,27 +550,60 @@ class LidarTerrain:
                            self.geomgroup, True, 1, geomid, dist, None,
                            n, self.cutoff)
         hit = dist > 0.0
-        if hit.any():
-            pts = pos + dist[:, None] * vec
-            for i in np.where(hit)[0]:
-                p = pts[i]
-                ix = int(np.floor((p[0] - self.ox) / self.res))
-                iy = int(np.floor((p[1] - self.oy) / self.res))
-                if 0 <= ix < self.nx and 0 <= iy < self.ny:
-                    # min-z：地面优先（多条射线/多帧取最低）
-                    if p[2] < self.h[iy, ix]:
-                        self.h[iy, ix] = p[2]
-                    self.valid[iy, ix] = 1
+        if not hit.any():
+            return
+        pts = pos + dist[:, None] * vec
+        pts = pts[hit]
+        # 世界 -> base 系（x 前、y 左）
+        R = np.asarray(d.xmat[1], dtype=np.float64).reshape(3, 3)
+        rel = pts - d.xpos[1]
+        base = rel @ R
+        # z 重力方向相对机身高度（不随 roll/pitch 倾斜误判，契约同 local_map）
+        z_rel = pts[:, 2] - d.xpos[1][2]
+        mask = (base[:, 0] >= -self.back) & (base[:, 0] <= self.fwd) \
+               & (base[:, 1] >= -self.half) & (base[:, 1] <= self.half) \
+               & (z_rel <= self.max_hang)
+        bx, by, bz = base[mask, 0], base[mask, 1], z_rel[mask]
+        # 局部图刷新（每帧重填）
+        self.h.fill(np.inf)
+        self.valid.fill(0)
+        ci = np.floor((bx + self.back) / self.res).astype(np.int64)
+        cj = np.floor((by + self.half) / self.res).astype(np.int64)
+        np.clip(ci, 0, self.nx - 1, out=ci)
+        np.clip(cj, 0, self.ny - 1, out=cj)
+        np.minimum.at(self.h, (cj, ci), bz)
+        self.valid[(cj, ci)] = 1
+        # 世界栅格累积（min-z）
+        ix = np.floor((pts[:, 0] - self._wx0) / self._wres).astype(np.int64)
+        iy = np.floor((pts[:, 1] - self._wy0) / self._wres).astype(np.int64)
+        okw = ((ix >= 0) & (ix < self._wnx) & (iy >= 0) & (iy < self._wny))
+        np.minimum.at(self._wh, (iy[okw], ix[okw]), pts[okw, 2])
+        self._wvalid[(iy[okw], ix[okw])] = 1
 
-    def height(self, x, y):
-        """精确格优先（射线 64x32 加密后覆盖率足够），无数据返回 0。
-        3x3 空间扩散会把脊值混入脊前格致转弯差速失效（car25 偏出根因）。"""
-        ix = int(np.floor((x - self.ox) / self.res))
-        iy = int(np.floor((y - self.oy) / self.res))
-        if 0 <= ix < self.nx and 0 <= iy < self.ny:
-            if self.valid[iy, ix]:
-                return float(self.h[iy, ix])
-        return 0.0
+    def height_at(self, x, y, yaw):
+        """世界点 -> base 系查局部图；空洞返回 1e9（调用方 fallback）。"""
+        c, s = float(np.cos(yaw)), float(np.sin(yaw))
+        bx = (x - self.d.xpos[1][0]) * c + (y - self.d.xpos[1][1]) * s
+        by = -(x - self.d.xpos[1][0]) * s + (y - self.d.xpos[1][1]) * c
+        ci = int(np.floor((bx + self.back) / self.res))
+        cj = int(np.floor((by + self.half) / self.res))
+        if 0 <= ci < self.nx and 0 <= cj < self.ny:
+            if self.valid[cj, ci]:
+                return float(self.h[cj, ci])
+        return 1e9
+
+    def world_height(self, x, y):
+        """世界栅格累积高程（跨帧历史），无数据返回 None。"""
+        ix = int(np.floor((x - self._wx0) / self._wres))
+        iy = int(np.floor((y - self._wy0) / self._wres))
+        if 0 <= ix < self._wnx and 0 <= iy < self._wny:
+            if self._wvalid[iy, ix]:
+                return float(self._wh[iy, ix])
+        return None
+
+    def has(self, x, y, yaw):
+        h = self.height_at(x, y, yaw)
+        return h < 1e8
 
 
 class CarVMC:
@@ -697,7 +744,18 @@ class CarVMC:
 
             # 腿关节力矩（J^T 垂直力）+ 位置 PD
             t_hipy, t_knee = J.T @ np.array([0.0, F])
-            # 迈步：hipy 前摆 + knee 伸直
+            # v226: 连续摆腿——按每腿前方高程差 dh 连续抬腿
+            # （dial-MPC swing_thresh=0.04 触发 / lift_pose 幅度）
+            _ahead = cmd.get("terrain_ahead")
+            if (_ahead is not None and terrain_h is not None
+                    and os.environ.get('S10_VMC_SWING', '0') == '1'):
+                _dh = float(max(0.0, _ahead[leg] - terrain_h[leg]))
+                _swing = float(np.clip((_dh - 0.04) / 0.10, 0.0, 1.0))
+                # v226b: yaw 未对准(弯道/斜向)不摆腿——逐腿摆腿在斜向
+                # 单侧先触发侧翻(wz 0.8/0.8 实测)
+                _swing *= float(cmd.get("swing_scale", 1.0))
+                sl = max(sl, _swing)
+            # 迈步/摆腿：hipy 前摆 + knee 伸直
             _qs = -1.0 if leg in (0, 1) else 1.0
             _q1_tgt = self.pose_target[b + 1] - sl * 0.66 * _qs
             _q2_tgt = self.pose_target[b + 2] + sl * 0.42

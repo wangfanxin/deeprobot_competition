@@ -117,11 +117,13 @@ def main():
         lterr = LidarTerrain(m, d)
         _lupd = -1.0
         def terrain_at(x, y):
+            # v228: lidar 世界累积栅格（历史）；无数据返回 0（调用方兜底）
             nonlocal _lupd
-            if t - _lupd >= 0.1:
+            if t - _lupd >= 0.05:
                 lterr.update()
                 _lupd = t
-            return lterr.height(x, y)
+            h = lterr.world_height(x, y)
+            return h if h is not None else 0.0
     else:
         def terrain_at(x, y):
             g = np.array([-1], dtype=np.int32); dist = np.zeros(1); nrm = np.zeros(3)
@@ -201,17 +203,40 @@ def main():
             # 前瞻≈0(防转向中抬轮失控)，直线对准(err小)前瞻满(过脊抬轮)
             _w = float(os.environ.get('S10_VMC_TERRAIN_AHEAD_W', '1.0'))
             _err = float(getattr(fol, '_last_err', 0.0))
-            _w_eff = _w * float(np.clip(
+            _err_scale = float(np.clip(
                 1.0 - abs(_err) / float(os.environ.get(
                     'S10_VMC_TERRAIN_ERR_GATE', '0.7')), 0.0, 1.0))
+            _w_eff = _w * _err_scale
             terr_foot = np.array([terrain_at(wheel_xyz[i, 0],
                                              wheel_xyz[i, 1])
                                   for i in range(4)])
-            # v223h: 前瞻用车体中心前方单值，四腿共用——逐腿前瞻在狗斜向
-            # 接近脊时右轮先到→单侧抬轮侧翻（wz 0.85/0.84 实测）
+            # v227: lidar 无数据区用运动学地面估计（轮心-r）——
+            # 轨道边缘 lidar 射线打空返回 0 致腿塌（wp5→6 yaw 失控根因）
+            if os.environ.get('S10_VMC_TERRAIN', 'ray') == 'lidar':
+                for _i in range(4):
+                    if lterr.world_height(wheel_xyz[_i, 0],
+                                          wheel_xyz[_i, 1]) is None:
+                        terr_foot[_i] = float(wheel_xyz[_i, 2] - 0.081)
+            # v226/228: 前瞻双通道——
+            # 1) 垂直阻抗用车体中心前方单值（逐腿前瞻在斜向时单侧抬轮侧翻）
+            # 2) lidar 模式用前方长方形局部图(height_at) + 运动学兜底
             _hx = body_pos[0] + _bx * _lk
             _hy = body_pos[1] + _by * _lk
-            terr_ahead = np.full(4, terrain_at(_hx, _hy))
+            if os.environ.get('S10_VMC_TERRAIN', 'ray') == 'lidar':
+                _ha = lterr.height_at(_hx, _hy, yaw)
+                terr_ahead = np.full(
+                    4, _ha if _ha < 1e8 else float(terr_foot.mean()))
+                _ahead_leg = np.array([
+                    lterr.height_at(wheel_xyz[i, 0] + _bx * _lk,
+                                    wheel_xyz[i, 1] + _by * _lk, yaw)
+                    for i in range(4)])
+                _ahead_leg[_ahead_leg > 1e8] = terr_foot[_ahead_leg > 1e8]
+            else:
+                terr_ahead = np.full(4, terrain_at(_hx, _hy))
+                _ahead_leg = np.array([
+                    terrain_at(wheel_xyz[i, 0] + _bx * _lk,
+                               wheel_xyz[i, 1] + _by * _lk)
+                    for i in range(4)])
             terr = (1.0 - _w_eff) * terr_foot + _w_eff * terr_ahead
         else:
             terr = np.array([terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
@@ -295,11 +320,12 @@ def main():
             fx, fy = fwd[0], fwd[1]
             h_a = terrain_at(body_pos[0] + fx*0.6, body_pos[1] + fy*0.6)
             h_b = terrain_at(body_pos[0] - fx*0.6, body_pos[1] - fy*0.6)
-            # v225: 爬坡前倾匹配坡度（借鉴 dial-MPC stair_pitch_tar）——
-            # 缓坡 0.8°~15° 时车身前倾，轮推力方向对准
-            _slope = (h_a - h_b) / 1.2
-            pitch_tar = -float(np.clip(np.arctan(_slope),
-                                       -0.30, 0.30))
+            # v225: 爬坡前倾匹配坡度（借鉴 dial-MPC stair_pitch_tar）。
+            # 默认关——实测在 wp4→5 引入不稳，car29 稳定配置无前倾
+            if os.environ.get('S10_VMC_PITCH_SLOPE', '0') == '1':
+                _slope = (h_a - h_b) / 1.2
+                pitch_tar = -float(np.clip(np.arctan(_slope),
+                                           -0.30, 0.30))
             pitch_tar = float(np.clip(np.arctan2(h_a - h_b, 1.2), -0.35, 0.35))
             # v218o: 横脊抬前轮时顺坡仰头（防 pitch 控制器对抗抬升导致腿饱和）
             if _lift_act > 0.05:
@@ -332,7 +358,9 @@ def main():
                       pitch_tar=pitch_tar,
                       yaw_scale=1.0 - _lift_act, hop=hop,
                       step_lift=step_lift,
-                      body_lift=_body_lift)
+                      body_lift=_body_lift,
+                      terrain_ahead=_ahead_leg if '_ahead_leg' in dir() else np.zeros(4),
+                      swing_scale=_err_scale if '_err_scale' in dir() else 1.0)
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
