@@ -27,6 +27,15 @@ class BodyMPPI:
                  w_dist=1.0, w_v=0.30, w_h=0.8, w_s=0.15,
                  ada_alpha=0.35, ada_min=0.5, ada_max=2.0,
                  seed=0):
+        # v269: 关键参数开放环境变量（μ 需匹配实测 a_lat 包线：
+        # a_lat=μg，CarVMC 实测 3.5 -> μ_eff≈0.36）
+        import os as _os
+        N = int(_os.environ.get('S10_MPPI_N', N))
+        H = int(_os.environ.get('S10_MPPI_H', H))
+        dt = float(_os.environ.get('S10_MPPI_DT', dt))
+        mu = float(_os.environ.get('S10_MPPI_MU', mu))
+        omega_max = float(_os.environ.get('S10_MPPI_OMAX', omega_max))
+        vx_max = float(_os.environ.get('S10_MPPI_VMAX', vx_max))
         self.N, self.H, self.dt = N, H, dt
         self.tau_v, self.tau_w = tau_v, tau_w
         self.mu, self.g = mu, g
