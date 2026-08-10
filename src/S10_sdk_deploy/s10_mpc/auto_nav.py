@@ -435,10 +435,11 @@ class AutoNavFollower:
 
         # v672: 已知障碍绕行——wp11→12 有 3.55m 高墙（x∈[-7,-5], y∈[42.1,42.3]），
         # 路径直线擦墙翻车（v671）；墙区路径点向北平滑偏移 0.6m（raised cosine）
-        _wall_amp = float(os.environ.get("S10_WALL_DETOUR_AMP", "0.6"))
+        _wall_amp = float(os.environ.get("S10_WALL_DETOUR_AMP", "0.0"))
         if _wall_amp > 0.0:
             _wc, _wh = -6.0, 2.5
-            _mask = (pts[:, 0] >= _wc - _wh) & (pts[:, 0] <= _wc + _wh)
+            _mask = ((pts[:, 0] >= _wc - _wh) & (pts[:, 0] <= _wc + _wh)
+                     & (pts[:, 1] >= 40.5) & (pts[:, 1] <= 43.5))
             for _i in np.where(_mask)[0]:
                 _w = float(np.cos(
                     np.pi * (pts[_i, 0] - _wc) / (2.0 * _wh)) ** 2)
