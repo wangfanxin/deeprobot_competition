@@ -16,7 +16,7 @@ class AutoNavFollower:
     def __init__(self, waypoints, max_speed=4.0, vyaw_max=2.0,
                  yaw_gain=2.5, lookahead=4.0, lat_accel_max=6.0,
                  climb_max_speed=1.5, grade_scale=5.0, speed_window=3,
-                 lat_gain=1.5, max_accel=5.0, yaw_damp=0.6, cte_gain=2.0):
+                 lat_gain=1.5, max_accel=5.0, yaw_damp=0.6, cte_gain=4.0):
         """
         waypoints: (N,3) 全局航点 [x, y, z]
         """
