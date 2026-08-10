@@ -1120,6 +1120,9 @@ class FootPlaceVMC:
         self._roll_prev = body["roll"]
         self._pitch_prev = body["pitch"]
         _om_body = float(qvel[5])
+        if getattr(self, "_wz_f", None) is None:
+            self._wz_f = np.array([terrain_h[leg] + self.fk.r
+                                   for leg in range(4)], dtype=np.float64)
         tau = np.zeros(16, dtype=np.float64)
         for leg in range(4):
             b = leg * 3
@@ -1133,6 +1136,10 @@ class FootPlaceVMC:
                      + body["R"] @ np.array([LEG_ATTACH[leg, 0],
                                              LEG_ATTACH[leg, 1], 0.0]))
             wz = float(terrain_h[leg]) + self.fk.r
+            # v698: 目标低通（τ=0.08s）——台阶地形跳变时轮目标平滑过渡，
+            # 防腿猛伸（v697 第二级台阶轮甩 1.87）
+            self._wz_f[leg] += (wz - self._wz_f[leg]) * min(1.0, dt / 0.08)
+            wz = float(self._wz_f[leg])
             # v694: 姿态修正（PD）——纯轮位控制无姿态稳定会滚翻（v660）；
             # 刻度 0.0025：0.1rad 滚转角 → 0.02m 轮高修正，含速率阻尼
             _side = -1.0 if leg in (0, 1) else 1.0
@@ -1145,7 +1152,10 @@ class FootPlaceVMC:
                                - 6.0 * pitch_rate) * 0.0025)
             rel = body["R"].T @ (np.array([wheel_xyz[leg, 0],
                                            wheel_xyz[leg, 1], wz]) - hip_w)
-            q1t, q2t = self._ik(float(rel[0]), float(rel[2]), q1, q2)
+            # v698: IK 可达性钳制——轮相对髋 z 限制在 [-0.16, 0.02]（FK 范围），
+            # 目标不可达时不再猛伸（v697 轮甩 1.87）
+            _rz = float(np.clip(rel[2], -0.16, 0.02))
+            q1t, q2t = self._ik(float(rel[0]), _rz, q1, q2)
             tau[hipx_i] = (self.kp * (self.pose_target[b] - qhx)
                            - self.kd * float(qvel[6 + LEG_QV_LEG[b]]))
             tau[hipy_i] = (self.kp * (q1t - q1)
