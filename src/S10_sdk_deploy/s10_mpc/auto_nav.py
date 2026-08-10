@@ -585,6 +585,18 @@ class AutoNavFollower:
                 and next_idx <= int(os.environ.get(
                     "S10_WP_AIM_LAST", "99"))):
             target = wp_next
+            # v526: 出弯瞄向提前（S10_AIM_EXIT_BLEND 默认 0）——靠近航点
+            # 时瞄准点从航点向出口方向平滑偏移（_f=BLEND*(1-d/AIM)，最远
+            # BLEND×段长），狗提前入弯（wp1 是 86° 弯，2.8m/s 需提前
+            # 1.5-2m 转，当前瞄 wp1 直到 2.5m 内导致转弯滞后超调 2.2m）。
+            # 连续量；next_idx>=2 才生效（起步门架保持直瞄 wp1）。
+            _aeb = float(os.environ.get("S10_AIM_EXIT_BLEND", "0"))
+            if _aeb > 0.0 and next_idx >= 2 and next_idx + 1 < len(self.wp):
+                _f = min(_aeb * max(0.0, 1.0 - d_wp / max(_aim_eff, 1e-3)),
+                         0.5)
+                target = (target[0:2]
+                          + _f * (self.wp[next_idx + 1][0:2]
+                                  - self.wp[next_idx][0:2]))
         else:
             # v267: 已越过航点（passed）或未接近 → 一律瞄**路径前视点**
             # ——修复"passed 后瞄身后当前航点→err 饱和振荡→漂西卡脊"
