@@ -31,7 +31,8 @@ class AutoNavFollower:
         # CTE 0.8m+ → 拉回侧翻；4m 瞄准更远，弯道走线更贴路径。
         self.lookahead = float(os.environ.get(
             "S10_AUTO_LOOKAHEAD", str(lookahead)))
-        self.lat_accel_max = float(lat_accel_max)
+        self.lat_accel_max = float(os.environ.get(
+            "S10_AUTO_LAT_ACCEL", str(lat_accel_max)))
 
         self.grade_scale = float(grade_scale)
         # v219d: 限速前瞻窗口可覆盖（S10_AUTO_SPEED_WINDOW）。

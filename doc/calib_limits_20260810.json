@@ -1,0 +1,62 @@
+{
+  "accel": {
+    "acc_max": 4.876505066398849,
+    "acc_med": 0.6061150961904334,
+    "t_10_90": 4.75,
+    "t_to_3.5": 4.93,
+    "v_end": 2.962422422500818,
+    "dec_max": 3.5488639079129807,
+    "dec_med": 1.4871895760567084,
+    "dist_stop": 1.209113866931976
+  },
+  "turn": {
+    "1.0": {
+      "om_max": 0.0,
+      "om_act": 0.0,
+      "a_lat": 0.0,
+      "vx_act": 0.0,
+      "roll": 0.0,
+      "note": "even 0.4 fails"
+    },
+    "1.5": {
+      "om_max": 0.0,
+      "om_act": 0.0,
+      "a_lat": 0.0,
+      "vx_act": 0.0,
+      "roll": 0.0,
+      "note": "even 0.4 fails"
+    },
+    "2.0": {
+      "om_max": 0.0,
+      "om_act": 0.0,
+      "a_lat": 0.0,
+      "vx_act": 0.0,
+      "roll": 0.0,
+      "note": "even 0.4 fails"
+    },
+    "2.5": {
+      "om_max": 0.0,
+      "om_act": 0.0,
+      "a_lat": 0.0,
+      "vx_act": 0.0,
+      "roll": 0.0,
+      "note": "even 0.4 fails"
+    },
+    "3.0": {
+      "om_max": 0.0,
+      "om_act": 0.0,
+      "a_lat": 0.0,
+      "vx_act": 0.0,
+      "roll": 0.0,
+      "note": "even 0.4 fails"
+    },
+    "3.5": {
+      "om_max": 0.0,
+      "om_act": 0.0,
+      "a_lat": 0.0,
+      "vx_act": 0.0,
+      "roll": 0.0,
+      "note": "even 0.4 fails"
+    }
+  }
+}

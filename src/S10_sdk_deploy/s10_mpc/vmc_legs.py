@@ -309,7 +309,11 @@ class VMCController:
             # 差速振荡（v219m/n 实测 60→5/15），转弯大增益保证转向力。
             _yk = self.yaw_k_wheel * (0.3 + 0.7 * min(
                 abs(self._om_f) / 0.4, 1.0))
-            t_yaw = (-_yk * (self._om_f - body["omega"]) * wd_side
+            # v235: 显式 yaw-rate 阻尼——高速差速转向 yaw 振荡掉头侧翻
+            # （RobuROC6/观测器文献：滑模/阻尼抑制振荡）
+            _kd_yaw = float(os.environ.get("S10_CAR_KD_YAW", "2.0"))
+            t_yaw = ((-_yk * (self._om_f - body["omega"])
+                      - _kd_yaw * body["omega"]) * wd_side
                      * _ysc * getattr(self, "_ground_f", 1.0))
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
                        - self.wheel_d * wq + t_yaw)
@@ -746,7 +750,10 @@ class CarVMC:
             v_wheel = -wq * self.fk.r
             side = -1.0 if leg in (0, 2) else 1.0
             v_ref = self._vx_f + side * self._om_f * self.track_half
-            t_yaw = (-_yk * (self._om_f - body["omega"]) * side
+            # v235: yaw-rate damping (CarVMC) - high-speed diff-steer yaw oscillation
+            _kd_yaw = float(os.environ.get("S10_CAR_KD_YAW", "2.0"))
+            t_yaw = ((-_yk * (self._om_f - body["omega"])
+                      - _kd_yaw * body["omega"]) * side
                      * _ysc * self._ground_f)
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
                        - self.wheel_d * wq + t_yaw)

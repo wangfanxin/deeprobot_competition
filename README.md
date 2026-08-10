@@ -1,7 +1,8 @@
 # S10 巡逻赛题 · 感知-MPC 工程仓库
 
 基于山猫 S10 四足轮式机器人的**巡逻赛题**参赛方案：LiDAR 感知 + 高程地形建模 +
-dial-mpc 采样 MPC 控制，在 MuJoCo 仿真中完成 33 航点全程巡检。
+导航（平滑路径/速度剖面）→ **CarVMC 车化控制**（轮驱动/差速 + 腿=主动悬架）的
+层级方案，在 MuJoCo 仿真中完成 33 航点全程巡检（历史 dial-mpc 方案已归档）。
 
 > 完整工程文档见 [doc/0808.md](doc/0808.md)；参数唯一来源为
 > [doc/s10_mpc_deploy.yaml](doc/s10_mpc_deploy.yaml)。
@@ -17,27 +18,31 @@ dial-mpc 采样 MPC 控制，在 MuJoCo 仿真中完成 33 航点全程巡检。
 - 申报模式：**自主跟随（÷1.3）**——航点跟随 + 感知地形限速/爬坡 + roll 安全，
   不强制全局 A\*。
 
-## 已实现（2026-08-08）
+## 已实现（2026-08-10，CarVMC 车化巡航）
 
 ```mermaid
 graph LR
-    A["/rl_deploy"] -->|"/JOINTS_CMD"| B["/mujoco_simulation"]
-    B -->|"/IMU_DATA"| A
-    B -->|"/JOINTS_DATA"| A
+    S["mujoco (S10_track.xml / new_wp30.xml)"] -->|"200Hz"| P["mujoco-lidar → LidarTerrain 世界高程图 (10Hz)"]
+    P -->|"高程"| N["AutoNavFollower (20Hz): 平滑路径+速度剖面+判点"]
+    N -->|"[vx,ω]"| C["CarVMC (200Hz): 轮驱动/差速 + 腿=主动悬架"]
+    C -->|"tau 200Hz"| S
 ```
 
-- **感知**：Airy-96 LiDAR 仿真（120×48 线 @10Hz，前下 45° 安装）→ 世界对齐
-  高程瓦片 `perception/local_map.py`（8×8m 锚定 / 输出 60×60@0.1m，跨帧累积 +
-  空洞填补 + 运动学地面注入）→ 纯 jnp 查图 `elevation_lookup.py`（零 retrace）。
-- **导航**：Catmull-Rom 平滑路径（过 33 航点 0.013m、全长 234m）+ 曲率/横脊/
-  高架限速速度剖面 + 单调弧长游标/切线投影 + CRUISE/STAIR 双模式仲裁。
-- **控制**：dial-mpc MBDPI（CRUISE H25/N768 ≈13.7~14.3Hz，STAIR H20/N512 ≈15Hz，
-  solver_it 4），CRUISE/STAIR 双模式 cost 权重 + w_prog 进度奖励；模式 B 遥控
-  （4.5 m/s 竞速档）+ 模式 A 自动导航。
-- **爬坡**：foot_place 抬轮 + 前瞻抬轮 + 抬腿伸展引导（r_ext）+ 锁轮推身
-  （lockpush）+ 机身逐级抬升（w_clear），wp7 连续台阶可爬 3~4 级。
-- **工程**：JAX 编译缓存（冷启动 ≈4~5s）、文档化环境变量覆盖、`doc/0808.md`
-  完整记录赛程/规则/参数/实验链。
+- **感知**：mujoco-lidar 扇形射线（lidar_site 前下 45°，64×32 加密）→
+  `LidarTerrain` SLAM 式**世界栅格累积高程图**（前方多后方少长方形投影、
+  高度维度不限制、max_hang 1.5、增量更新、运动学 fallback），
+  参考爬楼梯版 `perception/local_map.py` 建图方式。
+- **导航**：Catmull-Rom 平滑路径（切线因子）+ 曲率/横脊/高架限速速度剖面
+  + 单调弧长游标/切线投影 + 航点严格判点（S10_WP_ADVANCE_DIST=1.0），
+  20Hz 输出 [vx, ω]（S10_VMC_USE_NAV=1 直通，绕开身体层 MPPI 随机性）。
+- **控制**：CarVMC（车化，200Hz）——轮=驱动+差速转向（yaw 比例+阻尼、
+  动态抓地钳制按载荷），腿=主动悬架（mg/4+roll/pitch 分配+地形阻抗，
+  半蹲降质心、微 roll 内倾压弯），横脊单步跨越/抬轮前馈；无门控、连续
+  地形响应。
+- **历史（已归档）**：dial-mpc MBDPI 巡航（3.50 m/s wp0→5、new_wp30 33 点
+  2.04 m/s 全通）见 `_archive_20260810/dial_mpc_cruise/` 与 doc/0808.md §9-43。
+- **台阶（stair session）**：v216 轮锁 v4（8 跑 0 翻车，前轮 2~3 级）；wp7
+  连续台阶为当前硬阻塞（左后轮 HL 抬升，~280 组软参数穷尽，见 0808.md §27-43）。
 
 ## 目录结构
 
@@ -114,20 +119,20 @@ S10_MUJOCO_XML=/absolute/path/to/model.xml \
   文件 `src/S10_sdk_deploy/S10_description/s10_mjcf/mjcf/new_wp30.xml`，
   路径图 [new_wp30_path.png](doc/new_wp30_path.png)，说明见 doc/0808.md §9.1。
 
-## 当前进度与待办
+## 当前进度与待办（2026-08-10）
 
-- 模式 B（遥控）：稳定，4.5 m/s 竞速档已调优。
-- 模式 A（自动导航）：
-  - **巡航突破**：wp0→wp5（含 S 弯）**3.50 m/s 干净完赛**（v196a_r2，
-    run_t 10.5s），复测可靠性 ~40%（S 弯 R=0.84m 为翻车主因）。
-  - **new_wp30 平面版 33 航点全通**：224.2m 无翻车，avg 2.04 m/s（v193）。
-  - **阻塞点 = wp7 连续台阶区**（4~5 级 0.13m 台阶）：可爬 3~4 级，
-    末级维持与稳定性收敛中。
-- 待办：S 弯可靠性（3.4+ 成功率）、wp7 台阶区收敛、33 航点真赛道全程、
-  真机迁移（vel_scale 回退 50、IMU 闭环、Orin 实测）、A\* 全局规划（可选）。
+- **CarVMC 巡航**（当前主线）：
+  - wp0→4 ≈15.6s；wp0→5 **23.1s 稳定通过**（起步坡+S 弯+横脊，lidar 高程图），
+    wp3/wp4 严格判点通过；图 [doc/carvmc_lidar_wp0-5_xy_speed.png](doc/carvmc_lidar_wp0-5_xy_speed.png)。
+  - **攻关中**：高速大弯（wp2→4）yaw 振荡/侧翻（v235 yaw 阻尼待验证；
+    极限包线标定 → 写回导航/控制器硬约束，贴着极限跑而非降速）；
+    wp4→5 横脊高速通过；均速目标 3.5 m/s。
+- **台阶**（stair session）：v216 轮锁 v4 稳定 8/8 不翻，前轮 2~3 级；
+  wp7 全过需左后轮抬升（待决策：最小反射/RL/接受现状）。
+- 待办：CarVMC 全 33 航点、真机迁移（vel_scale 回退 50、IMU 闭环、Orin 实测）、
+  初赛材料（8.20 技术方案 PDF + Demo + GitHub 链接）。
 
-详细实验记录与参数演进见 `doc/0808.md`（§9）与归档 `_archive_20260808/doc/0806.md`
-（v1~v197 全记录）。
+详细实验记录与参数演进见 `doc/0808.md`（§9 起）与归档 `_archive_20260808/doc/0806.md`。
 
 ## 相关文档
 
