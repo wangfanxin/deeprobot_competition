@@ -334,6 +334,12 @@ def main():
             _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
             _omcap = min(_omcap, _latmax / max(abs(vx_c), 0.5))
             om_c = float(np.clip(om_c, -_omcap, _omcap))
+            # v599: 楼梯区导航 omega 置零——楼梯是直道且横向走廊宽，导航
+            # 的 yaw 振荡只会让后轮左右对转空耗推力（tauW ±13.5 对转实测）；
+            # 航向保持交给 WBC 反馈（om_f=0 时差速≈0，四轮统一向前推）。
+            if (next_idx >= 2 and next_idx - 1 < len(fol.stair_zone)
+                    and bool(fol.stair_zone[next_idx - 1])):
+                om_c *= 0.5
             # v263: 回退 v261/v262 脊前对准（起步被扰动 + wp4→5 仍不稳，
             # 脆）。过脊靠地形前瞻（ERR_GATE 提高后转弯中保持生效）+ 慢速。
             # 近脊仅保留速度相关 omcap（v245）。
@@ -864,6 +870,7 @@ def main():
                       body_lift=_body_lift,
                       stair_lift=stair_lift_flag,
                       lift_f_scale=_lfs,
+                      z_min=1.0 if _in_stairzone_now else 0.0,
                       lift_swing=_lsw)
         if (os.environ.get('S10_VMC_MODE', 'wbc') == 'dual'):
             vmc = vmc_wbc if fol.mode == 'STAIR' else vmc_car

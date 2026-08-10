@@ -193,7 +193,12 @@ class VMCController:
         # v467: WBC 站高偏移可调（原 0.205 是 dial-MPC 时代低站姿——当前
         # CarVMC 巡航站姿 body≈terrain+0.74，WBC 按 0.205 会把狗压到离地
         # 0.12m 腿折叠爬行卡死，v466 双技能卡 y=36.5 实测）。
-        z_des = float(np.mean(terrain_h)) + float(os.environ.get(
+        # v598: 楼梯区 z_des 用**最低地形**（车身后端贴地保牵引）——mean 会
+        # 随前轮落脚点地形升高、把后轮悬空失牵引（wt=1.7Nm 空转实测）；
+        # 前髋高度由 pitch（轴距坡度）+ 前轮落脚点地形负责。
+        _zm9 = float(cmd.get("z_min", 0.0))
+        z_des = float((np.min(terrain_h) if _zm9 > 0.0
+                       else np.mean(terrain_h))) + float(os.environ.get(
             "S10_VMC_Z_DES_OFFSET", "0.205"))
         # v502: 抬轮时身体同步抬高（S10_VMC_WBC_LIFT_BODY）——楼梯抬轮姿态
         # 只抬轮不抬身，车身塌 0.6m 拖地卡死（v500 实测）。z_des 随平均
@@ -202,9 +207,14 @@ class VMCController:
         if _lb > 0.0:
             z_des += _lb * float(np.mean(
                 np.asarray(cmd.get("step_lift", np.zeros(4)))))
+        # v605: 楼梯区（z_min>0）**取消全局 z 抬升**——只留重力+阻尼，车高
+        # 由逐轮落脚点阻抗决定（前轮=台面高、后轮=地面高，姿态自然形成），
+        # 后轮保载荷不失牵引（此前 kp_z 抬车身→后轮 wt=1.7Nm 空转实测）。
         F_des_w = np.array([
             0.0, 0.0,
-            self.m * self.g + self.kp_z * (z_des - body["pos"][2])
+            self.m * self.g
+            + (0.0 if _zm9 > 0.0
+               else self.kp_z * (z_des - body["pos"][2]))
             - self.kd_z * float(qvel[2])])
         # v218k: 驱动 25% 由腿分担（轮为主），全轮在坡上推力不足
         _dsh = float(os.environ.get("S10_VMC_DRIVE_SHARE", "0.25"))
@@ -283,7 +293,10 @@ class VMCController:
             if _hop is not None:
                 fw[2] += float(_hop[leg])
             pz_des = float(terrain_h[leg]) + self.fk.r
-            fw[2] += (1.0 - _sl) * (
+            # v602: 抬轮时地形阻抗**不随 sl 衰减**（(1-zk*sl)）——楼梯落脚点
+            # 把前轮地形置为台面高，阻抗把轮拉到 pz_des=台面+r，轮直接
+            # 落上台面（原 (1-sl) 在 sl=1 时清零，抬轮只剩姿态 PD、够不到）
+            fw[2] += (1.0 - _zk * _sl) * (
                 self.kp_h * (pz_des - p[2])
                 - self.kd_h * float(wheel_vel[leg, 2]))
             f_body = body["R"].T @ fw
