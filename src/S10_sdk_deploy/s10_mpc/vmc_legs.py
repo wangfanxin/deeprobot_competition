@@ -820,13 +820,17 @@ class CarVMC:
                 "lift_f_scale", os.environ.get("S10_VMC_LIFT_F_SCALE", "1.0")))
             if _fscale < 1.0:
                 if p is not None and terrain_h is not None:
-                    pz_des = float(terrain_h[leg]) + self.fk.r
+                    # v710: 轮目标压到地面以下（S10_WHEEL_PRESS）——卡死根因是
+                    # 轮子悬空 1-3cm 零接触力（STUCKDBG fn=0），必须压实
+                    pz_des = (float(terrain_h[leg]) + self.fk.r
+                              - float(cmd.get("wheel_press", 0.0)))
                     F += (self.kp_h * (pz_des - p[2])
                           - self.kd_h * float(wheel_vel[leg, 2]))
                 F = max(F, 2.0) * (1.0 - _fscale * sl)
             else:
                 if p is not None and terrain_h is not None:
-                    pz_des = float(terrain_h[leg]) + self.fk.r
+                    pz_des = (float(terrain_h[leg]) + self.fk.r
+                              - float(cmd.get("wheel_press", 0.0)))
                     F += (1.0 - sl) * (
                         self.kp_h * (pz_des - p[2])
                         - self.kd_h * float(wheel_vel[leg, 2]))

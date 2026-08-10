@@ -932,6 +932,9 @@ def main():
                       lift_f_scale=_lfs,
                       z_min=1.0 if _in_stairzone_now else 0.0,
                       fp_place=1.0 if _in_stairzone_now else 0.0,
+                      wheel_press=(float(os.environ.get(
+                          'S10_WHEEL_PRESS', '0.03'))
+                                   if _in_stairzone_now else 0.0),
                       pure_fwd=(1.0 if (float(os.environ.get(
                           'S10_STAIR_PURE_FWD', '0')) > 0
                                         and _in_stairzone_now
@@ -1013,9 +1016,27 @@ def main():
                 _vb = np.asarray(d.cvel[1][0:6], dtype=np.float64)
                 _wq4 = [float(qvel[WHEEL_Q_IDX[i]]) for i in range(4)]
                 _wz4 = [float(d.xpos[WHEEL_BODY[i], 2]) for i in range(4)]
-                print('[STUCKDBG] body_v=%.3f,%.3f,%.3f om=%.3f wq=%s wz=%s'
+                # v709: 接触力诊断——每轮法向接触力（efc_force）
+                _fn = [0.0, 0.0, 0.0, 0.0]
+                _nrmc = 0
+                for _ci in range(d.ncon):
+                    _cn = d.contact[_ci]
+                    if _cn.geom1 < 0 or _cn.geom2 < 0:
+                        continue
+                    _ea = _cn.efc_address
+                    if _ea < 0:
+                        continue
+                    _fz = float(d.efc_force[_ea])
+                    for _wi, _gb in enumerate(WHEEL_BODY):
+                        if (m.geom_bodyid[_cn.geom1] == _gb
+                                or m.geom_bodyid[_cn.geom2] == _gb):
+                            _fn[_wi] += abs(_fz)
+                            _nrmc += 1
+                print('[STUCKDBG] body_v=%.3f,%.3f,%.3f om=%.3f wq=%s wz=%s '
+                      'fn=%s nrmc=%d'
                       % (_vb[0], _vb[1], _vb[2], _vb[5],
-                         np.round(_wq4, 1), np.round(_wz4, 2)), flush=True)
+                         np.round(_wq4, 1), np.round(_wz4, 2),
+                         np.round(_fn, 0), _nrmc), flush=True)
                 break
     print('=== VMC 全航点结果 ===')
     print(f'完成: {next_idx >= MAX_WP}，最终 wp={next_idx}/{MAX_WP}')
