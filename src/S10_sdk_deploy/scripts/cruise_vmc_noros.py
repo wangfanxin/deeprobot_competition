@@ -371,15 +371,26 @@ def main():
                 # ——纯路径跟踪会切内弯错过航点（wp1 最近 0.6m 实测）；导航的
                 # 瞄航点逻辑保证 0.3m 判点，MPPI 负责平滑 + 摩擦锥约束兜底。
                 _g_om = float(vyaw) if vyaw is not None else 0.0
-                # v543: 楼梯直行（S10_STAIR_STRAIGHT=1）——楼梯区狗沿走廊
-                # 直线北上，om 强制 0（消除 om~1.0 导致的轮差速前后摆动、
-                # 驱动互相抵消卡死，v539 调试实测 wq -28~+3）。
+                # v543/v547: 楼梯航向锁定（S10_STAIR_STRAIGHT=1 直行；
+                # S10_STAIR_HEADING_HOLD>0 用 P 控制器锁走廊航向）——楼梯区
+                # pursuit/cte 产生 om±1.7 振荡，轮差速抵消驱动死锁（v539 实
+                # 测 wq -28~+3）。航向锁：g_om = K·wrap(走廊航向-当前yaw)，
+                # 狗沿走廊直线北上，yaw 稳定无振荡。
+                _in_sz = (next_idx >= 2
+                          and next_idx - 1 < len(fol.stair_zone)
+                          and fol.stair_zone[next_idx - 1])
                 if (float(os.environ.get('S10_STAIR_STRAIGHT', '0')) > 0
-                        and next_idx >= 2
-                        and next_idx - 1 < len(fol.stair_zone)
-                        and fol.stair_zone[next_idx - 1]):
+                        and _in_sz):
                     _g_om = 0.0
                     prev_u[1] = 0.0
+                _hh = float(os.environ.get('S10_STAIR_HEADING_HOLD', '0'))
+                if _hh > 0.0 and _in_sz:
+                    _kh = min(getattr(fol, '_k_near', 0),
+                              len(fol.path_heading) - 1)
+                    _h_tar = float(fol.path_heading[_kh])
+                    _g_om = _hh * float(np.arctan2(
+                        np.sin(_h_tar - yaw), np.cos(_h_tar - yaw)))
+                    _g_om = float(np.clip(_g_om, -2.0, 2.0))
                 vx_c, om_c = mppi.plan(
                     st, _ref, v_ref, prev_u, guide_om=_g_om)
                 if (os.environ.get('S10_NAV_DEBUG', '0') == '1'
