@@ -67,7 +67,7 @@
              "0 0.79 0" + 垂直 ±45° 在 wp7 爬坡场景最优：浮空 25%、地图
              有效格 715、误差>0.15m 仅 1%。
              安装外参需与真机 lidar→base_link 静态 TF 一致（设计契约）。 -->
-        <site name="lidar_site" pos="0.20 0 0.30" euler="0 0.15 0" size="0.01" rgba="0 1 0 1"/>
+        <site name="lidar_site" pos="0.20 0 0.30" euler="0 0.70 0" size="0.01" rgba="0 1 0 1"/>
       <geom type="mesh" class="visual" mesh="base_link"/>
       <geom size="0.08 0.3" pos="0 0.024 0" quat="0.707107 0 0.707107 0" type="cylinder" class="collision"/>
       <geom size="0.08 0.3" pos="0 -0.024 0" quat="0.707107 0 0.707107 0" type="cylinder" class="collision"/>

@@ -514,7 +514,9 @@ class LidarTerrain:
         if fov_h is None:
             fov_h = float(np.radians(55))
         ths = np.linspace(-fov_h, fov_h, int(th_n))
-        phs = np.linspace(np.radians(10.0), np.radians(-55.0), int(phi_n))
+        # v293c: 上缘 +10->+45 deg——配 40 deg 前倾安装后中心线仍保留~0 deg 世界俯仰，
+        # 远场恢复到 20m cutoff（只加大安装角会把远场压到 ~1m）
+        phs = np.linspace(np.radians(45.0), np.radians(-55.0), int(phi_n))
         dirs = []
         for ph in phs:
             for th in ths:
