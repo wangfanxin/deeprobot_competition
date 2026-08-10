@@ -203,8 +203,15 @@ class VMCController:
         # 随前轮落脚点地形升高、把后轮悬空失牵引（wt=1.7Nm 空转实测）；
         # 前髋高度由 pitch（轴距坡度）+ 前轮落脚点地形负责。
         _zm9 = float(cmd.get("z_min", 0.0))
-        z_des = float((np.min(terrain_h) if _zm9 > 0.0
-                       else np.mean(terrain_h))) + float(os.environ.get(
+        # v751: 楼梯区 z_des 用**前轮地形主导**（S10_VMC_WBC_Z_MAX=1）——
+        # 原 v598 min(terr) 保后轮牵引但 body 太低→前轮在台面时前腿被迫
+        # 全屈(0.06m)无力承重→前轮悬空死锁实测。max(terr) 让 body 随前轮
+        # 台面升高，前腿伸展承重+后腿伸长贴地，body 自然前倾(USC 姿态)。
+        _zmax9 = float(os.environ.get("S10_VMC_WBC_Z_MAX", "0"))
+        _zt9 = (float(np.max(terrain_h)) if _zmax9 > 0.0
+                else float(np.min(terrain_h))) if _zm9 > 0.0 else float(
+                    np.mean(terrain_h))
+        z_des = _zt9 + float(os.environ.get(
             "S10_VMC_Z_DES_OFFSET", "0.205"))
         # v502: 抬轮时身体同步抬高（S10_VMC_WBC_LIFT_BODY）——楼梯抬轮姿态
         # 只抬轮不抬身，车身塌 0.6m 拖地卡死（v500 实测）。z_des 随平均
