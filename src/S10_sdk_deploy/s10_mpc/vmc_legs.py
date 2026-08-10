@@ -1071,8 +1071,8 @@ class FootPlaceVMC:
                                     -0.05,  1.10, -1.90,
                                      0.05,  1.10, -1.90], dtype=np.float64)
         self._vx_f = 0.0
-        self.kp_roll = float(os.environ.get("S10_FP_KP_ROLL", "80.0"))
-        self.kp_pitch = float(os.environ.get("S10_FP_KP_PITCH", "60.0"))
+        self.kp_roll = float(os.environ.get("S10_FP_KP_ROLL", "400.0"))
+        self.kp_pitch = float(os.environ.get("S10_FP_KP_PITCH", "300.0"))
 
     def _body_state(self, qpos, qvel):
         q = qpos[3:7]
