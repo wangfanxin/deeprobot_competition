@@ -800,7 +800,20 @@ class CarVMC:
                 self._om_ref_f = _om_ref
             self._om_ref_f += (_om_ref - self._om_ref_f) * min(1.0, dt / _om_ref_tau)
             _om_ref = self._om_ref_f
-            if abs(_om_b) > _om_safe:
+            # v428: Tube-MPPI 灵感（RSS18 Williams et al.）——MPPI 规划
+            # 标称轨迹，低层跟踪器保证实际轨迹在"管"内：管内不干预（让差速
+            # 前馈自然执行），只有偏差超管才拉回。对应 yaw 通道：
+            # |ω_act-ω_cmd| ≤ TUBE 时不加滑模反馈、不触发 om_safe 反向刹车
+            # （转弯 cmd1.4/act1.6 的轻微过速不再反向硬刹 → 消除 wp4→5
+            # 过冲振荡翻车）；超管才用 tanh 饱和拉回。默认 0.0 = 原行为。
+            # v429: 刹车管（独立旋钮）——om_safe 反向硬刹只在实际 ω 偏差
+            # 超过 S10_CAR_YAW_BRAKE_TUBE 时才触发（弯道 cmd1.8/act2.6 的
+            # 合理过速不再瞬间反向差速 → 消除振荡翻车）；S10_CAR_YAW_TUBE
+            # 单独控制滑模反馈死区。默认 0 = 原行为。
+            _tube = float(os.environ.get("S10_CAR_YAW_TUBE", "0.0"))
+            _btube = float(os.environ.get("S10_CAR_YAW_BRAKE_TUBE", "0.0"))
+            _err_y = self._om_f - body["omega"]
+            if abs(_om_b) > _om_safe and abs(_err_y) > _btube:
                 _om_ref = -float(np.clip(_om_b, -_om_safe, _om_safe))
                 _kd_eff = _kd_yaw + 8.0
             # v252: 差速参考用**即时指令**（导航已 slew 0.8/s，够平滑）——
@@ -825,12 +838,16 @@ class CarVMC:
             # 库仑摩擦前馈（克服低速静摩擦）+ 高频阻尼。
             _k_sm = float(os.environ.get("S10_CAR_YAW_K_SM", "30.0"))
             _phi = float(os.environ.get("S10_CAR_YAW_PHI", "0.5"))
-            _err_y = self._om_f - body["omega"]
+            # v428: 管误差 = 超出 |误差|≤TUBE 的部分（死区），管内误差=0
+            _err_t = _err_y
+            if _tube > 0.0:
+                _err_t = float(np.sign(_err_y)) * max(
+                    abs(_err_y) - _tube, 0.0)
             _ff_sign = 0.0
             if abs(self._om_f) > 0.05:
                 _ff_sign = float(np.sign(self._om_f)) * min(
                     abs(self._om_f) / 0.3, 1.0)
-            t_yaw = ((-_k_sm * float(np.tanh(_err_y / _phi))
+            t_yaw = ((-_k_sm * float(np.tanh(_err_t / _phi))
                       - _kff * _ff_sign
                       + _kd_eff * _om_hf) * side
                      * _ysc * self._ground_f)

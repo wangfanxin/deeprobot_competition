@@ -28,19 +28,17 @@ class BodyMPPI:
                  w_dist=2.0, w_v=0.80, w_h=0.0, w_s=0.05,
                  ada_alpha=0.35, ada_min=0.5, ada_max=2.0,
                  seed=0):
-        # v269: 关键参数开放环境变量（μ 需匹配实测 a_lat 包线：
-        # a_lat=μg，CarVMC 实测 3.5 -> μ_eff≈0.36）
+        # v427: 精简参数集（Tube-MPPI 灵感落地的前提：调参面越小，
+        # 执行层跟踪管越可信）。只保留启动脚本实际调用的旋钮：
+        #   S10_MPPI_MU      —— 摩擦锥 μ（标定 μ_eff≈0.36）
+        #   S10_MPPI_OMAX    —— 转向上限（由 VMC 执行能力派生）
+        #   S10_MPPI_W_GUIDE —— 指令跟踪权重（管外拉回力度）
+        #   S10_MPPI_W_DIST  —— 路径距离成本权重
+        # N/H/dt/W_V/W_HEAD/W_S/VMAX 固定默认（防参数爆炸）；控制量上限仍由
+        # VMC 派生：S10_VMC_OM_CAP/ABS_MAX、S10_AUTO_VMAX。
         import os as _os
-        N = int(_os.environ.get('S10_MPPI_N', N))
-        H = int(_os.environ.get('S10_MPPI_H', H))
-        dt = float(_os.environ.get('S10_MPPI_DT', dt))
         mu = float(_os.environ.get('S10_MPPI_MU', mu))
         omega_max = float(_os.environ.get('S10_MPPI_OMAX', omega_max))
-        vx_max = float(_os.environ.get('S10_MPPI_VMAX', vx_max))
-        # v347: 控制量上限由 VMC 执行能力决定——omega 取执行层指令钳制
-        # S10_VMC_OM_CAP（脚本里 MPPI 输出后就是这个 cap 再进 VMC），
-        # 回退 S10_VMC_OM_ABS_MAX（实际 ω 安全刹车阈值，偏保守）；
-        # vx 取 S10_AUTO_VMAX。用户：软硬上限均可试。
         _vmc_om = _os.environ.get('S10_VMC_OM_CAP') or _os.environ.get(
             'S10_VMC_OM_ABS_MAX')
         if _vmc_om:
@@ -49,9 +47,7 @@ class BodyMPPI:
         if _vmc_vx:
             vx_max = min(vx_max, float(_vmc_vx))
         w_dist = float(_os.environ.get('S10_MPPI_W_DIST', w_dist))
-        w_v = float(_os.environ.get('S10_MPPI_W_V', w_v))
-        w_h = float(_os.environ.get('S10_MPPI_W_HEAD', w_h))
-        w_s = float(_os.environ.get('S10_MPPI_W_S', w_s))
+        w_g = float(_os.environ.get('S10_MPPI_W_GUIDE', '0.5'))
         self.N, self.H, self.dt = N, H, dt
         self.tau_v, self.tau_w = tau_v, tau_w
         self.mu, self.g = mu, g
@@ -59,7 +55,7 @@ class BodyMPPI:
         self.lam = lam
         self.sigma_vx0, self.sigma_om0 = sigma_vx, sigma_om
         self.w_dist, self.w_v, self.w_h, self.w_s = w_dist, w_v, w_h, w_s
-        self.w_g = float(_os.environ.get('S10_MPPI_W_GUIDE', '0.5'))
+        self.w_g = w_g
         self.ada_alpha, self.ada_min, self.ada_max = ada_alpha, ada_min, ada_max
         self.rng = np.random.default_rng(seed)
         self._u = np.zeros(2)
