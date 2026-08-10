@@ -70,6 +70,24 @@ def main():
             wps.append((idx, d.geom_xpos[gid].copy()))
     wps.sort()
     wp = np.array([w for _, w in wps])
+    # v643: 测试用 S10_START_WP——从指定航点起跑（跳过楼梯等卡点，
+    # 用于验证其余赛段 wp7→33；0=正常从 wp0 起跑）
+    START_WP = int(os.environ.get('S10_START_WP', '0'))
+    if START_WP > 0 and START_WP < len(wp):
+        d.qpos[0:3] = [wp[START_WP][0], wp[START_WP][1] - 1.0, 1.2]
+        if START_WP + 1 < len(wp):
+            _dy = wp[START_WP + 1][1] - wp[START_WP][1]
+            _dx = wp[START_WP + 1][0] - wp[START_WP][0]
+            _iy = float(np.arctan2(_dy, _dx))
+        else:
+            _iy = 1.5708
+        d.qpos[3:7] = [np.cos(_iy / 2), 0, 0, np.sin(_iy / 2)]
+        d.qpos[7:23] = np.array([-0.438, -1.16, 2.45, 0.0,
+                                  0.438, -1.16, 2.45, 0.0,
+                                 -0.438,  1.16, -2.45, 0.0,
+                                  0.438,  1.16, -2.45, 0.0])
+        mujoco.mj_forward(m, d)
+        print(f'[VMC] 从 wp{START_WP} 起跑（跳过 wp0→{START_WP}）', flush=True)
 
     fol = AutoNavFollower(
         wp,
@@ -230,7 +248,7 @@ def main():
                                 None, True, -1, g, nrm)
             return (8.0 - hit) if hit > 0 else 0.0
 
-    next_idx = 0
+    next_idx = START_WP if 'START_WP' in dir() else 0
     wp_times = {}
     t_start = None
     traj = []
