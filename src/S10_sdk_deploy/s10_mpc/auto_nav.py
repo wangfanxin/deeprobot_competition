@@ -433,6 +433,17 @@ class AutoNavFollower:
             _ys[:_h] = pts[:_h, 1]; _ys[-_h:] = pts[-_h:, 1]
             pts = np.column_stack([_xs, _ys, pts[:, 2]])
 
+        # v672: 已知障碍绕行——wp11→12 有 3.55m 高墙（x∈[-7,-5], y∈[42.1,42.3]），
+        # 路径直线擦墙翻车（v671）；墙区路径点向北平滑偏移 0.6m（raised cosine）
+        _wall_amp = float(os.environ.get("S10_WALL_DETOUR_AMP", "0.6"))
+        if _wall_amp > 0.0:
+            _wc, _wh = -6.0, 2.5
+            _mask = (pts[:, 0] >= _wc - _wh) & (pts[:, 0] <= _wc + _wh)
+            for _i in np.where(_mask)[0]:
+                _w = float(np.cos(
+                    np.pi * (pts[_i, 0] - _wc) / (2.0 * _wh)) ** 2)
+                pts[_i, 1] += _wall_amp * _w
+
         # 弧长累积 + 数值曲率（|dθ/ds|，平滑 5 点）
         seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
         cum = np.concatenate([[0.0], np.cumsum(seg)])
@@ -479,13 +490,19 @@ class AutoNavFollower:
         # S10_CURVE_VLIM_A 默认 8.0（wp1 κ0.5 → 4.0m/s）。
         _cvk = float(os.environ.get("S10_CURVE_VLIM_K", "0.2"))
         _cva = float(os.environ.get("S10_CURVE_VLIM_A", "8.0"))
+        _cext = float(os.environ.get("S10_CURVE_EXTEND", "0.0"))
         for k in range(len(vlim)):
             _kk = abs(float(self.path_curv_signed[k]))
             if _kk > _cvk:
-                # v668: 回退急弯延伸——延伸（0.5-2m）会压慢 wp5→6 台阶前
-                # 动量导致翻车（v656-667 复现）；恢复单点限速保 wp0→6 基线。
-                # wp12 弯心加速问题另行处理（局部入弯速度）。
-                vlim[k] = min(vlim[k], float(np.sqrt(_cva / _kk)))
+                _vl9 = float(np.sqrt(_cva / _kk))
+                # v673: 急弯限速向后延伸**默认关**（延伸会扰动 wp0→5 剖面致
+                # wp5→6 翻车 v656-667）；wp8→15 段（wp9 急弯+高架直道）需要
+                # 延伸 0.5m 才稳（v657）——S10_CURVE_EXTEND 分赛段启用
+                if _cext > 0.0 and _kk > 1.0:
+                    _end9 = min(len(vlim), k + int(_cext / res) + 1)
+                    vlim[k:_end9] = np.minimum(vlim[k:_end9], _vl9)
+                else:
+                    vlim[k] = min(vlim[k], _vl9)
         _sw = int(float(os.environ.get("S10_CURVE_SWING_WINDOW", "4.0")) / res)
         _swing_v = float(os.environ.get("S10_CURVE_SWING_VX", "1.8"))
         for k in range(len(vlim)):
