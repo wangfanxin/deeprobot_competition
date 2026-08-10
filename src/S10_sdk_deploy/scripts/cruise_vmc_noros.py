@@ -301,8 +301,40 @@ def main():
         # 步态等离散触发（用户原则：除 cruise/stair 切换外无门控）。
         # v266: 抬轮前瞻独立于 terr 前瞻（LOOKAHEAD=0.5 在起步坡上使地形
         # 阻抗过激翻车实测；抬轮用自身 0.35m 窗口）
+        # v276: 已知横脊连续抬放（替代 lidar rise——lidar 在起步坡误触发、
+        # 近场盲区噪声；已知地图连续响应，与台阶 skill 同类）。0.5m 前起抬、
+        # 过脊 0.3m 释放，前/后轴分别。
+        if (float(os.environ.get('S10_VMC_RIDGE_LIFT_CONT', '1')) > 0
+                and ridge_world):
+            _fwd5 = np.array([d.xmat[1][0], d.xmat[1][3]])
+            _fn5 = float(np.hypot(_fwd5[0], _fwd5[1])) + 1e-9
+            _fx5, _fy5 = _fwd5[0] / _fn5, _fwd5[1] / _fn5
+            for _ai in range(2):
+                _sgn = 1.0 if _ai == 0 else -1.0
+                _ax = np.array([body_pos[0] + _fx5 * 0.228 * _sgn,
+                                body_pos[1] + _fy5 * 0.228 * _sgn])
+                _dmin_r = 1e9
+                for (_rp, _tng, _sr, _dh) in ridge_world:
+                    _dd = float(np.dot(_ax - _rp, _tng))
+                    if -0.3 <= _dd <= 0.8 and _dd < _dmin_r:
+                        _dmin_r = _dd
+                if _dmin_r < 0.8:
+                    _lift_r = float(
+                        np.clip((0.5 - _dmin_r) / 0.3, 0.0, 1.0)
+                        * np.clip((_dmin_r + 0.3) / 0.3, 0.0, 1.0))
+                    if _lift_r > 0.02:
+                        if _ai == 0:
+                            step_lift[0:2] = np.maximum(
+                                step_lift[0:2], _lift_r)
+                        else:
+                            step_lift[2:4] = np.maximum(
+                                step_lift[2:4], _lift_r)
+            if float(np.max(step_lift)) > 0.02:
+                stair_lift_flag = 1.0
+        # v264: lidar rise 抬轮（仅 S10_VMC_RIDGE_LIFT_CONT=0 时兜底）
         _lk_c = float(os.environ.get('S10_VMC_LIFT_LOOKAHEAD', '0.35'))
-        if _lk_c > 0.05:
+        if (float(os.environ.get('S10_VMC_RIDGE_LIFT_CONT', '1')) <= 0
+                and _lk_c > 0.05):
             _fwd4 = np.array([d.xmat[1][0], d.xmat[1][3]])
             _fn4 = float(np.hypot(_fwd4[0], _fwd4[1])) + 1e-9
             _fx4, _fy4 = _fwd4[0] / _fn4, _fwd4[1] / _fn4
