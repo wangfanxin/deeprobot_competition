@@ -775,8 +775,13 @@ class CarVMC:
                 self._omega_lp = _om_b
             _om_hf = _om_b - self._omega_lp
             self._omega_lp += (_om_b - self._omega_lp) * min(1.0, dt / 0.05)
+            # v241: yaw 摩擦前馈（RobuROC6 库仑摩擦补偿）——差速转向需先克服
+            # 侧向滑移阻力才有 yaw 运动，纯误差反馈有死区滞后→振荡；按指令
+            # 方向给基础差速力矩，小误差即可稳定大转角。k_ff 单位 Nm/(rad/s)
+            _kff = float(os.environ.get("S10_CAR_YAW_FF", "2.0"))
+            # 符号与比例项命令分量同向（左转 om_f>0 -> 左轮向后力矩）
             t_yaw = ((-_yk * (self._om_f - body["omega"])
-                      + _kd_yaw * _om_hf) * side
+                      + _kd_yaw * _om_hf - _kff * self._om_f) * side
                      * _ysc * self._ground_f)
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
                        - self.wheel_d * wq + t_yaw)

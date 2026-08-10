@@ -434,13 +434,14 @@ class AutoNavFollower:
                 _sw1 = self.cum_len[i] + 3.0
                 _mask = (cum >= _sw0) & (cum <= _sw1)
                 vlim[_mask] = np.minimum(vlim[_mask], _turn_vx)
-        # 转向能力约束（2026-08-07）：弯道速度不能超过 vyaw_max * R——
-        # 否则 MPC 实际 yaw 跟不上，转向滞后→过冲→振荡。v = ω·R。
+        # 转向能力约束（2026-08-07；v239 改用实测包线）：弯道速度不能超过
+        # om_max * R——否则实际 yaw 跟不上，转向滞后→过冲→振荡。v = ω·R。
+        # 实测 CarVMC 差速转向 yaw 权威 ~0.65-0.75 rad/s（v232 hipx 辅助后
+        # 0.75），S10_AUTO_OMAX 默认 0.75 即真实上限（替代旧 2.0 的乐观值）。
+        _omax = float(os.environ.get("S10_AUTO_OMAX", "0.75"))
         for k, c in enumerate(self.path_curv):
             if c > 1e-6:
-                vlim[k] = min(vlim[k],
-                              float(os.environ.get("S10_AUTO_VYAW_MAX", "2.0"))
-                              / max(c, 1e-4))
+                vlim[k] = min(vlim[k], _omax / max(c, 1e-4))
         # S 弯组合限速（2026-08-07，nr15/16 wp3 侧翻复现）：wp2→3→4 是
         # 连续反向弯（右66.7°→左55°→右71.3°，段长仅4.6~4.8m），机器人在
         # 3 m/s 下转向来不及，err 爆发→饱和→侧翻。检测 6m 窗口内同时存在
