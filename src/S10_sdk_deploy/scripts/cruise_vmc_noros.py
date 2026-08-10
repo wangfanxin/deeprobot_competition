@@ -286,7 +286,13 @@ def main():
                 _ha = terrain_at(_ax[0] + _fx4 * 0.35,
                                  _ax[1] + _fy4 * 0.35)
                 _hb = terrain_at(_ax[0], _ax[1])
-                _rise = float(np.clip((_ha - _hb) / 0.15, 0.0, 1.0))
+                # v265: 上升量带通——只对 0.02~0.5m 可爬台阶响应（0.12m 脊
+                # →满抬；起点高架 2m 伪尖峰→0，连续光滑无硬阈值）
+                _rise0 = float(_ha - _hb)
+                _rise = 0.0
+                if _rise0 > 0.02 and _rise0 < 0.5:
+                    _rise = (float(np.clip(_rise0 / 0.15, 0.0, 1.0))
+                             * float(np.clip((0.5 - _rise0) / 0.2, 0.0, 1.0)))
                 if _rise > 0.02:
                     if _ai == 0:
                         step_lift[0:2] = np.maximum(step_lift[0:2], _rise)
