@@ -482,15 +482,10 @@ class AutoNavFollower:
         for k in range(len(vlim)):
             _kk = abs(float(self.path_curv_signed[k]))
             if _kk > _cvk:
-                _vl9 = float(np.sqrt(_cva / _kk))
-                # v654: 延伸只对**急弯 κ>1**（弯心+出口 2m，修复 wp12 弯心
-                # 加速翻车）；κ∈(0.2,1] 的缓弯保持单点（延伸会压慢 wp4→5
-                # 横脊动量，v652 翻车实测）
-                if _kk > 1.0:
-                    _end9 = min(len(vlim), k + int(0.5 / res) + 1)
-                    vlim[k:_end9] = np.minimum(vlim[k:_end9], _vl9)
-                else:
-                    vlim[k] = min(vlim[k], _vl9)
+                # v668: 回退急弯延伸——延伸（0.5-2m）会压慢 wp5→6 台阶前
+                # 动量导致翻车（v656-667 复现）；恢复单点限速保 wp0→6 基线。
+                # wp12 弯心加速问题另行处理（局部入弯速度）。
+                vlim[k] = min(vlim[k], float(np.sqrt(_cva / _kk)))
         _sw = int(float(os.environ.get("S10_CURVE_SWING_WINDOW", "4.0")) / res)
         _swing_v = float(os.environ.get("S10_CURVE_SWING_VX", "1.8"))
         for k in range(len(vlim)):
@@ -726,6 +721,21 @@ class AutoNavFollower:
         _k_far = min(self._k_near + int(_vll / self.path_res),
                      len(self.path_vlim) - 1)
         v_lim = float(np.min(self.path_vlim[self._k_near:_k_far + 1]))
+        # v669: 急弯航点入弯减速——航点转角 >60° 且距航点 3m 内压速到 1.5
+        # （替代曲线延伸：延伸会扰动 wp0→5 速度剖面致 wp5→6 翻车 v656-667；
+        # 急弯航点 wp12 等单点 κ 尖峰在弯心释放加速翻车，需提前压速）
+        if next_idx < len(self.wp) - 1:
+            _a1 = float(np.arctan2(wp_next[1] - robot_xy[1],
+                                   wp_next[0] - robot_xy[0]))
+            _wp2 = self.wp[next_idx + 1]
+            _a2 = float(np.arctan2(_wp2[1] - wp_next[1],
+                                   _wp2[0] - wp_next[0]))
+            _da = abs(float(np.arctan2(np.sin(_a2 - _a1),
+                                       np.cos(_a2 - _a1))))
+            if _da > 1.40 and d_wp < float(os.environ.get(
+                    "S10_AUTO_TURN_BRAKE_DIST", "3.0")):
+                v_lim = min(v_lim, float(os.environ.get(
+                    "S10_AUTO_TURN_BRAKE_VX", "2.0")))
         # v340: 导航不做 err 分级限速——速度只由几何任务剖面决定。
         # v387（用户：先防错过航点打转，速度>1m/s 即可）：到达制动——
         # 接近航点且偏航大时速度压到 1.2（差速转向轨道半径 r=v/om 缩小，
