@@ -101,7 +101,7 @@ def main():
 
     fol = AutoNavFollower(
         wps,
-        max_speed=float(os.environ.get('S10_AUTO_VMAX', '4.5')),
+        max_speed=float(os.environ.get('S10_AUTO_VMAX', '6.0')),
         vyaw_max=float(os.environ.get('S10_AUTO_VYAW_MAX', '1.5')),
         yaw_gain=float(os.environ.get('S10_AUTO_YAW_GAIN', '3.0')),
         lookahead=float(os.environ.get('S10_AUTO_LOOKAHEAD', '1.5')),

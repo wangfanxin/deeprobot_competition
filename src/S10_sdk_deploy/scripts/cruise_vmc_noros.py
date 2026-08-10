@@ -91,7 +91,7 @@ def main():
 
     fol = AutoNavFollower(
         wp,
-        max_speed=float(os.environ.get('S10_AUTO_VMAX', '5.0')),
+        max_speed=float(os.environ.get('S10_AUTO_VMAX', '6.0')),
         vyaw_max=float(os.environ.get('S10_AUTO_VYAW_MAX', '3.5')),
         yaw_gain=float(os.environ.get('S10_AUTO_YAW_GAIN', '2.5')),
         lookahead=float(os.environ.get('S10_AUTO_LOOKAHEAD', '1.5')))
@@ -115,7 +115,7 @@ def main():
         _ridge_signed = {float(fol.path_cum[k]): float(dh_s[k])
                          for k in ridge_idx}
         # v218m: 横脊限速（同节点 _scan_ridge_zones）——防高速冲棱
-        _rv = float(os.environ.get('S10_RIDGE_VX', '1.5'))
+        _rv = float(os.environ.get('S10_RIDGE_VX', '2.5'))
         for _k in ridge_idx:
             if dh[_k] > 0.5:
                 # v689: 墙/垂直障碍（dh>0.5）不做限速——墙绕行/跳过处理，
@@ -196,7 +196,7 @@ def main():
     mppi = BodyMPPI(
         N=int(os.environ.get('VMC_MPPI_N', '4096')),
         H=int(os.environ.get('VMC_MPPI_H', '40')),
-        vx_max=float(os.environ.get('S10_AUTO_VMAX', '5.0')))
+        vx_max=float(os.environ.get('S10_AUTO_VMAX', '6.0')))
     _vmode = os.environ.get('S10_VMC_MODE', 'wbc')
     if _vmode == 'pd':
         from s10_mpc.vmc_legs import LegPDDrive
