@@ -141,8 +141,11 @@ def main():
         # 第一个真障碍（前轮上平台后后轮卸载爬不动）；下降沿仍排除。
         # v630: 直接用 signed dh_s 扫全路径 [s6,s7]——旧法从 ridge_arcs
         # 派生（ridge 扫描 |dh|>0.12），0.06m 小台阶进不了表
+        # v699: 楼梯表只留**真楼梯**（段末 4m 内，y≥37.4）——wp5→6 第二级
+        # （y=32.88）也是 0.12m 台阶但由巡航处理，误归入楼梯表会让
+        # FootPlace 过早接管翻车（v696-698）
         _stair_idx = np.where((dh_s >= 0.05)
-                              & (fol.path_cum[:len(dh_s)] >= _s6)
+                              & (fol.path_cum[:len(dh_s)] >= _s7 - 4.0)
                               & (fol.path_cum[:len(dh_s)] <= _s7))[0]
         stair_risers = [(float(fol.path_cum[k]), float(dh_s[k]))
                         for k in _stair_idx]

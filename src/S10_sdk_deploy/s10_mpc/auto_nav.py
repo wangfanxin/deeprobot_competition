@@ -905,10 +905,12 @@ class AutoNavFollower:
             # v584: 切换用**到段首航点（wp6）的物理距离**——s_cur 投影
             # 比物理位置超前（>4m），按 s_cur 会提前到 wp5→6 第一级台阶
             # 就切 WBC，新抬升姿态在 0.06m 小台阶上翻车实测。
-            _dseg0 = float(np.linalg.norm(
-                robot_xy - self.wp[next_idx - 1, :2]))
-            _use_global = (_dseg0 <= float(os.environ.get(
-                "S10_STAIR_ENTER_DIST", "1.5")) + 1.5
+            # v699: STAIR 模式切换到**段末航点（wp7）前 4m**（真楼梯前）——
+            # 原按段首 wp6 切换会在 wp5→6 第二级就接管，巡航能力被浪费
+            _dseg1 = float(np.linalg.norm(
+                robot_xy - self.wp[next_idx, :2]))
+            _use_global = (_dseg1 <= float(os.environ.get(
+                "S10_STAIR_ENTER_DIST", "1.5")) + 2.5
                            and self._seg_in_stair_band(next_idx - 1))
             _use_percept = (d_wp < _confirm_dist
                             and self._stair_confirmed(
