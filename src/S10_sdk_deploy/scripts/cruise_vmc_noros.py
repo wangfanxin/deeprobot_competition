@@ -485,7 +485,10 @@ def main():
 
         # v234: 巡航转弯=差速为主 + hip 微 roll ±3.5°(0.06 rad)协调——
         # 不采用腿足式压弯（轮足深压弯→后轮打滑/无悬架抖动，用户总结）
-        roll_tar = float(np.clip(-0.06 * om_c * abs(vx_c), -0.06, 0.06))
+        # v290: 压弯幅度可调（S10_CAR_ROLL_AMP，默认 0.06；测试 0.12 强化
+        # 高速转弯向心/减侧翻）
+        _ramp = float(os.environ.get("S10_CAR_ROLL_AMP", "0.06"))
+        roll_tar = float(np.clip(-0.06 * om_c * abs(vx_c), -_ramp, _ramp))
         pitch_tar = 0.0
         # v285: 脊前速度**微缩**（用户"横脊=连续扰动非障碍"）——±0.15m 内
         # 线性从 vlim 缩到 min(vlim,2.5)，脊后即恢复；严禁硬砍 1.0 制造
