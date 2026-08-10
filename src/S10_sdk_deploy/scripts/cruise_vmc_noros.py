@@ -928,8 +928,9 @@ def main():
                                 _rl_dmin = abs(_dr8)
                                 _rl_top = float(_top)
                     if _fl_cpg + _rl_cpg > 0.02:
-                        # v734: 前轴优先交替——前轴抬升时后轴强抑制
-                        # (1-fl)^2，前轮上台面（fl 回落）后后轮才抬
+                        # v736: 前轴优先交替 + 抬轮幅度上限 0.55——轮微抬
+                        # 避卡棱，靠轮驱动推力滚上台面（大抬轮悬空失支撑
+                        # 侧翻实测）。台面高由 terr 覆盖+身体随轮自然升起。
                         _rl_cpg *= (1.0 - _fl_cpg) ** 2
                         place_z[:] = [_fl_top, _fl_top, _rl_top, _rl_top]
                         step_lift[:] = [_fl_cpg, _fl_cpg, _rl_cpg, _rl_cpg]

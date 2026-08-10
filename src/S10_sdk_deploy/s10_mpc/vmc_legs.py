@@ -361,6 +361,10 @@ class VMCController:
             else:
                 v_ref = (self._vx_f
                          + wd_side * self._om_f * self.track_half * _ysc)
+            # v737: 抬升腿轮速归零（后推前抬）——抬轮时轮已离地，继续
+            # 指令 1.8 只会空转打滑（wq=-41 实测卡死）；支撑腿保持驱动
+            if _sl > 0.1:
+                v_ref = 0.0
             # v218: 实测 +轮力矩=倒车（S10 轮轴符号），取反前进
             # v218h: 驱动按校准取反，阻尼必须始终反向（否则负转速时放大）
             # v218j: 直接 yaw 差速力矩（轮全幅差速，参考 dial-MPC）
@@ -866,7 +870,7 @@ class CarVMC:
             # v664: IK 落脚点覆盖（cmd.fp_place=1 且抬轮 sl>0.3）——轮直接
             # 放到 terrain+r（脚本落脚点地形已传台面高），姿态由 R/P 保持
             _fp = float(cmd.get("fp_place", 0.0))
-            if _fp > 0.0 and sl > 0.3 and terrain_h is not None:
+            if False and _fp > 0.0 and sl > 0.3 and terrain_h is not None:
                 # v732: 启用 IK 落脚（原 if False）——抬轮腿直接放到
                 # 台面+半径（place_z 由脚本 stair 表给，terr 已覆盖）。
                 # 投影用 body 前向 + 世界 z 差（同 FootPlace 修正）。
@@ -1246,9 +1250,10 @@ class FootPlaceVMC:
             _side = -1.0 if leg in (0, 1) else 1.0
             v_ref = (self._vx_f
                      + _side * self._om_f * self.track_half)
-            # v732: 抬升腿轮速轻驱（防悬空空转/冲击），支撑腿全驱
-            if sl > 0.5:
-                v_ref *= 0.35
+            # v737: 抬升腿轮速归零（后推前抬，防悬空空转打滑）——
+            # sl>0.1 即归零，支撑腿全驱
+            if sl > 0.1:
+                v_ref = 0.0
             t_yaw = -6.0 * _om_body * _side
             tau[WHEEL_Q_IDX[leg]] = (
                 -(self.wheel_k * (v_ref - v_wheel))
