@@ -299,11 +299,13 @@ def main():
             for (_rp, _sr, _dh) in ridge_world:
                 _dfr = float(np.linalg.norm(_fax - _rp))
                 _drr = float(np.linalg.norm(_rax - _rp))
+                # v254: 抬放窗口收紧（0.9m 太早——前轮提前离地致失速侧翻，
+                # wp4→5 vx 1.53→0.04 实测）；0.45m 前起抬、过脊即放
                 _fl2 = max(_fl2, float(
-                    np.clip((0.9 - _dfr) / 0.30, 0.0, 1.0)
+                    np.clip((0.45 - _dfr) / 0.15, 0.0, 1.0)
                     * np.clip((_dfr - 0.02) / 0.15, 0.0, 1.0)))
                 _rl2 = max(_rl2, float(
-                    np.clip((0.9 - _drr) / 0.30, 0.0, 1.0)
+                    np.clip((0.45 - _drr) / 0.15, 0.0, 1.0)
                     * np.clip((_drr - 0.02) / 0.15, 0.0, 1.0)))
             if _fl2 + _rl2 > 0.02:
                 step_lift[:] = [_fl2, _fl2, _rl2, _rl2]
