@@ -65,6 +65,11 @@ class BodyMPPI:
         self.w_dist, self.w_v, self.w_h, self.w_s = w_dist, w_v, w_h, w_s
         self.w_g = w_g
         self.ada_alpha, self.ada_min, self.ada_max = ada_alpha, ada_min, ada_max
+        # v506: DBaS 自适应 sigma 可调（S10_MPPI_ADA）——N=2048 时成本
+        # 均值估计噪声大，sigma_scale 震荡导致起步（门架刀刃）失稳翻车。
+        # 0=固定 sigma（最稳），0~1=缩放自适应增益，1=原行为。
+        self.ada_alpha = self.ada_alpha * float(_os.environ.get(
+            'S10_MPPI_ADA', '1'))
         self.rng = np.random.default_rng(seed)
         self._u = np.zeros(2)
         self._cost_ref = 1.0

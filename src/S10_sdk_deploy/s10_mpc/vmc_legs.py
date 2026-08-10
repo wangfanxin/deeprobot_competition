@@ -194,6 +194,13 @@ class VMCController:
         # 0.12m 腿折叠爬行卡死，v466 双技能卡 y=36.5 实测）。
         z_des = float(np.mean(terrain_h)) + float(os.environ.get(
             "S10_VMC_Z_DES_OFFSET", "0.205"))
+        # v502: 抬轮时身体同步抬高（S10_VMC_WBC_LIFT_BODY）——楼梯抬轮姿态
+        # 只抬轮不抬身，车身塌 0.6m 拖地卡死（v500 实测）。z_des 随平均
+        # step_lift 上升，身体与轮同步爬升。
+        _lb = float(os.environ.get("S10_VMC_WBC_LIFT_BODY", "0.0"))
+        if _lb > 0.0:
+            z_des += _lb * float(np.mean(
+                np.asarray(cmd.get("step_lift", np.zeros(4)))))
         F_des_w = np.array([
             0.0, 0.0,
             self.m * self.g + self.kp_z * (z_des - body["pos"][2])
