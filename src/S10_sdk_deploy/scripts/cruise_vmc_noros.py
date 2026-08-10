@@ -474,7 +474,9 @@ def main():
         # 近场盲区噪声；已知地图连续响应，与台阶 skill 同类）。0.5m 前起抬、
         # 过脊 0.3m 释放，前/后轴分别。
         if (float(os.environ.get('S10_VMC_RIDGE_LIFT_CONT', '1')) > 0
-                and ridge_world and not _in_stairzone_now):
+                and ridge_world
+                and (not _in_stairzone_now
+                     or float(os.environ.get('S10_STAIR_RIDGE_LIFT', '0')) > 0)):
             _fwd5 = np.array([d.xmat[1][0], d.xmat[1][3]])
             _fn5 = float(np.hypot(_fwd5[0], _fwd5[1])) + 1e-9
             _fx5, _fy5 = _fwd5[0] / _fn5, _fwd5[1] / _fn5
