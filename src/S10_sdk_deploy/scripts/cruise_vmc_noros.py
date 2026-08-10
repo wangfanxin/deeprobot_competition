@@ -101,7 +101,14 @@ def main():
         for (sr, dhv) in ridge_arcs:
             _k = int(np.searchsorted(fol.path_cum, sr, side='right') - 1)
             _k = min(max(_k, 0), len(fol.path_pts) - 1)
-            ridge_world.append((fol.path_pts[_k, :2].copy(), sr, dhv))
+            _pt = fol.path_pts[_k, :2].copy()
+            # v259: 存脊点处路径切线（脊近似垂直路径；距离沿切线投影，
+            # 忽略横向偏移——狗偏西 0.5m 时欧氏距离误判 0.44m 不触发抬轮）
+            _tng = np.zeros(2)
+            if _k < len(fol.path_heading):
+                _th = float(fol.path_heading[_k])
+                _tng = np.array([np.cos(_th), np.sin(_th)])
+            ridge_world.append((_pt, _tng, sr, dhv))
     except Exception as e:
         print('[VMC] 横脊坐标表失败', e, flush=True)
 
@@ -214,8 +221,8 @@ def main():
                 _fx0, _fy0 = _fwdv0[0] / _fn0, _fwdv0[1] / _fn0
                 _fa0 = np.array([body_pos[0] + _fx0 * 0.228,
                                  body_pos[1] + _fy0 * 0.228])
-                _dmin = min(float(np.linalg.norm(_fa0 - _rp))
-                            for (_rp, _sr, _dh) in ridge_world)
+                _dmin = min(float(abs(np.dot(_fa0 - _rp, _tng)))
+                            for (_rp, _tng, _sr, _dh) in ridge_world)
                 if _dmin < 1.2:
                     _k_st = float(np.clip((_dmin - 0.2) / 1.0, 0.0, 1.0))
                     om_c *= float(np.clip(0.35 + 0.65 * _k_st, 0.0, 1.0))
@@ -309,9 +316,10 @@ def main():
             _rax = np.array([body_pos[0] - _fx2 * 0.228,
                              body_pos[1] - _fy2 * 0.228])
             _fl2, _rl2 = 0.0, 0.0
-            for (_rp, _sr, _dh) in ridge_world:
-                _dfr = float(np.linalg.norm(_fax - _rp))
-                _drr = float(np.linalg.norm(_rax - _rp))
+            for (_rp, _tng, _sr, _dh) in ridge_world:
+                # v259: 沿路径切线投影的距离（横向偏移不计入）
+                _dfr = float(abs(np.dot(_fax - _rp, _tng)))
+                _drr = float(abs(np.dot(_rax - _rp, _tng)))
                 # v254/v258: 0.45m 前起抬；**满值保持到轮子越过棱边 0.25m**
                 # （v254 过脊即放，失速时窗口掉到 0.3~0.4 部分抬升→后轮
                 # 爬不上脊死锁，wp4→5 卡 90s 实测）
@@ -403,10 +411,10 @@ def main():
             # wp3→4 高差毛刺曾导致 hop=300 侧翻）
             hop = np.zeros(4, dtype=np.float64)
             _in_hop_zone = any(
-                float(np.linalg.norm(
+                float(abs(np.dot(
                     np.array([body_pos[0] + d.xmat[1][0] * 0.228,
                               body_pos[1] + d.xmat[1][1] * 0.228])
-                    - _rp)) < 1.5 for (_rp, _sr, _dh) in ridge_world)
+                    - _rp, _tng))) < 1.5 for (_rp, _tng, _sr, _dh) in ridge_world)
             if _in_hop_zone and stair_lift_flag <= 0.0:
                 _fwd2 = d.xmat[1][0:2]
                 _fx, _fy = _fwd2[0], _fwd2[1]
