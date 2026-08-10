@@ -115,7 +115,9 @@ class VMCController:
         self.kp_roll, self.kd_roll = kp_roll, kd_roll
         # v219l: roll/pitch 姿态增益可覆盖（硬增益压减载轮 → 轮推力崩）
         self.kp_roll = float(os.environ.get("S10_VMC_KP_ROLL", str(self.kp_roll)))
-        self.kp_pitch, self.kd_pitch, self.pitch_ff = kp_pitch, kd_pitch, pitch_ff
+        self.kp_pitch = float(os.environ.get(
+            "S10_VMC_WBC_KP_PITCH", str(kp_pitch)))
+        self.kd_pitch, self.pitch_ff = kd_pitch, pitch_ff
         self.kp_pose, self.kd_pose = kp_pose, kd_pose
         # v486: WBC 腿姿态 PD 可覆盖——后轮抬升量 0.07m 不足 0.13m 台阶
         # （kp=80 + 48Nm 限幅到达不了目标），提高 kp 让抬放姿态到位。
@@ -320,10 +322,11 @@ class VMCController:
                 # 够 0.125m riser+余量；后轮=髋前摆+膝直，修复 v220g 后轮方向）
                 _amp = float(os.environ.get(
                     "S10_VMC_STAIR_LIFT_AMP", "1.0"))
-                if _qs < 0.0:   # 前腿：髋大幅前摆过竖直+膝微屈——轮心抬到
-                    # 髋上（FK: q1≈0.4/q2≈2.7 轮高+1.4cm），清 0.13m 棱
-                    _q1_tgt = self.pose_target[b + 1] + _sl * 1.55 * _amp
-                    _q2_tgt = self.pose_target[b + 2] + _sl * 0.42 * _amp
+                if _qs < 0.0:   # 前腿：髋小幅前摆+膝大弯（tuck）——轮心抬到
+                    # 髋上（FK: q1+0.55/q2+0.95 → z+1.5cm），摆动惯量小反作用
+                    # 小，能推进到棱前；差 1cm 由 S10_VMC_STAIR_HOP_F 冲量补
+                    _q1_tgt = self.pose_target[b + 1] + _sl * 0.55 * _amp
+                    _q2_tgt = self.pose_target[b + 2] + _sl * 0.95 * _amp
                 else:           # 后腿：髋大幅前摆+膝伸直
                     _q1_tgt = self.pose_target[b + 1] + _sl * 1.10 * _amp
                     _q2_tgt = self.pose_target[b + 2] - _sl * 0.65 * _amp

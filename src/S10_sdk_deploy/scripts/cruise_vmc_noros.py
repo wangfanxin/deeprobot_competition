@@ -406,9 +406,9 @@ def main():
                 _df9 = float(np.dot(_fax9 - _rp, _tng))
                 _dr9 = float(np.dot(_rax9 - _rp, _tng))
                 if -0.30 <= _df9 <= 0.15:
-                    terr[0:2] = np.maximum(terr[0:2], _top)
+                    terr[0:2] = np.maximum(terr[0:2], _top + 0.02)
                 if -0.30 <= _dr9 <= 0.15:
-                    terr[2:4] = np.maximum(terr[2:4], _top)
+                    terr[2:4] = np.maximum(terr[2:4], _top + 0.02)
         s_cur = float(getattr(fol, '_s_cur', 0.0))
         # v292: 台阶窗 vx 连续插值到 STAIR_WIN_VX（默认 1.8，不归零）——
         # 窗内只换腿控制（几何相位）与轮力矩模式，vx 参考保持连续
