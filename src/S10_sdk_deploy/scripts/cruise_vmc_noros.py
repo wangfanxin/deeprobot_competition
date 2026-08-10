@@ -311,13 +311,14 @@ def main():
                         and next_idx == 5 and 20.5 < t < 24.0):
                     print('[LIFT] t=%.1f ai=%d ha=%.3f hb=%.3f ax=(%.2f,%.2f)'
                           % (t, _ai, _ha, _hb, _ax[0], _ax[1]), flush=True)
-                # v265: 上升量带通——只对 0.02~0.5m 可爬台阶响应（0.12m 脊
-                # →满抬；起点高架 2m 伪尖峰→0，连续光滑无硬阈值）
+                # v265/v274: 上升量带通——只对 0.02~0.35m 可爬台阶响应
+                # （0.12m 脊→0.8；起步坡 0.5m 伪尖峰→0；v273 前向修正后
+                # 抬轮在起步坡误触发侧翻，收紧上限）
                 _rise0 = float(_ha - _hb)
                 _rise = 0.0
-                if _rise0 > 0.02 and _rise0 < 0.5:
+                if _rise0 > 0.02 and _rise0 < 0.35:
                     _rise = (float(np.clip(_rise0 / 0.15, 0.0, 1.0))
-                             * float(np.clip((0.5 - _rise0) / 0.2, 0.0, 1.0)))
+                             * float(np.clip((0.35 - _rise0) / 0.15, 0.0, 1.0)))
                 if _rise > 0.02:
                     if _ai == 0:
                         step_lift[0:2] = np.maximum(step_lift[0:2], _rise)
