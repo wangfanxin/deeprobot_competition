@@ -376,7 +376,14 @@ class VMCController:
             if _pf9 > 0.0:
                 t_yaw = 0.0
             else:
-                t_yaw = ((-_yk * (self._om_f - _om_b)
+                # v635: yaw 反馈死区（S10_VMC_WBC_YAW_TUBE）——小误差不驱动
+                # 差速（实测 om_f≈0.2 时 t_yaw 仍覆盖 10Nm 驱动，车原地对转）；
+                # 大误差照常纠偏。连续量，无门控。
+                _ytube = float(os.environ.get("S10_VMC_WBC_YAW_TUBE", "0.15"))
+                _yerr = self._om_f - _om_b
+                _yerrd = float(np.sign(_yerr)) * max(
+                    abs(_yerr) - _ytube, 0.0)
+                t_yaw = ((-_yk * _yerrd
                           + _kd_yaw * _om_b) * wd_side
                          * _ysc * getattr(self, "_ground_f", 1.0))
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))

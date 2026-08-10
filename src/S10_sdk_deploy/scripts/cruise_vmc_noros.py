@@ -844,7 +844,7 @@ def main():
                                 _l8 = float(np.sin(
                                     0.5 * np.pi * (_sw8 - _df8) / _swing)
                                     ** 2)
-                            _l8 *= float(np.clip(_dhv / 0.13, 0.25, 1.0))
+                            _l8 *= float(np.clip(0.5 + 0.5 * _dhv / 0.13, 0.5, 1.0))
                             _fl_cpg = max(_fl_cpg, _l8)
                         if -_sw8 <= _dr8 <= _sw8:
                             if _dr8 < -_hold8:
@@ -857,7 +857,7 @@ def main():
                                 _l8 = float(np.sin(
                                     0.5 * np.pi * (_sw8 - _dr8) / _swing)
                                     ** 2)
-                            _l8 *= float(np.clip(_dhv / 0.13, 0.25, 1.0))
+                            _l8 *= float(np.clip(0.5 + 0.5 * _dhv / 0.13, 0.5, 1.0))
                             _rl_cpg = max(_rl_cpg, _l8)
                     if _fl_cpg + _rl_cpg > 0.02:
                         step_lift[:] = [_fl_cpg, _fl_cpg, _rl_cpg, _rl_cpg]
@@ -967,6 +967,24 @@ def main():
             if _stuck_timeout > 0.0 and t - _last_adv_t > _stuck_timeout:
                 print('[VMC-T] *** 卡死 %.0fs 无航点推进 (wp=%d) ***'
                       % (t - _last_adv_t, next_idx), flush=True)
+                _vb = np.asarray(d.cvel[1][0:6], dtype=np.float64)
+                _wq4 = [float(qvel[WHEEL_Q_IDX[i]]) for i in range(4)]
+                _wz4 = [float(d.xpos[WHEEL_BODY[i], 2]) for i in range(4)]
+                _nrm = 0
+                _fz = [0.0, 0.0, 0.0, 0.0]
+                for _ci in range(d.ncon):
+                    _cn = d.contact[_ci]
+                    if _cn.geom1 < 0 or _cn.geom2 < 0:
+                        continue
+                    for _wi, _gb in enumerate(WHEEL_BODY):
+                        _gid = m.geom_bodyid[_cn.geom1]
+                        if _gid == _gb or (m.geom_bodyid[_cn.geom2] if _cn.geom2 < m.ngeom else -1) == _gb:
+                            _fz[_wi] += float(_cn.effort[2])
+                            _nrm += 1
+                print('[STUCKDBG] body_v=%.3f,%.3f,%.3f om=%.3f wq=%s wz=%s nrm=%d fz=%s'
+                      % (_vb[0], _vb[1], _vb[2], _vb[5],
+                         np.round(_wq4, 1), np.round(_wz4, 2), _nrm,
+                         np.round(_fz, 0)), flush=True)
                 break
     print('=== VMC 全航点结果 ===')
     print(f'完成: {next_idx >= MAX_WP}，最终 wp={next_idx}/{MAX_WP}')
