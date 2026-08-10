@@ -482,7 +482,7 @@ class LidarTerrain:
     """
 
     def __init__(self, model, data, x0=-25.0, x1=40.0, y0=-5.0, y1=55.0,
-                 res=0.10, th_n=48, phi_n=24, fov_h=None, cutoff=20.0):
+                 res=0.10, th_n=64, phi_n=32, fov_h=None, cutoff=20.0):
         import mujoco
         self.m, self.d = model, data
         self.res = float(res)
@@ -549,19 +549,13 @@ class LidarTerrain:
                     self.valid[iy, ix] = 1
 
     def height(self, x, y):
-        """3x3 邻域有效格取平均——lidar 栅格稀疏（射线间隙 0.1-0.2m），
-        精确格缺失时返回 0 会致地形高度跳变（0<->0.479 腿抖侧翻）。"""
+        """精确格优先（射线 64x32 加密后覆盖率足够），无数据返回 0。
+        3x3 空间扩散会把脊值混入脊前格致转弯差速失效（car25 偏出根因）。"""
         ix = int(np.floor((x - self.ox) / self.res))
         iy = int(np.floor((y - self.oy) / self.res))
-        vals = []
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
-                jx, jy = ix + dx, iy + dy
-                if 0 <= jx < self.nx and 0 <= jy < self.ny:
-                    if self.valid[jy, jx]:
-                        vals.append(self.h[jy, jx])
-        if vals:
-            return float(np.mean(vals))
+        if 0 <= ix < self.nx and 0 <= iy < self.ny:
+            if self.valid[iy, ix]:
+                return float(self.h[iy, ix])
         return 0.0
 
 

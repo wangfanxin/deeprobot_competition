@@ -197,17 +197,22 @@ def main():
             _by = d.xmat[1][1]
             _bn = float(np.hypot(_bx, _by)) + 1e-9
             _bx, _by = _bx / _bn, _by / _bn
-            # v223f: 默认纯前瞻（car12 成功配置）。可选混合：前方/脚下按
-            # S10_VMC_TERRAIN_AHEAD_W（0=纯脚下，1=纯前方）
+            # v223g: 前瞻权重随导航 yaw 误差连续衰减——弯道未完成(err大)
+            # 前瞻≈0(防转向中抬轮失控)，直线对准(err小)前瞻满(过脊抬轮)
             _w = float(os.environ.get('S10_VMC_TERRAIN_AHEAD_W', '1.0'))
+            _err = float(getattr(fol, '_last_err', 0.0))
+            _w_eff = _w * float(np.clip(
+                1.0 - abs(_err) / float(os.environ.get(
+                    'S10_VMC_TERRAIN_ERR_GATE', '0.7')), 0.0, 1.0))
             terr_foot = np.array([terrain_at(wheel_xyz[i, 0],
                                              wheel_xyz[i, 1])
                                   for i in range(4)])
-            terr_ahead = np.array([
-                terrain_at(wheel_xyz[i, 0] + _bx * _lk,
-                           wheel_xyz[i, 1] + _by * _lk)
-                for i in range(4)])
-            terr = (1.0 - _w) * terr_foot + _w * terr_ahead
+            # v223h: 前瞻用车体中心前方单值，四腿共用——逐腿前瞻在狗斜向
+            # 接近脊时右轮先到→单侧抬轮侧翻（wz 0.85/0.84 实测）
+            _hx = body_pos[0] + _bx * _lk
+            _hy = body_pos[1] + _by * _lk
+            terr_ahead = np.full(4, terrain_at(_hx, _hy))
+            terr = (1.0 - _w_eff) * terr_foot + _w_eff * terr_ahead
         else:
             terr = np.array([terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
                              for i in range(4)])
@@ -290,6 +295,11 @@ def main():
             fx, fy = fwd[0], fwd[1]
             h_a = terrain_at(body_pos[0] + fx*0.6, body_pos[1] + fy*0.6)
             h_b = terrain_at(body_pos[0] - fx*0.6, body_pos[1] - fy*0.6)
+            # v225: 爬坡前倾匹配坡度（借鉴 dial-MPC stair_pitch_tar）——
+            # 缓坡 0.8°~15° 时车身前倾，轮推力方向对准
+            _slope = (h_a - h_b) / 1.2
+            pitch_tar = -float(np.clip(np.arctan(_slope),
+                                       -0.30, 0.30))
             pitch_tar = float(np.clip(np.arctan2(h_a - h_b, 1.2), -0.35, 0.35))
             # v218o: 横脊抬前轮时顺坡仰头（防 pitch 控制器对抗抬升导致腿饱和）
             if _lift_act > 0.05:
