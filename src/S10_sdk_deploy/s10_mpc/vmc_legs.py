@@ -743,6 +743,17 @@ class CarVMC:
         return dict(yaw=yaw, roll=roll, pitch=pitch,
                     omega=float(qvel[5]), omega_body=omega_body)
 
+    def _ik(self, xd, zd, q1, q2):
+        """2D IK：轮目标 (xd, zd)（相对髋 sagittal，zd 向上）→ q1/q2。"""
+        for _ in range(8):
+            p = self.fk.wheel_pos(q1, q2)
+            err = np.array([xd - p[0], zd + p[1]])
+            J = self.fk.jac(q1, q2)
+            dq = np.linalg.lstsq(J, err, rcond=None)[0]
+            dq = np.clip(dq, -0.3, 0.3)
+            q1 += float(dq[0]); q2 += float(dq[1])
+        return q1, q2
+
     def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel,
                     cmd, terrain_h, dt=0.005):
         body = self._body_state(qpos, qvel)
@@ -833,6 +844,21 @@ class CarVMC:
                 "lift_swing", os.environ.get("S10_VMC_LIFT_SWING", "0.66")))
             _q1_tgt = self.pose_target[b + 1] - sl * _lsw * _qs
             _q2_tgt = self.pose_target[b + 2] + sl * 0.42
+            # v664: IK 落脚点覆盖（cmd.fp_place=1 且抬轮 sl>0.3）——轮直接
+            # 放到 terrain+r（脚本落脚点地形已传台面高），姿态由 R/P 保持
+            _fp = float(cmd.get("fp_place", 0.0))
+            if False and _fp > 0.0 and sl > 0.3 and terrain_h is not None:
+                _y4 = float(body["yaw"])
+                _c4, _s4 = float(np.cos(_y4)), float(np.sin(_y4))
+                _hip_w = np.array([
+                    qpos[0] + _c4 * LEG_ATTACH[leg, 0] - _s4 * LEG_ATTACH[leg, 1],
+                    qpos[1] + _s4 * LEG_ATTACH[leg, 0] + _c4 * LEG_ATTACH[leg, 1],
+                    qpos[2]])
+                _wz4 = float(terrain_h[leg]) + self.fk.r
+                _relf4 = float((wheel_xyz[leg, 0] - _hip_w[0]) * _c4
+                               + (wheel_xyz[leg, 1] - _hip_w[1]) * _s4)
+                _relz4 = _wz4 - _hip_w[2]
+                _q1_tgt, _q2_tgt = self._ik(_relf4, _relz4, q1, q2)
             # v221i: 车身抬升（过脊用）——0.05 只到 0.68(差 5mm)，改 0.08
             _bl = float(cmd.get("body_lift", 0.0))
             _q2_tgt += _bl * 0.08
@@ -1082,6 +1108,18 @@ class FootPlaceVMC:
         body = self._body_state(qpos, qvel)
         self._vx_f += (float(cmd.get("vx", 0.0)) - self._vx_f) * min(
             1.0, dt / 0.10)
+        self._om_f = getattr(self, "_om_f", 0.0)
+        self._om_f += (float(cmd.get("omega", 0.0)) - self._om_f) * min(
+            1.0, dt / 0.10)
+        _rp = getattr(self, "_roll_prev", None)
+        _pp = getattr(self, "_pitch_prev", None)
+        roll_rate = ((body["roll"] - _rp) / max(dt, 1e-4)
+                     if _rp is not None else 0.0)
+        pitch_rate = ((body["pitch"] - _pp) / max(dt, 1e-4)
+                      if _pp is not None else 0.0)
+        self._roll_prev = body["roll"]
+        self._pitch_prev = body["pitch"]
+        _om_body = float(qvel[5])
         tau = np.zeros(16, dtype=np.float64)
         for leg in range(4):
             b = leg * 3
@@ -1095,14 +1133,16 @@ class FootPlaceVMC:
                      + body["R"] @ np.array([LEG_ATTACH[leg, 0],
                                              LEG_ATTACH[leg, 1], 0.0]))
             wz = float(terrain_h[leg]) + self.fk.r
-            # v661: 姿态修正（保持车身水平/按 pitch_tar）——纯轮位控制无姿态
-            # 稳定会滚翻（v660 起步 roll -1.47）；修正量远小于落脚点目标
+            # v694: 姿态修正（PD）——纯轮位控制无姿态稳定会滚翻（v660）；
+            # 刻度 0.0025：0.1rad 滚转角 → 0.02m 轮高修正，含速率阻尼
             _side = -1.0 if leg in (0, 1) else 1.0
             _front = 1.0 if leg in (0, 1) else -1.0
-            wz += (_side * self.kp_roll * (-float(body["roll"])) * 0.002
-                   + _front * self.kp_pitch
-                   * (float(cmd.get("pitch_tar", 0.0)) - float(body["pitch"]))
-                   * 0.002)
+            wz += (_side * (self.kp_roll * (-float(body["roll"]))
+                            - 8.0 * roll_rate) * 0.0025
+                   + _front * (self.kp_pitch
+                               * (float(cmd.get("pitch_tar", 0.0))
+                                  - float(body["pitch"]))
+                               - 6.0 * pitch_rate) * 0.0025)
             rel = body["R"].T @ (np.array([wheel_xyz[leg, 0],
                                            wheel_xyz[leg, 1], wz]) - hip_w)
             q1t, q2t = self._ik(float(rel[0]), float(rel[2]), q1, q2)
@@ -1114,9 +1154,13 @@ class FootPlaceVMC:
                            - self.kd * float(qvel[6 + LEG_QV_LEG[b + 2]]))
             wq = float(qvel[WHEEL_QV_IDX[leg]])
             v_wheel = -wq * self.fk.r
+            # v694: 差速保持航向 + yaw 率阻尼（防纯前向漂移/自旋）
+            v_ref = (self._vx_f
+                     + _side * self._om_f * self.track_half)
+            t_yaw = -6.0 * _om_body * _side
             tau[WHEEL_Q_IDX[leg]] = (
-                -(self.wheel_k * (self._vx_f - v_wheel))
-                - self.wheel_d * wq)
+                -(self.wheel_k * (v_ref - v_wheel))
+                - self.wheel_d * wq + t_yaw)
         tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
         tau[WHEEL_Q_IDX] = np.clip(tau[WHEEL_Q_IDX], -13.5, 13.5)
         return tau
