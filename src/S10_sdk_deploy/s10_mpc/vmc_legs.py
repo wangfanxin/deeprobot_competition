@@ -866,7 +866,7 @@ class CarVMC:
             # v664: IK 落脚点覆盖（cmd.fp_place=1 且抬轮 sl>0.3）——轮直接
             # 放到 terrain+r（脚本落脚点地形已传台面高），姿态由 R/P 保持
             _fp = float(cmd.get("fp_place", 0.0))
-            if False and _fp > 0.0 and sl > 0.3 and terrain_h is not None:
+            if _fp > 0.0 and sl > 0.3 and terrain_h is not None:
                 # v732: 启用 IK 落脚（原 if False）——抬轮腿直接放到
                 # 台面+半径（place_z 由脚本 stair 表给，terr 已覆盖）。
                 # 投影用 body 前向 + 世界 z 差（同 FootPlace 修正）。
@@ -886,7 +886,7 @@ class CarVMC:
                 _rbf = _Rb.T @ _dwh
                 _relf4 = float(_rbf[0])
                 _relz4 = float(np.clip(_dwh[2], -0.34, 0.0))
-                _q1_tgt, _q2_tgt = self._ik(_relf4, _relz4, q1, q2, lift=True)
+                _q1_tgt, _q2_tgt = self._ik(_relf4, _relz4, q1, q2)
             # v221i: 车身抬升（过脊用）——0.05 只到 0.68(差 5mm)，改 0.08
             _bl = float(cmd.get("body_lift", 0.0))
             _q2_tgt += _bl * 0.08
