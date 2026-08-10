@@ -223,9 +223,11 @@ def main():
                                  body_pos[1] + _fy0 * 0.228])
                 _dmin = min(float(abs(np.dot(_fa0 - _rp, _tng)))
                             for (_rp, _tng, _sr, _dh) in ridge_world)
-                if _dmin < 1.2:
-                    _k_st = float(np.clip((_dmin - 0.2) / 1.0, 0.0, 1.0))
-                    om_c *= float(np.clip(0.35 + 0.65 * _k_st, 0.0, 1.0))
+                if _dmin < 0.8:
+                    # v260: 放宽近脊限幅（0.35 把 wp4→5 所需 0.9rad 转弯卡住，
+                    # 到脊未对准→后轮抬放在转弯中触发侧翻）；±0.8 只防极端
+                    _k_st = float(np.clip((_dmin - 0.15) / 0.65, 0.0, 1.0))
+                    om_c *= float(np.clip(0.8 + 0.2 * _k_st, 0.0, 1.0))
             prev_u = np.array([vx_c, om_c])
             last_log = t
         else:
