@@ -103,7 +103,9 @@ def main():
         print(f'[VMC] 预扫描横脊 {len(ridge_arcs)} 处', flush=True)
     except Exception as e:
         print('[VMC] 横脊预扫描失败', e, flush=True)
-    # v236: 台阶几何预扫描——wp6->7 楼梯区 riser 弧长表（已知地图，供相位步态）
+    # v236: 台阶几何预扫描——wp6->7 楼梯区 riser 弧长表（已知地图，供
+    # 相位步态）。wp5->6 台阶间距 2m 与相位窗不匹配（v447 卡第一级），
+    # 仍由连续抬轮处理。
     stair_risers = []
     try:
         _s6 = float(fol.path_wp_s[6]); _s7 = float(fol.path_wp_s[7])
@@ -471,8 +473,12 @@ def main():
                         _release, _span = 0.30, 0.20
                     else:
                         _release, _span = 0.50, 0.25
+                    _lstart = float(os.environ.get(
+                        'S10_VMC_LIFT_START', '0.25'))
+                    _lramp = float(os.environ.get(
+                        'S10_VMC_LIFT_RAMP', '0.15'))
                     _lift_r = float(
-                        np.clip((0.25 - _dmin_r) / 0.15, 0.0, 1.0)
+                        np.clip((_lstart - _dmin_r) / _lramp, 0.0, 1.0)
                         * np.clip((_release - _dmin_r) / _span, 0.0, 1.0))
                     if _lift_r > 0.02:
                         if _ai == 0:
@@ -709,12 +715,21 @@ def main():
                                      _w0[1] + _fy * 0.80)
                     if _ha - _h0 > 0.08:
                         hop[_wi] = float(os.environ.get('S10_VMC_HOP_F', '180.0'))
+            # v449: 软抬轮技能划分——台阶/陡升段（step_zone/stair_zone，
+            # 永久升面需保牵引爬升）用 S10_VMC_LIFT_F_SCALE_STEP；巡航平脊
+            # 段（z 不升，动量冲过）用默认 1.0 硬抬轮。地形属性=技能切换。
+            _lfs = 1.0
+            if (next_idx >= 2 and next_idx - 1 < len(fol.step_zone)
+                    and fol.step_zone[next_idx - 1]):
+                _lfs = float(os.environ.get(
+                    'S10_VMC_LIFT_F_SCALE_STEP', '0.3'))
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
                       yaw_scale=1.0 - _lift_act, hop=hop,
                       step_lift=step_lift,
                       body_lift=_body_lift,
-                      stair_lift=stair_lift_flag)
+                      stair_lift=stair_lift_flag,
+                      lift_f_scale=_lfs)
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         _tleg = float(np.abs(tau[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]]).max())
         _twh = float(np.abs(tau[[3, 7, 11, 15]]).max())

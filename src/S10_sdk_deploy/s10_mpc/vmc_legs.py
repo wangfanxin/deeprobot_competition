@@ -732,20 +732,35 @@ class CarVMC:
             F += self.roll_sign[leg] * R
             F += self.pitch_sign[leg] * P
             p = wheel_xyz[leg] if wheel_xyz is not None else None
-            if p is not None and terrain_h is not None:
-                pz_des = float(terrain_h[leg]) + self.fk.r
-                F += (1.0 - sl) * (
-                    self.kp_h * (pz_des - p[2])
-                    - self.kd_h * float(wheel_vel[leg, 2]))
-            F = max(F, 2.0) * (1.0 - sl)
+            # v449/v451: 软抬轮技能（台阶/陡升段）——lift_f_scale<1 时保留
+            # 部分支撑力+抬升力（保牵引爬 0.125m 台阶）；巡航平脊段保持原
+            # 硬抬轮（max 后再乘 (1-sl)，与 v445 提交版逐字一致）。
+            _fscale = float(cmd.get(
+                "lift_f_scale", os.environ.get("S10_VMC_LIFT_F_SCALE", "1.0")))
+            if _fscale < 1.0:
+                if p is not None and terrain_h is not None:
+                    pz_des = float(terrain_h[leg]) + self.fk.r
+                    F += (self.kp_h * (pz_des - p[2])
+                          - self.kd_h * float(wheel_vel[leg, 2]))
+                F = max(F, 2.0) * (1.0 - _fscale * sl)
+            else:
+                if p is not None and terrain_h is not None:
+                    pz_des = float(terrain_h[leg]) + self.fk.r
+                    F += (1.0 - sl) * (
+                        self.kp_h * (pz_des - p[2])
+                        - self.kd_h * float(wheel_vel[leg, 2]))
+                F = max(F, 2.0) * (1.0 - sl)
             if hop is not None:
                 F += float(hop[leg])
 
             # 腿关节力矩（J^T 垂直力）+ 位置 PD
             t_hipy, t_knee = J.T @ np.array([0.0, F])
             # 迈步：hipy 前摆 + knee 伸直
+            # v453: 抬轮摆动幅度可调（S10_VMC_LIFT_SWING 默认 0.66）——
+            # wp5→6 台阶实测 0.66rad 只抬轮 0.045m，不够 0.125m 台阶。
             _qs = -1.0 if leg in (0, 1) else 1.0
-            _q1_tgt = self.pose_target[b + 1] - sl * 0.66 * _qs
+            _lsw = float(os.environ.get("S10_VMC_LIFT_SWING", "0.66"))
+            _q1_tgt = self.pose_target[b + 1] - sl * _lsw * _qs
             _q2_tgt = self.pose_target[b + 2] + sl * 0.42
             # v221i: 车身抬升（过脊用）——0.05 只到 0.68(差 5mm)，改 0.08
             _bl = float(cmd.get("body_lift", 0.0))
