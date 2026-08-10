@@ -250,9 +250,16 @@ def main():
             # 路径参考轨迹（弧长采样：当前位置起 8m，步长 0.5m）
             _ref = []
             _s0 = float(fol._s_cur)
-            for _ds in np.arange(0.0, 12.0, 0.5):   # v340: H=40 视界 7m，ref 采到 12m
+            # v558: ref 段截止——vmax 4 时 12m ref 让 MPPI 提前看到下一
+            # 航点后的弯（wp1→2 看到 wp2 S 弯提前转蛇形翻车实测）。截止到
+            # 下一个航点+1.5m 出口余量，MPPI 只规划当前段。
+            _ref_end = fol.path_total
+            if next_idx < len(fol.path_wp_s):
+                _ref_end = min(
+                    _ref_end, float(fol.path_wp_s[next_idx]) + 1.5)
+            for _ds in np.arange(0.0, 12.0, 0.5):
                 _sp = _s0 + _ds
-                if _sp >= fol.path_total:
+                if _sp >= _ref_end or _sp >= fol.path_total:
                     break
                 _k = int(np.searchsorted(fol.path_cum, _sp, side="right") - 1)
                 _k = min(max(_k, 0), len(fol.path_pts) - 2)
@@ -263,94 +270,6 @@ def main():
                 _hd = fol.path_heading[min(_k, len(fol.path_heading) - 1)]
                 _ref.append([_x, _y, _hd])
             _ref = np.array(_ref) if len(_ref) else np.array([[pos2[0], pos2[1], yaw]])
-            # v316: 瞄航点期间 MPPI 参考 = 指向航点的光束（狗→wp→出口延长）。
-            # 纯路径参考的航向成本会把狗往路径航向（过弯后朝西）拉，错过
-            # wp1 北侧 0.6m（实测）；瞄航点（_last_tgt==当前 wp）时让 MPPI
-            # 以 wp 为终点规划，过点后恢复路径参考。
-            try:
-                _aim_tgt = np.asarray(getattr(fol, '_last_tgt', [0, 0, 0])[:2])
-                _aim_wp = np.asarray(fol.wp[next_idx][:2])
-                _beam_on = (np.abs(_aim_tgt[0] - _aim_wp[0]) < 0.05
-                            and np.abs(_aim_tgt[1] - _aim_wp[1]) < 0.05)
-                # v327: 过点后 3m 内保持"上一航点出口光束"——过点瞬间导航
-                # 目标切到前视点，err 突跳 -> 出弯蛇形（wp1->wp2 7s 实测）。
-                # 用 wp[i-1] 的出口方向（=wp[i]-wp[i-1]）拉直出弯段。
-                _aim_idx = next_idx
-                _after_len = float(os.environ.get(
-                    'S10_AUTO_BEAM_AFTER', '3.0'))
-                # v329: 过点后光束只对真实弯道（wp1 之后）生效——起点
-                # wp0 也在 3m 内会误触发，改变全链路 ref 导致混沌发散。
-                if (not _beam_on and next_idx >= 2):
-                    _pw = np.asarray(fol.wp[next_idx - 1][:2])
-                    _dd = float(np.hypot(pos2[0] - _pw[0],
-                                         pos2[1] - _pw[1]))
-                    if _dd < _after_len:
-                        _beam_on = True
-                        _aim_wp = _pw
-                        _aim_idx = next_idx - 1
-                # v528/v529: 光束策略——
-                #   S10_AUTO_BEAM_OFF=1: 全关（MPPI 看路径 ref）；
-                #   S10_AUTO_BEAM_AIM_OFF=1: 只关"瞄下一航点"光束（入弯给
-                #     路径圆角几何，wp1 超调 2.2->1.7m），保留"过点后出口
-                #     光束"（wp4->5/5->6 出弯稳定）。
-                if (float(os.environ.get('S10_AUTO_BEAM_OFF', '0')) > 0
-                        or (float(os.environ.get(
-                            'S10_AUTO_BEAM_AIM_OFF', '0')) > 0
-                            and _aim_idx == next_idx)):
-                    _beam_on = False
-                if _beam_on:
-                    _dvec = _aim_wp - pos2
-                    _L = float(np.hypot(_dvec[0], _dvec[1]))
-                    # v322: 出口方向 = 过点后的路径方向（wp[i+1]-wp[i]），
-                    # 不是狗→wp 的接近方向——wp1 处接近方向指向西南（南坡）。
-                    _ex = np.asarray(fol.wp[_aim_idx + 1][:2]) - _aim_wp
-                    _Le = float(np.hypot(_ex[0], _ex[1]))
-                    _uv = (_ex / _Le) if _Le > 1e-3 else (
-                        _dvec / _L if _L > 1e-3 else np.array([1.0, 0.0]))
-                    _hd = float(np.arctan2(_uv[1], _uv[0]))
-                    # 局部零代价陷阱：不能放狗当前位置/航向点（最近点距离=0、
-                    # 航向=当前 yaw -> MPPI 视为已在目标上，om 恒 0）。只给
-                    # wp + 出口延长两点。过点后光束用更长出口拉直出弯。
-                    if _aim_idx == next_idx - 1:
-                        _exit_len = float(os.environ.get(
-                            'S10_AUTO_BEAM_AFTER_EXIT', '2.5'))
-                    else:
-                        _exit_len = float(os.environ.get(
-                            'S10_AUTO_BEAM_EXIT', '1.0'))
-                    # v434: 光束起点投影（S10_AUTO_BEAM_PROJ 默认开）——狗沿
-                    # 出口方向已越过 wp 时（如 wp3→4 狗偏北 1.5m），原光束从
-                    # wp 起算，最近点=身后 wp → MPPI 距离成本往回拉（绕圈
-                    # 打转 wp3→4 实测）；把起点平移到狗在出口线上的投影，
-                    # 距离成本只剩垂直拉线（走廊效应），转向交给 guide 主导。
-                    _bproj = float(os.environ.get('S10_AUTO_BEAM_PROJ', '0'))
-                    _bs = np.array([_aim_wp[0], _aim_wp[1]])
-                    if _bproj > 0.0:
-                        _pp = float(np.dot(pos2 - _bs, _uv))
-                        if _pp > 0.0:
-                            _bs = _bs + _pp * _uv
-                    # v439: 过点后光束指向下一航点（S10_AUTO_BEAM_AIM_NEXT
-                    # 默认 0）——wp4→5 实测：出口光束沿 wp4 出口线向北
-                    # (x=-15.02)，狗在 x=-15.3 偏西 0.28m，距离成本把狗往东
-                    # 拉，与"右转去 wp5"的 guide 打架 → MPPI 输出 om≈0 直线
-                    # 西行错过 wp5。改为从狗前方 0.5m 指向 wp[next_idx]
-                    # （方向=guide 方向，距离成本无横向偏置；0.5m 前移避免
-                    # v318 局部零代价陷阱）。连续量，仅过点后分支。
-                    if (_aim_idx == next_idx - 1 and float(os.environ.get(
-                            'S10_AUTO_BEAM_AIM_NEXT', '0')) > 0):
-                        _nv = np.asarray(fol.wp[next_idx][:2]) - pos2
-                        _Lv = float(np.hypot(_nv[0], _nv[1]))
-                        if _Lv > 1e-3:
-                            _uv = _nv / _Lv
-                        _hd = float(np.arctan2(_uv[1], _uv[0]))
-                        _bs = pos2 + 0.5 * _uv
-                        _exit_len = float(os.environ.get(
-                            'S10_AUTO_BEAM_AFTER_EXIT', '2.5'))
-                    _ref = np.array([
-                        [_bs[0], _bs[1], _hd],
-                        [_bs[0] + _exit_len * _uv[0],
-                         _bs[1] + _exit_len * _uv[1], _hd]])
-            except Exception:
-                pass
             st = np.array([pos2[0], pos2[1], yaw,
                            float(d.cvel[1][3]), float(d.cvel[1][4]), float(qvel[5])])
             if os.environ.get('S10_NAV_DEBUG', '0') == '1' and next_idx <= 6:
@@ -371,33 +290,6 @@ def main():
                 # ——纯路径跟踪会切内弯错过航点（wp1 最近 0.6m 实测）；导航的
                 # 瞄航点逻辑保证 0.3m 判点，MPPI 负责平滑 + 摩擦锥约束兜底。
                 _g_om = float(vyaw) if vyaw is not None else 0.0
-                # v543/v547: 楼梯航向锁定（S10_STAIR_STRAIGHT=1 直行；
-                # S10_STAIR_HEADING_HOLD>0 用 P 控制器锁走廊航向）——楼梯区
-                # pursuit/cte 产生 om±1.7 振荡，轮差速抵消驱动死锁（v539 实
-                # 测 wq -28~+3）。航向锁：g_om = K·wrap(走廊航向-当前yaw)，
-                # 狗沿走廊直线北上，yaw 稳定无振荡。
-                _in_sz = (next_idx >= 2
-                          and next_idx - 1 < len(fol.stair_zone)
-                          and fol.stair_zone[next_idx - 1])
-                if (float(os.environ.get('S10_STAIR_STRAIGHT', '0')) > 0
-                        and _in_sz):
-                    _g_om = 0.0
-                    prev_u[1] = 0.0
-                _hh = float(os.environ.get('S10_STAIR_HEADING_HOLD', '0'))
-                if _hh > 0.0 and _in_sz:
-                    _kh = min(getattr(fol, '_k_near', 0),
-                              len(fol.path_heading) - 1)
-                    _h_tar = float(fol.path_heading[_kh])
-                    _g_om = _hh * float(np.arctan2(
-                        np.sin(_h_tar - yaw), np.cos(_h_tar - yaw)))
-                    # v548: 横向位置 P（S10_STAIR_LAT_GAIN）——航向锁+温和
-                    # 走廊纠偏（cte 低增益，避免强 cte 振荡；无纠偏则狗漂到
-                    # x=-17.9 实测）。符号与 nav cte_corr 一致（-K*cte）。
-                    _kl = float(os.environ.get('S10_STAIR_LAT_GAIN', '0'))
-                    if _kl > 0.0:
-                        _g_om -= _kl * float(np.clip(
-                            getattr(fol, '_last_cte', 0.0), -1.0, 1.0))
-                    _g_om = float(np.clip(_g_om, -2.0, 2.0))
                 vx_c, om_c = mppi.plan(
                     st, _ref, v_ref, prev_u, guide_om=_g_om)
                 if (os.environ.get('S10_NAV_DEBUG', '0') == '1'

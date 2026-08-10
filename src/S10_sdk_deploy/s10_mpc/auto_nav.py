@@ -474,15 +474,6 @@ class AutoNavFollower:
         # 即在弯上）且 4m 窗口内同时存在正负大曲率时，该点限速
         # S10_CURVE_SWING_VX。直道点（wp1->2）不进入窗口判定，避免
         # v388 的耦合回翻。
-        # v554: 急弯曲率限速（S10_CURVE_VLIM_K 阈值默认 0.25、S10_CURVE_VLIM_A
-        # 横向加速度默认 5.0）——vmax 提到 5 时 wp1 90° 弯/ S 弯翻车，但只限
-        # 急弯（κ>0.25，wp1 κ0.5、S 弯 κ0.5），缓弯/直线放开。v=sqrt(a/κ)。
-        _cvk = float(os.environ.get("S10_CURVE_VLIM_K", "0.25"))
-        _cva = float(os.environ.get("S10_CURVE_VLIM_A", "5.0"))
-        for k in range(len(vlim)):
-            _kk = abs(float(self.path_curv_signed[k]))
-            if _kk > _cvk:
-                vlim[k] = min(vlim[k], float(np.sqrt(_cva / _kk)))
         _sw = int(float(os.environ.get("S10_CURVE_SWING_WINDOW", "4.0")) / res)
         _swing_v = float(os.environ.get("S10_CURVE_SWING_VX", "1.8"))
         for k in range(len(vlim)):
@@ -509,13 +500,6 @@ class AutoNavFollower:
         self.path_total = float(cum[-1])
         # 航点在平滑路径上的弧长（统一 pursuit 的 passed 判断标尺：
         # 平滑弧长 ≠ 折线弧长，直接用折线 cum_len 会错位 10m+）
-        # v551: 起步段限速（S10_AUTO_START_VX 默认 0=不限）——vmax 提到
-        # 5-6 时起步门架+坡在 >4m/s 翻车（v550 实测），wp0→1 单独限速。
-        _sv = float(os.environ.get("S10_AUTO_START_VX", "0"))
-        if _sv > 0.0:
-            _s_end = float(self.cum_len[1])
-            vlim[cum <= _s_end] = np.minimum(
-                vlim[cum <= _s_end], _sv)
         self.path_wp_s = np.array([
             float(self.path_cum[np.argmin(np.sum(
                 (self.path_pts[:, :2] - self.wp[i, :2]) ** 2, axis=1))])
@@ -576,43 +560,9 @@ class AutoNavFollower:
         # 航点（默认 0.8m，保证 0.5m 判点）或已越过时才瞄准航点本身；
         # 其余时间沿平滑路径前视点瞄准——路径在航点处转向，前视点越过
         # 航点后即提前给出转向指令，避免弯道处 err 突跳触发龟速。
-        # v517: WP_AIM 按前方曲率自适应收缩（S10_AUTO_WP_AIM_CURVE_K 默认 0）
-        # ——直道（起步门架）保持原 2.5m 瞄航点；弯道（wp1 前视点曲率 0.5）
-        # 瞄距自动缩小，狗更早沿圆角路径转向，避免过点后 180° 急转冲远
-        # （wp1 超调 1.3m 实测）。连续量：aim_eff = AIM / (1 + K*curv)。
-        _aim_k = 0.0
-        _acv = float(os.environ.get("S10_AUTO_WP_AIM_CURVE_K", "0"))
-        if _acv > 0.0 and len(self.path_curv) > 0:
-            _kf = min(self._k_near + int(
-                float(os.environ.get("S10_AUTO_YAW_FF_DIST", "1.5"))
-                / self.path_res), len(self.path_curv) - 1)
-            # v519: 只对 κ>0.2 的真弯收缩瞄距（起步门架偏移 κ0.115 不受
-            # 影响——v517 无阈值破坏了起步）
-            _aim_k = float(max(0.0, self.path_curv[_kf] - 0.2))
-        _aim_eff = float(os.environ.get("S10_AUTO_WP_AIM", "2.5"))
-        if _acv > 0.0:
-            _aim_eff = _aim_eff / (1.0 + _acv * _aim_k)
-        # v524: WP_AIM 只对起步生效（S10_WP_AIM_LAST，默认 1）——平滑路径
-        # 实测经过所有航点（最近距离 <0.02m），wp1+ 无需瞄点、纯路径跟随
-        # 即可 0.3m 过点且更早入弯（修 wp1 超调）；起步门架/走廊偏移路径
-        # 曲线需要瞄 wp1 直穿（纯路径跟随起步翻车实测）。
-        if (d_wp < _aim_eff
-                and os.environ.get("S10_AUTO_WP_AIM_ON", "1") == "1"
-                and next_idx <= int(os.environ.get(
-                    "S10_WP_AIM_LAST", "99"))):
+        if (d_wp < float(os.environ.get("S10_AUTO_WP_AIM", "2.5"))
+                and os.environ.get("S10_AUTO_WP_AIM_ON", "1") == "1"):
             target = wp_next
-            # v526: 出弯瞄向提前（S10_AIM_EXIT_BLEND 默认 0）——靠近航点
-            # 时瞄准点从航点向出口方向平滑偏移（_f=BLEND*(1-d/AIM)，最远
-            # BLEND×段长），狗提前入弯（wp1 是 86° 弯，2.8m/s 需提前
-            # 1.5-2m 转，当前瞄 wp1 直到 2.5m 内导致转弯滞后超调 2.2m）。
-            # 连续量；next_idx>=2 才生效（起步门架保持直瞄 wp1）。
-            _aeb = float(os.environ.get("S10_AIM_EXIT_BLEND", "0"))
-            if _aeb > 0.0 and next_idx >= 2 and next_idx + 1 < len(self.wp):
-                _f = min(_aeb * max(0.0, 1.0 - d_wp / max(_aim_eff, 1e-3)),
-                         0.5)
-                target = (target[0:2]
-                          + _f * (self.wp[next_idx + 1][0:2]
-                                  - self.wp[next_idx][0:2]))
         else:
             # v267: 已越过航点（passed）或未接近 → 一律瞄**路径前视点**
             # ——修复"passed 后瞄身后当前航点→err 饱和振荡→漂西卡脊"
@@ -636,16 +586,6 @@ class AutoNavFollower:
                         "S10_AUTO_LOOKAHEAD_MAX", "3.2"))))
                 s_target = min(self._s_cur + _lk_eff, self.path_total)
                 target = self._path_point_at(s_target)
-        # v396: 过点后直接瞄**下一个航点**（wp[i]）——v374b 瞄 wp[i-1]+
-        # 出口 2.5m 是单点目标，狗绕该点打转（wp3->4 实测绕 (-13,17.5)
-        # 27s 翻车）。直接瞄下一航点：目标远、方位连续，不形成轨道中心，
-        # 且保证 0.3m 判点。仅 wp1 之后生效。
-        if next_idx >= 2:
-            _pw = self.wp[next_idx - 1][:2]
-            _dd = float(np.linalg.norm(robot_xy - _pw))
-            _after_len = float(os.environ.get("S10_AUTO_BEAM_AFTER", "3.0"))
-            if _dd < _after_len:
-                target = self.wp[next_idx][:2]
         err = np.arctan2(target[1] - robot_xy[1],
                          target[0] - robot_xy[0]) - yaw
         err = float(np.arctan2(np.sin(err), np.cos(err)))
