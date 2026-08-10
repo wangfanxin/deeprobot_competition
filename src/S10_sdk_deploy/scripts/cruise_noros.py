@@ -67,6 +67,20 @@ def main():
     waypoints.sort()
     wps = np.array([w for _, w in waypoints], dtype=np.float64)
     print(f'[NOROS] waypoints: {len(wps)}', flush=True)
+    START_WP = int(os.environ.get('S10_START_WP', '0'))
+    if START_WP > 0 and START_WP < len(wps):
+        d.qpos[0:3] = [wps[START_WP][0], wps[START_WP][1] - 1.0,
+                       wps[START_WP][2] + 0.05]
+        if START_WP + 1 < len(wps):
+            _dy = wps[START_WP + 1][1] - wps[START_WP][1]
+            _dx = wps[START_WP + 1][0] - wps[START_WP][0]
+            _iy = float(np.arctan2(_dy, _dx))
+        else:
+            _iy = 1.5708
+        d.qpos[3:7] = [np.cos(_iy / 2), 0, 0, np.sin(_iy / 2)]
+        d.qpos[7:23] = JOINT_INIT
+        mujoco.mj_forward(m, d)
+        print(f'[NOROS] 从 wp{START_WP} 起跑', flush=True)
     track_body = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, 'base_link')
     assert track_body >= 0
     # S10_USE_VIEWER=1：被动 viewer（同 mujoco_simulation_ros2.py 方案）
@@ -152,7 +166,7 @@ def main():
         pass
     print(f'[NOROS] MPC JIT 预热完成（{time.time()-_w0:.1f}s），即将开始', flush=True)
 
-    next_idx = 0
+    next_idx = START_WP if 'START_WP' in dir() else 0
     t = 0.0
     last_act = None
     auto_active = False
