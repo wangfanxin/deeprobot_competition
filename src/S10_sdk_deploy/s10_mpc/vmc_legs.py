@@ -708,6 +708,9 @@ class CarVMC:
             _qs = -1.0 if leg in (0, 1) else 1.0
             _q1_tgt = self.pose_target[b + 1] - sl * 0.66 * _qs
             _q2_tgt = self.pose_target[b + 2] + sl * 0.42
+            # v221i: 车身抬升（过脊用）——0.05 只到 0.68(差 5mm)，改 0.08
+            _bl = float(cmd.get("body_lift", 0.0))
+            _q2_tgt += _bl * 0.08
             t_hipy += (self.kp_leg * (_q1_tgt - q1)
                        - self.kd_leg * float(qvel[6 + LEG_QV_LEG[b + 1]]))
             t_knee += (self.kp_leg * (_q2_tgt - q2)

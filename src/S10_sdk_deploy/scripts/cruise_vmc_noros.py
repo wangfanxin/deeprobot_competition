@@ -187,9 +187,22 @@ def main():
         else:
             vx_c, om_c = prev_u
 
-        # 地形 + 横脊预抬
-        terr = np.array([terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
-                         for i in range(4)])
+        # 地形 + 前瞻（v222: 连续地形响应，无门控）——
+        # 每轮高程取"轮前方 _lk 处"，腿垂直阻抗连续跟随前方地形：
+        # 接近横脊时高程升 → 腿伸 → 轮抬，过脊自然回落
+        _lk = float(os.environ.get('S10_VMC_TERRAIN_LOOKAHEAD', '0.0'))
+        if _lk > 0.0:
+            _bx = d.xmat[1][0]
+            _by = d.xmat[1][1]
+            _bn = float(np.hypot(_bx, _by)) + 1e-9
+            _bx, _by = _bx / _bn, _by / _bn
+            terr = np.array([
+                terrain_at(wheel_xyz[i, 0] + _bx * _lk,
+                           wheel_xyz[i, 1] + _by * _lk)
+                for i in range(4)])
+        else:
+            terr = np.array([terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
+                             for i in range(4)])
         s_cur = float(getattr(fol, '_s_cur', 0.0))
 
         # v220a: 单步跨越状态机——横脊 0.125m > 轮半径 0.081，轮滚不上，
@@ -212,6 +225,20 @@ def main():
             elif _step_state == 2:
                 step_lift[:] = [0.0, 0.0, 1.0, 1.0]
 
+        # v221e: 车身抬升（过脊）——渐变：脊前 0.6m 起、0.2m 处满，
+        # 过脊后 0.4m 内回落（防阶跃弹跳侧翻）
+        _body_lift = 0.0
+        # v221g: 物理检测——前轮前方 0.5m 真实地形高差>0.07 才抬身
+        # （s_cur 投影推进快于物理位置，弯道出口误触发侧翻实测）
+        if os.environ.get('S10_VMC_BODY_LIFT', '1') == '1':
+            _fwd3 = d.xmat[1][0:2]
+            _fl = float(np.hypot(_fwd3[0], _fwd3[1])) + 1e-9
+            _fx3, _fy3 = _fwd3[0] / _fl, _fwd3[1] / _fl
+            _hf = terrain_at(body_pos[0] + _fx3 * 0.5,
+                             body_pos[1] + _fy3 * 0.5)
+            _h0 = terrain_at(body_pos[0], body_pos[1])
+            if _hf - _h0 > 0.07:
+                _body_lift = 1.0
         _lift = float(os.environ.get('S10_VMC_RIDGE_LIFT', '0.12'))
         _lift_act = 0.0
         for (sr, dhv) in ridge_arcs:
@@ -278,7 +305,8 @@ def main():
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
                       yaw_scale=1.0 - _lift_act, hop=hop,
-                      step_lift=step_lift)
+                      step_lift=step_lift,
+                      body_lift=_body_lift)
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
