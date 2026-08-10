@@ -93,7 +93,8 @@
               <inertial pos="-8e-06 0.001694 -5e-06" quat="0.707107 0 0 0.707107" mass="0.587952" diaginertia="0.002003 0.001059 0.001059"/>
               <joint name="fl_wheel_joint" pos="0 0 0" axis="0 -1 0" actuatorfrcrange="-14 14"/>
               <geom type="mesh" class="visual" mesh="fl_wheel"/>
-              <geom size="0.081 0.0185" quat="0.707107 0.707107 0 0" type="cylinder" class="collision"/>
+              <!-- v218x: 轮侧向摩擦 0.01→0.8，skid-steering 传力（真机橡胶轮侧向 μ≫0.01） -->
+            <geom size="0.081 0.0185" quat="0.707107 0.707107 0 0" type="cylinder" class="collision" friction="1 0.8 0.001"/>
             </body>
           </body>
         </body>
@@ -119,7 +120,8 @@
               <inertial pos="8e-06 -0.001694 5e-06" quat="0.707107 0 0 0.707107" mass="0.587952" diaginertia="0.002003 0.001059 0.001059"/>
               <joint name="fr_wheel_joint" pos="0 0 0" axis="0 -1 0" actuatorfrcrange="-14 14"/>
               <geom type="mesh" class="visual" mesh="fr_wheel"/>
-              <geom size="0.081 0.0185" quat="0.707107 0.707107 0 0" type="cylinder" class="collision"/>
+              <!-- v218x: 轮侧向摩擦 0.01→0.8，skid-steering 传力（真机橡胶轮侧向 μ≫0.01） -->
+            <geom size="0.081 0.0185" quat="0.707107 0.707107 0 0" type="cylinder" class="collision" friction="1 0.8 0.001"/>
             </body>
           </body>
         </body>
@@ -145,7 +147,8 @@
               <inertial pos="-8e-06 0.001694 -5e-06" quat="0.707107 0 0 0.707107" mass="0.587952" diaginertia="0.002003 0.001059 0.001059"/>
               <joint name="hl_wheel_joint" pos="0 0 0" axis="0 -1 0" actuatorfrcrange="-14 14"/>
               <geom type="mesh" class="visual" mesh="hl_wheel"/>
-              <geom size="0.081 0.0185" quat="0.707107 0.707107 0 0" type="cylinder" class="collision"/>
+              <!-- v218x: 轮侧向摩擦 0.01→0.8，skid-steering 传力（真机橡胶轮侧向 μ≫0.01） -->
+            <geom size="0.081 0.0185" quat="0.707107 0.707107 0 0" type="cylinder" class="collision" friction="1 0.8 0.001"/>
             </body>
           </body>
         </body>
@@ -171,7 +174,8 @@
               <inertial pos="8e-06 -0.001694 5e-06" quat="0.707107 0 0 0.707107" mass="0.587952" diaginertia="0.002003 0.001059 0.001059"/>
               <joint name="hr_wheel_joint" pos="0 0 0" axis="0 -1 0" actuatorfrcrange="-14 14"/>
               <geom type="mesh" class="visual" mesh="hr_wheel"/>
-              <geom size="0.081 0.0185" quat="0.707107 0.707107 0 0" type="cylinder" class="collision"/>
+              <!-- v218x: 轮侧向摩擦 0.01→0.8，skid-steering 传力（真机橡胶轮侧向 μ≫0.01） -->
+            <geom size="0.081 0.0185" quat="0.707107 0.707107 0 0" type="cylinder" class="collision" friction="1 0.8 0.001"/>
             </body>
           </body>
         </body>

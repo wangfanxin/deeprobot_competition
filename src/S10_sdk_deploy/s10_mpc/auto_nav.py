@@ -31,7 +31,11 @@ class AutoNavFollower:
         self.lat_accel_max = float(lat_accel_max)
         self.climb_max_speed = float(climb_max_speed)
         self.grade_scale = float(grade_scale)
-        self.speed_window = int(speed_window)
+        # v219d: 限速前瞻窗口可覆盖（S10_AUTO_SPEED_WINDOW）。
+        # 高架限速只应看当前段+下一段：过长则 wp4→5
+        # 横脊前被远处 wp7(z=1.16)拖累到 1.37m/s，低于过脊需的 1.57m/s
+        self.speed_window = int(os.environ.get(
+            "S10_AUTO_SPEED_WINDOW", str(speed_window)))
         self.lat_gain = float(lat_gain)
         self.max_accel = float(os.environ.get(
             "S10_AUTO_MAX_ACCEL", str(max_accel)))
@@ -75,6 +79,9 @@ class AutoNavFollower:
         self._last_vyaw_out = 0.0
         self._ref_dbg_cnt = 0
         self._s_cur = 0.0
+        # v219h: 横脊弧长列表（cruise 预扫描填充），
+        # 用于脊前强制加速冲脊
+        self.ridge_s = []
         self._precompute()
         self._build_smooth_path()
 
@@ -698,6 +705,16 @@ class AutoNavFollower:
                 v_lim = min(v_lim, self.stair_vx)
             else:
                 v_lim = min(v_lim, self.step_vx)
+        # v219h: 横脊前加速窗口－－0.125m 脊 > 轮半径(0.081)，
+        # 低速轮子无法滚上，需动量冲过（S10_RIDGE_MIN_VX>0 启用）
+        _rmin = float(os.environ.get("S10_RIDGE_MIN_VX", "0.0"))
+        if _rmin > 0.0:
+            for _rs in getattr(self, "ridge_s", []):
+                _ds = _rs - self._s_cur
+                if 0.0 <= _ds <= float(os.environ.get(
+                        "S10_RIDGE_MIN_DIST", "1.5")):
+                    v_lim = max(v_lim, _rmin)
+                    break
         # 速度限幅：避免转向后瞬间 0→4 m/s 的侧向冲击（侧翻风险）
         dv = self.max_accel * 0.05   # 每 10 步(0.05s)更新的速度增量
         vx = float(np.clip(v_lim,

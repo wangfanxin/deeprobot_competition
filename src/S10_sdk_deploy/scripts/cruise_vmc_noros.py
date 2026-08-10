@@ -12,7 +12,8 @@ PKG = '/home/wfx/DR_competition/deeprobot_competition/src/S10_sdk_deploy'
 sys.path.insert(0, PKG)
 from s10_mpc.auto_nav import AutoNavFollower
 from s10_mpc.body_mppi import BodyMPPI
-from s10_mpc.vmc_legs import VMCController, LEG_ATTACH, WHEEL_BODY, WHEEL_Q_IDX
+from s10_mpc.vmc_legs import (VMCController, LEG_ATTACH, WHEEL_BODY,
+    WHEEL_Q_IDX, LidarTerrain)
 
 DT = 0.005
 MAX_SIM = float(os.environ.get('S10_TEST_MAX_SIM', '90'))
@@ -80,6 +81,7 @@ def main():
             _hi = min(len(fol.path_vlim), _k + int(1.2 / fol.path_res))
             fol.path_vlim[_lo:_hi] = np.minimum(
                 fol.path_vlim[_lo:_hi], _rv)
+        fol.ridge_s = [float(fol.path_cum[k]) for k in ridge_idx]
         print(f'[VMC] 预扫描横脊 {len(ridge_arcs)} 处', flush=True)
     except Exception as e:
         print('[VMC] 横脊预扫描失败', e, flush=True)
@@ -106,11 +108,23 @@ def main():
         mujoco.mj_step(m, d)
         t += DT
 
-    def terrain_at(x, y):
-        g = np.array([-1], dtype=np.int32); dist = np.zeros(1); nrm = np.zeros(3)
-        hit = mujoco.mj_ray(m, d, [x, y, 8.0], [0, 0, -1],
-                            None, True, -1, g, nrm)
-        return (8.0 - hit) if hit > 0 else 0.0
+    # v219f: 地形感知来源。ray=上帝视角实时 raycast（调试，零噪声）；
+    # lidar=lidar_site 扇形射线局部栅格（传感器视角，10Hz 更新，部署同款）
+    if os.environ.get('S10_VMC_TERRAIN', 'ray') == 'lidar':
+        lterr = LidarTerrain(m, d)
+        _lupd = -1.0
+        def terrain_at(x, y):
+            nonlocal _lupd
+            if t - _lupd >= 0.1:
+                lterr.update()
+                _lupd = t
+            return lterr.height(x, y)
+    else:
+        def terrain_at(x, y):
+            g = np.array([-1], dtype=np.int32); dist = np.zeros(1); nrm = np.zeros(3)
+            hit = mujoco.mj_ray(m, d, [x, y, 8.0], [0, 0, -1],
+                                None, True, -1, g, nrm)
+            return (8.0 - hit) if hit > 0 else 0.0
 
     next_idx = 0
     wp_times = {}
@@ -184,11 +198,13 @@ def main():
                 f = float(np.clip((0.55 - ds) / 0.47, 0.0, 1.0))
                 terr[2:] = np.maximum(terr[2:], terr[2:] + _lift * f)
                 _lift_act = max(_lift_act, f)
-        # v218k: 后轮跟抬——前轮已上棱（前轮 z > 后轮 z+0.05）即抬后轮，
-        # 不依赖 s_cur 越过（body 卡在棱前时 s_cur 无法推进）
+        # v219i: 后轮跟抬——前轮已上棱即抬后轮。加 s_cur 接近横脊的条件：
+        # 弯道/上坡时前轮天然高于后轮（>0.05），无条件触发会误抬后轮
+        # 导致失去驱动力（v219a 实测 wp3→4 卡死根因）。
         _wz = np.asarray([d.xpos[WHEEL_BODY[i], 2] for i in range(4)])
         _lf = max(_wz[0], _wz[1]); _lr = min(_wz[2], _wz[3])
-        if _lf > _lr + 0.05:
+        _in_ridge = any(-0.8 <= s_cur - sr <= 1.2 for (sr, dhv) in ridge_arcs)
+        if _in_ridge and _lf > _lr + 0.05:
             terr[2:] = np.maximum(terr[2:], terr[2:] + _lift * 0.8)
 
         # 压弯 + 坡度
@@ -261,7 +277,8 @@ def main():
                   f'{body_pos[1]:.1f},{body_pos[2]:.2f}) yaw={yaw:.2f} vx_w={float(d.cvel[1][3]):.2f} '
                   f'roll={roll:.2f} cmd=({vx_c:.2f},{om_c:.2f}) '
                   f'vref={v_ref:.2f} tau_max={np.abs(tau).max():.1f} '
-                  f'wz={np.round([d.xpos[WHEEL_BODY[i],2] for i in range(4)],2)}', flush=True)
+                  f'wz={np.round([d.xpos[WHEEL_BODY[i],2] for i in range(4)],2)} '
+                  f'tauH={np.round(tau[[0,4,8,12]],0)} tauY={np.round(tau[[1,5,9,13]],0)} tauK={np.round(tau[[2,6,10,14]],0)}', flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[VMC-T] *** 侧翻/摔倒 ***', flush=True)
                 break

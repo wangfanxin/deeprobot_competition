@@ -108,8 +108,13 @@ class VMCController:
         self.fk = S10LegFK(L1, L2, r)
         self.tau_v = tau_v
         self.kp_h, self.kd_h = kp_h, kd_h
+        # v219k: 地形阻抗可覆盖（软腿防轮子被压死/打滑）
+        self.kp_h = float(os.environ.get("S10_VMC_KPH", str(self.kp_h)))
+        self.kd_h = float(os.environ.get("S10_VMC_KDH", str(self.kd_h)))
         self.kp_z, self.kd_z = kp_z, kd_z
         self.kp_roll, self.kd_roll = kp_roll, kd_roll
+        # v219l: roll/pitch 姿态增益可覆盖（硬增益压减载轮 → 轮推力崩）
+        self.kp_roll = float(os.environ.get("S10_VMC_KP_ROLL", str(self.kp_roll)))
         self.kp_pitch, self.kd_pitch, self.pitch_ff = kp_pitch, kd_pitch, pitch_ff
         self.kp_pose, self.kd_pose = kp_pose, kd_pose
         self.pose_target = np.array([-0.05, -1.16, 2.30,
@@ -117,8 +122,13 @@ class VMCController:
                                     -0.05,  1.16, -2.30,
                                      0.05,  1.16, -2.30], dtype=np.float64)
         self.wheel_k, self.wheel_d = wheel_k, wheel_d
+        # v219j: 轮参数可环境覆盖（单测调整）
+        self.wheel_k = float(os.environ.get("S10_VMC_WHEEL_K", str(self.wheel_k)))
+        self.wheel_d = float(os.environ.get("S10_VMC_WHEEL_D", str(self.wheel_d)))
         self.yaw_k = 30.0
-        self.yaw_k_wheel = 60.0
+        # v218z: 轮差速 yaw 增益可覆盖（轮侧向摩擦 0.8 后转弯能力大幅提升，
+        # 增益需降低避免过冲振荡）
+        self.yaw_k_wheel = float(os.environ.get("S10_VMC_YAW_K_WHEEL", "60.0"))
         self.track_half = track_half
         self.wheelbase = 0.455
         self._vx_f, self._om_f = 0.0, 0.0
@@ -271,7 +281,11 @@ class VMCController:
             # v218h: 驱动按校准取反，阻尼必须始终反向（否则负转速时放大）
             # v218j: 直接 yaw 差速力矩（轮全幅差速，参考 dial-MPC）
             # v218k: 左转(ω>0)左轮需向后力矩——符号与 wd_side 相反
-            t_yaw = (-self.yaw_k_wheel * (self._om_f - body["omega"])
+            # v219o: yaw 差速增益随 |omega 指令| 自适应——直行小增益防
+            # 差速振荡（v219m/n 实测 60→5/15），转弯大增益保证转向力。
+            _yk = self.yaw_k_wheel * (0.3 + 0.7 * min(
+                abs(self._om_f) / 0.4, 1.0))
+            t_yaw = (-_yk * (self._om_f - body["omega"])
                      * wd_side)
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
                        - self.wheel_d * wq + t_yaw)
@@ -279,8 +293,24 @@ class VMCController:
             tau[hipx_i] = float(np.clip(t_hipx, -20, 20))
             tau[hipy_i] = float(np.clip(t_hipy, -50, 50))
             tau[knee_i] = float(np.clip(t_knee, -50, 50))
-            # v218m: 轮力矩钳制到抓地极限内（μN·r≈3Nm），超限打滑
-            _wt = float(os.environ.get("S10_VMC_WHEEL_TMAX", "3.5"))
+            # v218x: 动态抓地钳制－－轮侧向摩擦受限，载荷转移时外侧轮
+            # 获得更大 yaw 权限（4SWLR/轮腿转向文献）；S10_VMC_WHEEL_TMAX
+            # 仍可显式覆盖为静态钳制（A/B 用）
+            _wt_env = os.environ.get("S10_VMC_WHEEL_TMAX")
+            if _wt_env is not None:
+                _wt = float(_wt_env)
+            else:
+                # v218y: 载荷用“静载+地形阻抗力”而非 WBC pinv
+                # 解出的 fw[2]（最小范数解会把垂直分量分散）
+                _mu_w = float(os.environ.get("S10_VMC_WHEEL_MU", "0.9"))
+                _fz_load = (self.m * self.g / 4.0
+                            + self.kp_h * (pz_des - p[2])
+                            - self.kd_h * float(wheel_vel[leg, 2]))
+                # v219l: 钳制下限用 0.5×静载（防减载轮
+                # 推力崩溃到 0.36Nm 引发正反馈振荡）
+                _wt = float(np.clip(
+                    _mu_w * max(_fz_load, 0.5 * self.m * self.g / 4.0)
+                    * self.fk.r, -14.0, 14.0))
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -_wt, _wt))
         tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -50, 50)
         return tau
@@ -414,6 +444,103 @@ class TerrainMap:
 
 
 # ==================== PD 站姿 + 轮驱动模式（v218k，稳定基线） ====================
+
+class LidarTerrain:
+    """v219g: lidar 传感器视角高程（替代上帝视角 raycast/TerrainMap）。
+
+    从 lidar_site 按机器人航向发射扇形射线（mj_multiRay 批量），命中点
+    写入以 lidar 为原点的局部栅格；height(x,y) 与 TerrainMap 接口一致
+    （O(1) 查表），未覆盖区域返回 0。
+
+    与 ROS2 mujoco-lidar 一致的传感器建模：
+      - geomgroup 只留 group 0（地形），排除机器人(group 1)/赛道标记(group 2)；
+      - 排除 base_link 自身；
+      - 前向扇形 ±fov_h × 俯仰 +10°~-55°（近场地面到远场高台）；
+      - 10Hz 更新，近处盲区/遮挡/延迟与真 lidar 一致。
+    """
+
+    def __init__(self, model, data, half=6.0, res=0.10,
+                 th_n=32, phi_n=12,
+                 fov_h=None, cutoff=20.0):
+        import mujoco
+        self.m, self.d = model, data
+        self.res = float(res)
+        self.n = int(2.0 * half / res) + 1
+        self.h = np.zeros((self.n, self.n), dtype=np.float64)
+        self.valid = np.zeros((self.n, self.n), dtype=np.int32)
+        self.sid = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_SITE, "lidar_site")
+        if self.sid < 0:
+            raise ValueError("lidar_site not found in model")
+        self.cutoff = float(cutoff)
+        if fov_h is None:
+            fov_h = float(np.radians(55))
+        # 俯仰：+10°(远处高台) .. -55°(近场地面)
+        ths = np.linspace(-fov_h, fov_h, int(th_n))
+        phs = np.linspace(np.radians(10.0), np.radians(-55.0), int(phi_n))
+        dirs = []
+        for ph in phs:
+            for th in ths:
+                dirs.append([float(np.cos(ph) * np.cos(th)),
+                             float(np.cos(ph) * np.sin(th)),
+                             float(np.sin(ph))])
+        self.dirs_local = np.asarray(dirs, dtype=np.float64)
+        self.ox = 0.0
+        self.oy = 0.0
+        self.geomgroup = np.zeros((mujoco.mjNGROUP,), dtype=np.ubyte)
+        self.geomgroup[0] = 1
+
+    def _yaw(self):
+        q = self.d.xquat[1]
+        return float(np.arctan2(
+            2.0 * (q[3] * q[0] + q[1] * q[2]),
+            1.0 - 2.0 * (q[2] ** 2 + q[3] ** 2)))
+
+    def update(self):
+        """发射一帧射线并刷新栅格（10Hz 调用）。"""
+        import mujoco
+        m, d = self.m, self.d
+        pos = np.asarray(d.site_xpos[self.sid], dtype=np.float64)
+        self.ox = pos[0]
+        self.oy = pos[1]
+        self.h.fill(0.0)
+        self.valid.fill(0)
+        yaw = self._yaw()
+        c, s = float(np.cos(yaw)), float(np.sin(yaw))
+        fwd = np.array([c, s, 0.0])
+        right = np.array([-s, c, 0.0])
+        up = np.array([0.0, 0.0, 1.0])
+        L = self.dirs_local
+        # 局部扇形 -> 世界：x*前向 + y*右向 + z*上
+        vec = (L[:, 0:1] * fwd[None, :] + L[:, 1:2] * right[None, :]
+               + L[:, 2:3] * up[None, :])
+        n = len(L)
+        pnt = pos.copy()          # mj_multiRay: 单起点 + (nray,3) 方向
+        geomid = np.full(n, -1, dtype=np.int32)
+        dist = np.full(n, -1.0, dtype=np.float64)
+        # vec 需展平 (nray*3,)（mujoco bindings_test 示例）
+        mujoco.mj_multiRay(m, d, pnt, vec.reshape(-1), self.geomgroup,
+                           True, 1, geomid, dist, None, n, self.cutoff)
+        hit = dist > 0.0
+        if hit.any():
+            pts = pnt + dist[:, None] * vec
+            for i in np.where(hit)[0]:
+                p = pts[i]
+                ix = int(np.floor((p[0] - self.ox) / self.res + 0.5 * self.n))
+                iy = int(np.floor((p[1] - self.oy) / self.res + 0.5 * self.n))
+                if 0 <= ix < self.n and 0 <= iy < self.n:
+                    # min-z：同格多条射线取最低（地面优先于障碍顶）
+                    if not self.valid[iy, ix] or p[2] < self.h[iy, ix]:
+                        self.h[iy, ix] = p[2]
+                    self.valid[iy, ix] = 1
+
+    def height(self, x, y):
+        ix = int(np.floor((x - self.ox) / self.res + 0.5 * self.n))
+        iy = int(np.floor((y - self.oy) / self.res + 0.5 * self.n))
+        if 0 <= ix < self.n and 0 <= iy < self.n and self.valid[iy, ix]:
+            return float(self.h[iy, ix])
+        return 0.0
+
 
 class LegPDDrive:
     """最简可靠执行层：腿 PD 锁站姿（固定悬挂），轮差速驱动。
