@@ -237,9 +237,10 @@ def main():
             for _wi in (0, 1):
                 _w0 = wheel_xyz[_wi]
                 _h0 = terr[_wi]
-                _ha = terrain_at(_w0[0] + _fx * 0.30, _w0[1] + _fy * 0.30)
+                # v219z: 前瞻 0.3->0.8m（0.3m 检测太晚，轮到脊前已被顶住）
+                _ha = terrain_at(_w0[0] + _fx * 0.80, _w0[1] + _fy * 0.80)
                 if _ha - _h0 > 0.08:
-                    hop[_wi] = float(os.environ.get('S10_VMC_HOP_F', '90.0'))
+                    hop[_wi] = float(os.environ.get('S10_VMC_HOP_F', '180.0'))
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
                       yaw_scale=1.0 - _lift_act, hop=hop)
