@@ -189,9 +189,12 @@ def main():
         _lift_act = 0.0
         for (sr, dhv) in ridge_arcs:
             ds = s_cur - sr
-            # v218o: 短促 bump——前轮棱前 0.35m 抬、过棱即放（防腿保持伸直）
-            if -0.35 <= ds < 0.08:
-                f = float(np.clip((0.35 - abs(ds + 0.13)) / 0.35, 0.0, 1.0))
+            # v219u: 短促 bump——前轮棱前 0.8m 抬、过棱即放。
+            # 原 0.35m 窗口死锁：狗卡在 s_cur=脊-0.37（差 0.02m 进不了窗口）
+            # 且 s_cur 需狗前进才推进 → 永不抬轮（0.125m 脊 > 轮半径 0.081，
+            # 轮子几何上滚不上去，必须抬轮跨）
+            if -0.8 <= ds < 0.08:
+                f = float(np.clip((0.8 - abs(ds + 0.30)) / 0.8, 0.0, 1.0))
                 terr[:] = np.maximum(terr, terr + _lift * f)
                 _lift_act = max(_lift_act, f)
             elif 0.08 <= ds < 0.55:
@@ -238,7 +241,8 @@ def main():
                 if _ha - _h0 > 0.08:
                     hop[_wi] = float(os.environ.get('S10_VMC_HOP_F', '90.0'))
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
-                       pitch_tar=pitch_tar, hop=hop)
+                      pitch_tar=pitch_tar,
+                      yaw_scale=1.0 - _lift_act, hop=hop)
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)

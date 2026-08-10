@@ -161,6 +161,15 @@ class VMCController:
         if os.environ.get("S10_VMC_MODE", "wbc") == "static":
             return self._static_pose_tau(qpos, qvel, cmd, dt)
         body = self._body_state(qpos, qvel)
+        # v219w: 轮子腾空检测——过脊/跳跃时轮差速与腿 yaw 反馈会爆炸
+        # （om 6.8rad/s 侧翻实测），离地>0.05m 衰减 yaw 反馈至 0
+        if wheel_xyz is not None and terrain_h is not None:
+            _lift_amt = float(np.mean(
+                wheel_xyz[:, 2] - (np.asarray(terrain_h) + self.fk.r)))
+            self._ground_f = float(np.clip(
+                1.0 - max(0.0, _lift_amt - 0.02) / 0.05, 0.0, 1.0))
+        else:
+            self._ground_f = 1.0
         k = min(1.0, dt / 0.04)
         # v218c: 身体加速度温和化（轮腿猛推会抬头炸）——0.25s 斜坡
         k = min(1.0, dt / 0.25)
@@ -205,7 +214,10 @@ class VMCController:
         # v218j: yaw 力矩入 wrench（经腿侧向力执行，轮差速辅助）
         T_yaw_b = (self.yaw_k * (self._om_f - body["omega"])
                    - 0.5 * body["omega"])
-        T_yaw_b = float(os.environ.get("S10_VMC_YAW_W", "0.0")) * T_yaw_b
+        # v219x: cmd.yaw_scale（巡航层 RIDGE_LIFT 抬轮时置 0）+ 腾空衰减
+        _ysc = float(cmd.get("yaw_scale", 1.0))
+        T_yaw_b = (float(os.environ.get("S10_VMC_YAW_W", "0.0"))
+                   * T_yaw_b * _ysc * getattr(self, "_ground_f", 1.0))
         T_des_w = body["R"] @ np.array([T_roll_b, T_pitch_b, T_yaw_b])
         W = np.concatenate([F_des_w, T_des_w])
         A6 = np.zeros((6, 12))
@@ -285,8 +297,8 @@ class VMCController:
             # 差速振荡（v219m/n 实测 60→5/15），转弯大增益保证转向力。
             _yk = self.yaw_k_wheel * (0.3 + 0.7 * min(
                 abs(self._om_f) / 0.4, 1.0))
-            t_yaw = (-_yk * (self._om_f - body["omega"])
-                     * wd_side)
+            t_yaw = (-_yk * (self._om_f - body["omega"]) * wd_side
+                     * _ysc * getattr(self, "_ground_f", 1.0))
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
                        - self.wheel_d * wq + t_yaw)
 
