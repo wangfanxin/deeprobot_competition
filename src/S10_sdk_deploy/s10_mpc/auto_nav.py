@@ -669,9 +669,16 @@ class AutoNavFollower:
             "S10_AUTO_VLIM_LOOKAHEAD", "5.0")) / self.path_res),
                      len(self.path_vlim) - 1)
         v_lim = float(np.min(self.path_vlim[self._k_near:_k_far + 1]))
-        # v340: 导航不做 err 分级限速/近点减速/到达制动——速度只由几何任务
-        # 剖面（vlim 窗口）与高程系数决定；转弯/过点速度交给 MPPI 摩擦锥。
+        # v340: 导航不做 err 分级限速——速度只由几何任务剖面决定。
+        # v387（用户：先防错过航点打转，速度>1m/s 即可）：到达制动——
+        # 接近航点且偏航大时速度压到 1.2（差速转向轨道半径 r=v/om 缩小，
+        # 防过冲后绕航点打转）。连续量，温和版不拖慢正常航段。
         v_lim = min(v_lim, self.max_speed * elev_factor)
+        if (d_wp < float(os.environ.get("S10_AUTO_ARRIVE_DIST", "1.2"))
+                and abs(err) > float(os.environ.get(
+                    "S10_AUTO_ARRIVE_ERR", "0.8"))):
+            v_lim = min(v_lim, float(os.environ.get(
+                "S10_AUTO_ARRIVE_VX", "1.2")))
         # 台阶区限速（航点 z 兜底，已知地图，无感知滞后）：目标航段是陡升
         # 且机器人已越过前一航点（或接近该航点）→ 限速 step_vx。
         # 解决 §3.7 翻车机制：3.1 m/s 撞 0.125m riser → 前轮爬升翘头后仰翻。

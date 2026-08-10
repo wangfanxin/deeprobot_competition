@@ -105,8 +105,6 @@ class BodyMPPI:
             np.broadcast_to(ref[None, None, :, 2], (self.N, self.H + 1, R)),
             i_min[..., None], axis=-1)[..., 0]
         h_err = _wrap(s[:, :, 2] - h_ref)
-        # v346: 恢复双向速度跟踪（v_ref 为目标），弯道减速交给摩擦锥
-        # 硬上限（om<=VMC 能力）与距离成本；v345 已把控制量钳到 VMC 包线。
         v_err = s[:, :, 3] - v_ref
         cost = (self.w_dist * d_min
                 + self.w_h * h_err ** 2
