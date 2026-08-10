@@ -778,9 +778,21 @@ class CarVMC:
             # （S10_AUTO_LAT_MAX/v）时：差速参考**反向**（按安全转速反向给
             # 速度指令，硬刹）+ 阻尼+8。
             _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
-            _om_safe = _latmax / max(abs(self._vx_f), 0.5)
+            # v283: 保护上限 = min(a_lat/v, 绝对 ω 上限 2.0)——低速自旋
+            # （ω 2.2, v 0.4）时 a_lat 很小但自旋本身失稳，需绝对上限
+            _om_safe = min(
+                _latmax / max(abs(self._vx_f), 0.5),
+                float(os.environ.get("S10_VMC_OM_ABS_MAX", "2.0")))
             _kd_eff = _kd_yaw
+            # v284: v_ref 差速参考用快速低通（τ=0.02）——即时指令在导航
+            # 方向翻转时太暴力（轮差速瞬翻致 S 弯自旋）；0.1s 慢低通又滞后
+            # 推旧方向。0.02s 兼顾方向响应与平滑。
             _om_ref = float(cmd.get("omega", 0.0))
+            _om_ref_tau = float(os.environ.get("S10_CAR_OM_REF_TAU", "0.02"))
+            if not hasattr(self, "_om_ref_f"):
+                self._om_ref_f = _om_ref
+            self._om_ref_f += (_om_ref - self._om_ref_f) * min(1.0, dt / _om_ref_tau)
+            _om_ref = self._om_ref_f
             if abs(_om_b) > _om_safe:
                 _om_ref = -float(np.clip(_om_b, -_om_safe, _om_safe))
                 _kd_eff = _kd_yaw + 8.0
