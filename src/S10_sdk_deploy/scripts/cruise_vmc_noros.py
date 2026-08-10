@@ -740,15 +740,21 @@ def main():
                     np.array([body_pos[0] + d.xmat[1][0] * 0.228,
                               body_pos[1] + d.xmat[1][3] * 0.228])
                     - _rp, _tng))) < 1.5 for (_rp, _tng, _sr, _dh) in ridge_world)
-            # v487: WBC 楼梯后轮力辅助——后轮抬升量 0.07m 不足 0.13m 台阶面
-            # （力控限幅下姿态 PD 到不了位）。hop 冲量在 WBC 里是 (1-sl)
-            # 之后加的（fw[2] += hop），正好在抬轮时给后轮垂直冲量。
-            # 仅 stair_zone 生效，S10_VMC_STAIR_HOP_F>0 启用。
+            # v495: riser 精确跳步（替代 v487 sl 触发）——前/后轴到 riser
+            # 前 0.12m 时给垂直冲量，轮子快速越过 0.13m 台阶面并落在台面
+            # （悬空时间最短，避免 hoist 悬空死锁）。hop 在 CarVMC 加进
+            # 腿垂直力、WBC 在 (1-sl) 后加 fw[2]，两者通用。
             if (next_idx - 1 < len(fol.stair_zone)
                     and fol.stair_zone[next_idx - 1]):
                 _shf = float(os.environ.get('S10_VMC_STAIR_HOP_F', '0'))
-                if _shf > 0.0 and float(np.mean(step_lift[2:4])) > 0.4:
-                    hop[2:4] = _shf
+                if _shf > 0.0 and stair_risers:
+                    for (sr, dhv) in stair_risers:
+                        _dfh = s_cur - (sr - 0.228)   # 前轴到棱边
+                        _drh = s_cur - (sr + 0.228)   # 后轴到棱边
+                        if -0.12 <= _dfh <= 0.02:
+                            hop[0:2] = _shf
+                        if -0.12 <= _drh <= 0.02:
+                            hop[2:4] = _shf
             if _in_hop_zone and stair_lift_flag <= 0.0:
                 _fwd2 = np.array([d.xmat[1][0], d.xmat[1][3]])
                 _fx, _fy = _fwd2[0], _fwd2[1]
