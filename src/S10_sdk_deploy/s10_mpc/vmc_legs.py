@@ -818,7 +818,15 @@ class CarVMC:
         P = _asc * (self.kp_pitch * (self._pitch_f - body["pitch"])
                     - self.kd_pitch * pitch_rate)
         _tmax = float(os.environ.get("S10_CAR_ATT_TMAX", "40.0"))
-        R = float(np.clip(R, -_tmax, _tmax))
+        # v748: 大 lean-in 压弯时 roll 分配在减载方向钳到
+        # S10_CAR_ROLL_MAX_DL×mg/4（默认 0 = 跳过 = v746 恒等 ±_tmax；
+        # 开大压弯时设 0.5 防 μN 钳制崩推力；加载方向不限，弯内轮可多承）。
+        _base_leg = self.m * self.g / 4.0
+        _roll_dl = float(os.environ.get("S10_CAR_ROLL_MAX_DL", "0.0"))
+        if _roll_dl > 0.0:
+            R = float(np.clip(R, -_base_leg * _roll_dl, _tmax))
+        else:
+            R = float(np.clip(R, -_tmax, _tmax))
         P = float(np.clip(P, -_tmax, _tmax))
 
         # 轮差速 yaw 反馈（自适应：转弯大、直行小）
@@ -880,6 +888,13 @@ class CarVMC:
                         - self.kd_h * float(cmd.get("kd_scale", 1.0))
                         * float(wheel_vel[leg, 2]))
                 F = max(F, 2.0) * (1.0 - sl)
+            # v748: 弯外轮保载——非抬轮腿至少保留
+            # S10_CAR_ROLL_MIN_FRAC×mg/4 支撑力（默认 0 完全跳过=v746 恒等；
+            # 开大压弯时设 0.25 防弯外轮减载崩推力）。
+            _fmin = (_base_leg * float(os.environ.get(
+                "S10_CAR_ROLL_MIN_FRAC", "0.0")))
+            if _fmin > 0.0 and sl < 0.3:
+                F = max(F, _fmin * (1.0 - sl))
             if hop is not None:
                 F += float(hop[leg])
 

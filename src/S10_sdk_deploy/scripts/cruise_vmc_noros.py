@@ -747,8 +747,35 @@ def main():
         # 不采用腿足式压弯（轮足深压弯→后轮打滑/无悬架抖动，用户总结）
         # v290: 压弯幅度可调（S10_CAR_ROLL_AMP，默认 0.06；测试 0.12 强化
         # 高速转弯向心/减侧翻）
+        # v748: 真正的 lean-in 压弯——θ ≈ a_lat/g = ω·|vx|/g（重力横向
+        # 分量辅助向心 + 重心内移降 LTR）。S10_CAR_ROLL_K 默认 0.10≈1/g；
+        # 开大压弯须配 vmc_legs 弯外轮保载（S10_CAR_ROLL_MAX_DL/MIN_FRAC）。
+        # 默认 = v746 精确行为：-0.06·ω·|vx_cmd|，clip ±0.06。大压弯
+        # (S10_CAR_ROLL_AMP>0.06) 时建议同时设 S10_CAR_ROLL_K=0.10、
+        # S10_CAR_ROLL_ERR_GATE=0.5、S10_CAR_ROLL_VGATE=1.5（配 vmc_legs
+        # 弯外轮保载 ROLL_MAX_DL/MIN_FRAC）。
         _ramp = float(os.environ.get("S10_CAR_ROLL_AMP", "0.06"))
-        roll_tar = float(np.clip(-0.06 * om_c * abs(vx_c), -_ramp, _ramp))
+        _lean_k = float(os.environ.get("S10_CAR_ROLL_K", "0.06"))
+        roll_tar = float(np.clip(-_lean_k * om_c * abs(vx_c), -_ramp, _ramp))
+        # v750: 实际速度门槛（连续量）——起步/坡上 cmd vx 未达时防误压弯；
+        # 默认 0 不干预（v746 行为），开大压弯时设 1.5（vx_act<0.9 无压弯，
+        # 0.9~1.9 线性升）。
+        _roll_vg = float(os.environ.get("S10_CAR_ROLL_VGATE", "0.0"))
+        if _roll_vg > 0.0:
+            _fwdv = np.array([d.xmat[1][0], d.xmat[1][3]])
+            _fwdvn = float(np.hypot(_fwdv[0], _fwdv[1])) + 1e-9
+            _vx_act = float(d.cvel[1][0] * _fwdv[0] / _fwdvn
+                            + d.cvel[1][1] * _fwdv[1] / _fwdvn)
+            roll_tar *= float(np.clip(
+                (_vx_act - 0.6 * _roll_vg) / (0.4 * _roll_vg), 0.0, 1.0))
+        # v749: 压弯随 yaw 误差连续衰减（非门控）——yaw 过冲/掉头时实际
+        # 运动方向与 cmd 不一致，错误方向倾斜会加速侧翻。默认 0 完全跳过
+        # (v746 恒等行为)；开大压弯时设 0.5。
+        _roll_eg = float(os.environ.get("S10_CAR_ROLL_ERR_GATE", "0.0"))
+        if _roll_eg > 0.0:
+            _err_n = float(getattr(fol, '_last_err', 0.0))
+            roll_tar *= float(np.clip(
+                1.0 - abs(_err_n) / max(_roll_eg, 1e-3), 0.0, 1.0))
         pitch_tar = 0.0
         # v285: 脊前速度**微缩**（用户"横脊=连续扰动非障碍"）——±0.15m 内
         # 线性从 vlim 缩到 min(vlim,2.5)，脊后即恢复；严禁硬砍 1.0 制造
