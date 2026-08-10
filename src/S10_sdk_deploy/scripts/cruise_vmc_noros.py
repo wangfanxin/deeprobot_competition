@@ -288,6 +288,16 @@ def main():
                         _beam_on = True
                         _aim_wp = _pw
                         _aim_idx = next_idx - 1
+                # v528/v529: 光束策略——
+                #   S10_AUTO_BEAM_OFF=1: 全关（MPPI 看路径 ref）；
+                #   S10_AUTO_BEAM_AIM_OFF=1: 只关"瞄下一航点"光束（入弯给
+                #     路径圆角几何，wp1 超调 2.2->1.7m），保留"过点后出口
+                #     光束"（wp4->5/5->6 出弯稳定）。
+                if (float(os.environ.get('S10_AUTO_BEAM_OFF', '0')) > 0
+                        or (float(os.environ.get(
+                            'S10_AUTO_BEAM_AIM_OFF', '0')) > 0
+                            and _aim_idx == next_idx)):
+                    _beam_on = False
                 if _beam_on:
                     _dvec = _aim_wp - pos2
                     _L = float(np.hypot(_dvec[0], _dvec[1]))
