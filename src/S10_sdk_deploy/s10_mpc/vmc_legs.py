@@ -886,7 +886,7 @@ class CarVMC:
                 _rbf = _Rb.T @ _dwh
                 _relf4 = float(_rbf[0])
                 _relz4 = float(np.clip(_dwh[2], -0.34, 0.0))
-                _q1_tgt, _q2_tgt = self._ik(_relf4, _relz4, q1, q2)
+                _q1_tgt, _q2_tgt = self._ik(_relf4, _relz4, q1, q2, lift=True)
             # v221i: 车身抬升（过脊用）——0.05 只到 0.68(差 5mm)，改 0.08
             _bl = float(cmd.get("body_lift", 0.0))
             _q2_tgt += _bl * 0.08
@@ -1120,10 +1120,13 @@ class FootPlaceVMC:
         return dict(pos=qpos[0:3], yaw=yaw, roll=roll, pitch=pitch,
                     vx=float(vw[0]), R=R)
 
-    def _ik(self, xd, zd, q1, q2):
+    def _ik(self, xd, zd, q1, q2, lift=False):
         """2D IK：轮目标 (xd, zd)（相对髋，sagittal，zd 向上）→ q1/q2。
         v733: 加关节范围钳制——楼梯抬升目标接近工作空间边界时裸迭代会
-        翻到镜像解（q1=2.7 实测），钳制后只收敛到正常半蹲/迈步构型。"""
+        翻到镜像解（q1=2.7 实测）。lift=True（抬升腿）用迈步举轮姿态
+        （v236 FK 验证 q1≈0.4/q2≈2.7 轮高+1.4cm）；支撑腿保持正常半蹲。"""
+        _q1_lo, _q1_hi = (-0.35, 0.9) if lift else (-1.7, -0.35)
+        _q2_lo = 1.8 if lift else -0.2
         for _ in range(10):
             p = self.fk.wheel_pos(q1, q2)
             err = np.array([xd - p[0], zd + p[1]])
@@ -1131,10 +1134,8 @@ class FootPlaceVMC:
             dq = np.linalg.lstsq(J, err, rcond=None)[0]
             dq = np.clip(dq, -0.25, 0.25)
             q1 += float(dq[0]); q2 += float(dq[1])
-            # v733: 站姿 hipy≈-1.16（腿在髋下/后）；钳制到负区间防
-            # IK 收敛到前摆镜像解（q1=+0.66 时轮前移 0.21m 实测乱转）
-            q1 = float(np.clip(q1, -1.7, -0.35))
-            q2 = float(np.clip(q2, -0.2, 3.0))
+            q1 = float(np.clip(q1, _q1_lo, _q1_hi))
+            q2 = float(np.clip(q2, _q2_lo, 3.0))
         return q1, q2
 
     def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel,
@@ -1170,33 +1171,26 @@ class FootPlaceVMC:
             qhx = float(qpos[LEG_Q_IDX[b]])
             q1 = float(qpos[LEG_Q_IDX[b + 1]])
             q2 = float(qpos[LEG_Q_IDX[b + 2]])
-            # v732: 髋世界位置用完整 body 旋转（含 pitch）——腿部 sagittal
-            # 平面 = body x-z 平面，pitch 下 hip 前移量会倾斜，yaw-only 会让
-            # rel[0] 偏大 0.23 导致 IK 翻转（q1=2.4 实测）。完整 R 后
-            # R.T@(target-hip) 自动落在正确 sagittal 平面。
+            # v736: 支撑腿髋位置用 yaw-only（髋在 body z 高度）——完整 R
+            # 在 pitch 下 hip z 偏移会让 IK 的 rel_z 错位（v768 平地侧翻）。
+            # 抬升腿走关节空间目标（不走 IK），不受此影响。
             _cy = float(np.cos(body["yaw"])); _sy = float(np.sin(body["yaw"]))
-            hip_w = body["pos"] + body["R"] @ np.array(
-                [LEG_ATTACH[leg, 0], LEG_ATTACH[leg, 1], 0.0])
+            hip_w = np.array([body["pos"][0] + _cy * LEG_ATTACH[leg, 0]
+                              - _sy * LEG_ATTACH[leg, 1],
+                              body["pos"][1] + _sy * LEG_ATTACH[leg, 0]
+                              + _cy * LEG_ATTACH[leg, 1],
+                              body["pos"][2]])
             sl = float(_sl_all[leg])
             pz = float(_pz_all[leg])
             # 落脚目标：支撑腿 = 轮下地形+半径；抬升腿按 CPG 波形插值到
             # 台面高+半径+margin（v732 连续抬升轨迹，非二值跳变）
             wz_ground = float(terrain_h[leg]) + self.fk.r
-            # v732: 整体抬身——楼梯区四腿统一加 (z_des - body_z) 抬升量，
-            # body 随台阶逐级升（z_des=台面+站高），轮目标才落在髋下可达区。
-            _zd = float(cmd.get("z_des", 0.0))
-            _zd_lift = 0.0
-            if _zd > 0.01:
-                _zd_lift = float(np.clip(_zd - float(body["pos"][2]),
-                                         -0.08, 0.08))
+            # v736: 楼梯区不整体抬身——关节空间举轮（q1+1.55）已把轮抬到
+            # 髋附近，z_des 抬身会让 body 顶高 roll 失稳（v769 实测）。
+            # 支撑腿 wz 用轮下地形+半径（贴地），抬升腿走关节目标不走 wz。
+            wz = wz_ground
             if pz > 0.01 and sl > 0.02:
-                # 抬升腿 = 台面+半径+margin + 抬身量（跨步上下一级）
-                wz = pz + self.fk.r + _margin + _zd_lift
-            else:
-                wz = wz_ground + _zd_lift
-            # v733: 轮目标严格不高于髋——IK 期望轮在髋下方（pz_down 正），
-            # rel_z>0 会让腿反向弯折侧翻（v752 实测）。抬身全靠 zd_lift。
-            wz = min(wz, float(hip_w[2]))
+                wz = min(pz + self.fk.r + _margin, float(hip_w[2]) + 0.15)
             # 目标低通（τ=0.08s）——CPG 波形已连续，低通只滤地形跳变
             self._wz_f[leg] += (wz - self._wz_f[leg]) * min(1.0, dt / 0.08)
             wz = float(self._wz_f[leg])
@@ -1219,31 +1213,33 @@ class FootPlaceVMC:
             _dw = np.array([wheel_xyz[leg, 0] - hip_w[0],
                            wheel_xyz[leg, 1] - hip_w[1],
                            wz - hip_w[2]])
-            # v732: IK 坐标 = body 前向（R.T x 分量）+ 世界 z 差。
-            # R.T 完整 z 分量在 pitch 下把水平前移混入 rel_z（轮目标即使
-            # 等于髋 z 也会 rel_z>0）→ IK 翻转（q1=2.6 实测）。世界 z 差
-            # 永远稳定可达，前向用 body x 保证腿部 sagittal 平面一致。
-            _rb = body["R"].T @ _dw
-            rel = np.array([float(_rb[0]), float(_rb[1]), float(_dw[2])])
+            # v736: IK 坐标 = yaw 前向投影 + 世界 z 差（稳定可达）
+            rel = np.array([_cy * _dw[0] + _sy * _dw[1],
+                            -_sy * _dw[0] + _cy * _dw[1],
+                            _dw[2]])
             # v732: 抬升腿放宽 IK 伸展钳制（上 0.125m 台面需轮相对髋
             # z≈-0.25~-0.31，原 -0.16 锁死抬升）；支撑腿保持 -0.16 防猛伸
             _lo = -0.34 if sl > 0.1 else -0.16
-            _hi = 0.0
+            _hi = 0.15 if sl > 0.1 else 0.02
+            _rz = float(np.clip(rel[2], _lo, _hi))
+            q1t, q2t = self._ik(float(rel[0]), _rz, q1, q2, lift=(sl > 0.1))
+            # v736: 抬升腿真正卸载——PD 增益降到 1/10（kp 220→22），
+            # 轮近乎自由摆动（避免硬顶地面→反力顶起全身→四轮离地，
+            # v725-728 耦合结论）。支撑腿承担全部载荷。
+            _kp_leg = self.kp * (0.10 if sl > 0.1 else 1.0)
+            _kd_leg = self.kd * (0.3 if sl > 0.1 else 1.0)
             if os.environ.get('S10_FP_DEBUG', '0') == '1' and leg == 0:
                 print('[FP] t=%.2f sl=%.2f pz=%.3f wz_tgt=%.3f wz_act=%.3f '
-                      'body_z=%.3f zd=%.3f rel_z=%.3f q1=%.2f q2=%.2f'
+                      'body_z=%.3f q1t=%.2f q2t=%.2f q1=%.2f q2=%.2f'
                       % (getattr(self, '_t', 0.0), sl, pz, wz,
                          float(wheel_xyz[leg, 2]), float(body["pos"][2]),
-                         float(cmd.get("z_des", 0.0)), float(rel[2]),
-                         q1, q2), flush=True)
-            _rz = float(np.clip(rel[2], _lo, _hi))
-            q1t, q2t = self._ik(float(rel[0]), _rz, q1, q2)
+                         q1t, q2t, q1, q2), flush=True)
             tau[hipx_i] = (self.kp * (self.pose_target[b] - qhx)
                            - self.kd * float(qvel[6 + LEG_QV_LEG[b]]))
-            tau[hipy_i] = (self.kp * (q1t - q1)
-                           - self.kd * float(qvel[6 + LEG_QV_LEG[b + 1]]))
-            tau[knee_i] = (self.kp * (q2t - q2)
-                           - self.kd * float(qvel[6 + LEG_QV_LEG[b + 2]]))
+            tau[hipy_i] = (_kp_leg * (q1t - q1)
+                           - _kd_leg * float(qvel[6 + LEG_QV_LEG[b + 1]]))
+            tau[knee_i] = (_kp_leg * (q2t - q2)
+                           - _kd_leg * float(qvel[6 + LEG_QV_LEG[b + 2]]))
             wq = float(qvel[WHEEL_QV_IDX[leg]])
             v_wheel = -wq * self.fk.r
             # 差速保持航向 + yaw 率阻尼

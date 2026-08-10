@@ -444,10 +444,10 @@ def main():
         _iszn9 = (next_idx >= 2 and next_idx - 1 < len(fol.stair_zone)
                   and bool(fol.stair_zone[next_idx - 1]))
         _fp_active = os.environ.get('S10_VMC_MODE', 'wbc') in ('place', 'dual2')
-        # v732: lidar 高程图在楼梯区失真（读出 1.16，实际台面 0.54）。
-        # 用已知地图台面表覆盖轮下地形（支撑腿参考），抬升腿目标由
-        # place_z 单独给（见 CPG 分支）。
-        if _iszn9 and _fp_active:
+        # v732/v736: lidar 高程图在楼梯区失真（读出 1.16，实际台面 0.54）。
+        # 用已知地图台面表覆盖轮下地形——所有 stair 模式（FootPlace/WBC）
+        # 都需要正确地形，否则 z_des 过高轮子离地（fn=0 卡死实测）。
+        if _iszn9:
             try:
                 terr = np.asarray(fol.stair_terrain(wheel_xyz[:, 1]),
                                   dtype=np.float64)
