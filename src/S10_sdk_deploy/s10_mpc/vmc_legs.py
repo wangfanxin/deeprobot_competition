@@ -117,6 +117,10 @@ class VMCController:
         self.kp_roll = float(os.environ.get("S10_VMC_KP_ROLL", str(self.kp_roll)))
         self.kp_pitch, self.kd_pitch, self.pitch_ff = kp_pitch, kd_pitch, pitch_ff
         self.kp_pose, self.kd_pose = kp_pose, kd_pose
+        # v486: WBC 腿姿态 PD 可覆盖——后轮抬升量 0.07m 不足 0.13m 台阶
+        # （kp=80 + 48Nm 限幅到达不了目标），提高 kp 让抬放姿态到位。
+        self.kp_pose = float(os.environ.get("S10_VMC_KP_POSE", str(self.kp_pose)))
+        self.kd_pose = float(os.environ.get("S10_VMC_KD_POSE", str(self.kd_pose)))
         self.pose_target = np.array([-0.05, -1.16, 2.30,
                                      0.05, -1.16, 2.30,
                                     -0.05,  1.16, -2.30,
