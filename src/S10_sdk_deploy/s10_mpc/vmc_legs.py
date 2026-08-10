@@ -330,8 +330,8 @@ class VMCController:
                        - self.wheel_d * wq + t_yaw)
 
             tau[hipx_i] = float(np.clip(t_hipx, -20, 20))
-            tau[hipy_i] = float(np.clip(t_hipy, -50, 50))
-            tau[knee_i] = float(np.clip(t_knee, -50, 50))
+            tau[hipy_i] = float(np.clip(t_hipy, -48, 48))
+            tau[knee_i] = float(np.clip(t_knee, -48, 48))
             # v218x: 动态抓地钳制－－轮侧向摩擦受限，载荷转移时外侧轮
             # 获得更大 yaw 权限（4SWLR/轮腿转向文献）；S10_VMC_WHEEL_TMAX
             # 仍可显式覆盖为静态钳制（A/B 用）
@@ -349,9 +349,9 @@ class VMCController:
                 # 推力崩溃到 0.36Nm 引发正反馈振荡）
                 _wt = float(np.clip(
                     _mu_w * max(_fz_load, 0.5 * self.m * self.g / 4.0)
-                    * self.fk.r, -14.0, 14.0))
+                    * self.fk.r, -13.5, 13.5))
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -_wt, _wt))
-        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -50, 50)
+        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
         return tau
 
 
@@ -384,7 +384,7 @@ class VMCController:
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(
                 -(self.wheel_k * (v_ref + wq * self.fk.r))
                 - self.wheel_d * wq, -14, 14))
-        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -50, 50)
+        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
         return tau
 
 # ==================== 已知地图地形栅格（预计算） ====================
@@ -759,8 +759,8 @@ class CarVMC:
                       - self.kd_leg * float(qvel[6 + LEG_QV_LEG[b]]))
 
             tau[hipx_i] = float(np.clip(t_hipx, -20, 20))
-            tau[hipy_i] = float(np.clip(t_hipy, -50, 50))
-            tau[knee_i] = float(np.clip(t_knee, -50, 50))
+            tau[hipy_i] = float(np.clip(t_hipy, -48, 48))
+            tau[knee_i] = float(np.clip(t_knee, -48, 48))
 
             # 轮：差速 + yaw 反馈 + 动态抓地钳制
             wq = float(qvel[WHEEL_QV_IDX[leg]])
@@ -850,9 +850,9 @@ class CarVMC:
             _ytm = float(os.environ.get("S10_VMC_YAW_TMAX", "0.0"))
             _wt = float(np.clip(
                 _mu_w * _fz_load * self.fk.r
-                + _ytm * min(abs(self._om_f) / 0.5, 1.0), -14.0, 14.0))
+                + _ytm * min(abs(self._om_f) / 0.5, 1.0), -13.5, 13.5))
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -_wt, _wt))
-        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -50, 50)
+        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
         return tau
 
 
@@ -899,5 +899,5 @@ class LegPDDrive:
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(
                 -(self.wheel_k * (v_ref + wq * self.r)
                   - self.wheel_d * wq), -14, 14))
-        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -50, 50)
+        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
         return tau

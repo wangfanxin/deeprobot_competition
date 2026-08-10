@@ -680,8 +680,8 @@ def main():
         if next_idx < len(wp):
             rp = d.xpos[1][:2]
             dist = float(np.linalg.norm(rp - wp[next_idx][:2]))
-            # v292: 官方判据——base 进入航点 0.2m 水平半径即过（逐点推进）
-            _adv = float(os.environ.get('S10_WP_ADVANCE_DIST', '0.2'))
+            # v294: 判据=质心投影 xy 进入航点 0.3m（机器狗任意一点经过的等效简化）
+            _adv = float(os.environ.get('S10_WP_ADVANCE_DIST', '0.3'))
             reached = dist <= _adv
             if reached:
                 if next_idx == 0 and t_start is None:
