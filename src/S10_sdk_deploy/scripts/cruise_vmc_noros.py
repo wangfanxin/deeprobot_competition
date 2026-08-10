@@ -205,6 +205,12 @@ def main():
     _step_state = 0
     _step_t0 = 0.0
     _terr_f = None
+    # v568: CPG 步态相位（台阶技能）——按前进距离推进相位（每跨一个
+    # 梯面 2π），前轴在 [0,π) 抬放、后轴在 [π,2π)，sin² 波形平滑衔接。
+    _cpg_phase = 0.0
+    # v567: 卡死超时——15s 无航点推进即退出（用户：不需要等很久）
+    _last_adv_t = 0.0
+    _stuck_timeout = float(os.environ.get('S10_STUCK_TIMEOUT', '15.0'))
     # v292: 力矩合规统计（腿 ±50 Nm / 轮 ±14 Nm，连续超限>0.5s 不合格）
     _max_tau_leg = 0.0
     _max_tau_wh = 0.0
@@ -724,23 +730,31 @@ def main():
                 else:
                     _lsw = float(os.environ.get(
                         'S10_VMC_LIFT_SWING_STEP', '1.0'))
-                # v471/v493: 终局防同抬（放在 crest/相位/连续抬轮全部之后）——
-                # 前轴抬升时后轴按比例抑制，后轴同理；交替抬升保至少一轴
-                # 接地牵引（六级楼梯 sl=[0.8,1] 同抬卡死实测）。仅 stair_zone
-                # 生效（wp5→6 双级间距 2m 无窗重叠，防同抬会拖慢——60.55s
-                # 实测）；S10_STAIR_ANTI=1 开启。
+                # v568: CPG 步态（S10_STAIR_CPG=1）——台阶区用相位振荡器生成
+                # 前后轴交替抬放：每前进 S10_STAIR_TREAD(0.5m) 相位走 2π，
+                # 前轴 [0,π) 抬放、后轴 [π,2π)，sin² 波形（抬到顶自动落下
+                # 放置到台面，无悬空死锁）。完全替代航点窗口触发。
                 _in_stairzone = (next_idx - 1 < len(fol.stair_zone)
                                  and fol.stair_zone[next_idx - 1])
                 if (_in_stairzone
+                        and float(os.environ.get('S10_STAIR_CPG', '0')) > 0):
+                    _tread = float(os.environ.get('S10_STAIR_TREAD', '0.5'))
+                    _cpg_phase += (max(vx_c, 0.0) * DT) / _tread * 2.0 * np.pi
+                    _ph = _cpg_phase % (2.0 * np.pi)
+                    if _ph < np.pi:
+                        _fl_cpg = float(np.sin(_ph / 2.0) ** 2)
+                        _rl_cpg = 0.0
+                    else:
+                        _fl_cpg = 0.0
+                        _rl_cpg = float(np.sin((_ph - np.pi) / 2.0) ** 2)
+                    step_lift[:] = [_fl_cpg, _fl_cpg, _rl_cpg, _rl_cpg]
+                    stair_lift_flag = 1.0
+                elif (_in_stairzone
                         and float(os.environ.get('S10_STAIR_ANTI', '0')) > 0):
                     _fln = float(np.mean(step_lift[0:2]))
                     _rln = float(np.mean(step_lift[2:4]))
                     _fa = float(np.clip((_fln - 0.15) / 0.35, 0.0, 1.0))
                     _ra = float(np.clip((_rln - 0.15) / 0.35, 0.0, 1.0))
-                    # v492: 防同抬加下限（S10_STAIR_ANTI_FLOOR 默认 0.4）——
-                    # 前轮 sl 持续 1.0（连续 riser 窗重叠）时若后轮被完全清零，
-                    # 狗永远等不到前轮释放，死锁（v491 卡第一级实测）。后轮
-                    # 保留部分抬升让序列推进。
                     _afloor = float(os.environ.get(
                         'S10_STAIR_ANTI_FLOOR', '0.4'))
                     if _fa >= _ra:
@@ -790,6 +804,7 @@ def main():
                 if next_idx == 0 and t_start is None:
                     t_start = t
                 wp_times[next_idx] = t
+                _last_adv_t = t
                 print(f'[VMC-T] wp{next_idx} @ t={t:.2f}s', flush=True)
                 next_idx += 1
                 # v253: 过航点后强制弧长游标越过该航点——切弯时 s_cur 投影
@@ -823,6 +838,10 @@ def main():
                 print('[VMC-T] *** 侧翻/摔倒 ***', flush=True)
                 break
             traj.append([t, body_pos[0], body_pos[1], float(d.cvel[1][3])])
+            if _stuck_timeout > 0.0 and t - _last_adv_t > _stuck_timeout:
+                print('[VMC-T] *** 卡死 %.0fs 无航点推进 (wp=%d) ***'
+                      % (t - _last_adv_t, next_idx), flush=True)
+                break
     print('=== VMC 全航点结果 ===')
     print(f'完成: {next_idx >= MAX_WP}，最终 wp={next_idx}/{MAX_WP}')
     if t_start is not None:
