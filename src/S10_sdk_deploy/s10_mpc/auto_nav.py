@@ -642,7 +642,13 @@ class AutoNavFollower:
         if cte != 0.0 or _smooth_ok:
             # 修正方向：左偏→右转（vyaw 负）；与 pursuit 航向一致性检查
             # （err 符号），避免与航点航向打架形成极限环。cte 纠偏仅在 |err| 小时叠加。
-            cte_corr = -self.cte_gain * float(np.clip(cte / 2.0, -1.0, 1.0))
+            # v459: STAIR 模式独立 cte 增益——wp6→7 走廊东移段（x -15→-14.6）
+            # 狗滞后 0.3m 西侧，右轮先撞台阶斜向越阶卡死；台阶区加强纠偏。
+            _cte_g = float(os.environ.get(
+                "S10_AUTO_CTE_GAIN_STAIR"
+                if self.mode == "STAIR" else "S10_CTE_GAIN",
+                str(self.cte_gain)))
+            cte_corr = -_cte_g * float(np.clip(cte / 2.0, -1.0, 1.0))
             # v213: cte low-pass (S10_CTE_LP, 0=off/1=full, default 0.5) to
             # smooth lateral correction on straights (anti-snake); disabled on
             # curves where |err|>gate so turning is unaffected.
@@ -765,7 +771,11 @@ class AutoNavFollower:
         except Exception:
             risers = self.STAIR_RISERS
         if len(risers) == 0:
-            return False
+            # v461: 无感知表（无头/建图未跑）时退回已知地图 z 升分类——
+            # wp6→7(z+0.565) 等真楼梯仍切 STAIR；wp17→18 等缓坡段
+            # stair_zone 也为 True，但本函数只被楼梯段调用（update_mode
+            # 已用 stair_zone 门控），行为与感知确认等价。
+            return bool(self.stair_zone[i]) if i < len(self.stair_zone) else False
         y0 = float(risers.min()) - 1.0
         y1 = float(risers.max()) + 1.2
         bx0, bx1 = self.STAIR_ZONE_X
@@ -812,7 +822,13 @@ class AutoNavFollower:
             # Perception confirmation only triggers EARLIER (S10_STAIR_CONFIRM_DIST).
             _confirm_dist = float(os.environ.get(
                 "S10_STAIR_CONFIRM_DIST", "6.0"))
-            _use_global = (d_wp < self.stair_mode_dist
+            # v460: 全局触发改为按**楼梯段起点**距离（原 d_wp<stair_mode_dist
+            # 是到段末航点 3m 内——爬楼全程仍 CRUISE，wp6→7 卡 y=38）。
+            # 进入段前 S10_STAIR_ENTER_DIST（默认 1.5m）即切 STAIR，保持到
+            # 段末航点通过（update_mode 里 next_idx>7 回 CRUISE）。
+            _s_zone0 = float(self.path_wp_s[next_idx - 1])
+            _use_global = (self._s_cur >= _s_zone0 - float(os.environ.get(
+                "S10_STAIR_ENTER_DIST", "1.5"))
                            and self._seg_in_stair_band(next_idx - 1))
             _use_percept = (d_wp < _confirm_dist
                             and self._stair_confirmed(

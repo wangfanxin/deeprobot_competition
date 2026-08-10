@@ -222,6 +222,12 @@ def main():
         if int(t * 200) % _nav_period == 0 and (
                 dbg == 0 or t - last_log >= 0.05):
             pos2 = body_pos[:2]
+            # v462: 双模式判定（此前从未调用——STAIR 技能从不激活，wp6→7
+            # 楼梯全程用巡航参数）
+            try:
+                fol.update_mode(pos2, next_idx, yaw=yaw)
+            except Exception:
+                pass
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
                 robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]))
