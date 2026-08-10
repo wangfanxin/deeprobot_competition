@@ -390,6 +390,13 @@ def main():
                     _h_tar = float(fol.path_heading[_kh])
                     _g_om = _hh * float(np.arctan2(
                         np.sin(_h_tar - yaw), np.cos(_h_tar - yaw)))
+                    # v548: 横向位置 P（S10_STAIR_LAT_GAIN）——航向锁+温和
+                    # 走廊纠偏（cte 低增益，避免强 cte 振荡；无纠偏则狗漂到
+                    # x=-17.9 实测）。符号与 nav cte_corr 一致（-K*cte）。
+                    _kl = float(os.environ.get('S10_STAIR_LAT_GAIN', '0'))
+                    if _kl > 0.0:
+                        _g_om -= _kl * float(np.clip(
+                            getattr(fol, '_last_cte', 0.0), -1.0, 1.0))
                     _g_om = float(np.clip(_g_om, -2.0, 2.0))
                 vx_c, om_c = mppi.plan(
                     st, _ref, v_ref, prev_u, guide_om=_g_om)
