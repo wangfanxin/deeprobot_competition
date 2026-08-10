@@ -37,6 +37,17 @@ class BodyMPPI:
         mu = float(_os.environ.get('S10_MPPI_MU', mu))
         omega_max = float(_os.environ.get('S10_MPPI_OMAX', omega_max))
         vx_max = float(_os.environ.get('S10_MPPI_VMAX', vx_max))
+        # v347: 控制量上限由 VMC 执行能力决定——omega 取执行层指令钳制
+        # S10_VMC_OM_CAP（脚本里 MPPI 输出后就是这个 cap 再进 VMC），
+        # 回退 S10_VMC_OM_ABS_MAX（实际 ω 安全刹车阈值，偏保守）；
+        # vx 取 S10_AUTO_VMAX。用户：软硬上限均可试。
+        _vmc_om = _os.environ.get('S10_VMC_OM_CAP') or _os.environ.get(
+            'S10_VMC_OM_ABS_MAX')
+        if _vmc_om:
+            omega_max = min(omega_max, float(_vmc_om))
+        _vmc_vx = _os.environ.get('S10_AUTO_VMAX')
+        if _vmc_vx:
+            vx_max = min(vx_max, float(_vmc_vx))
         w_dist = float(_os.environ.get('S10_MPPI_W_DIST', w_dist))
         w_v = float(_os.environ.get('S10_MPPI_W_V', w_v))
         w_h = float(_os.environ.get('S10_MPPI_W_HEAD', w_h))
@@ -91,6 +102,8 @@ class BodyMPPI:
             np.broadcast_to(ref[None, None, :, 2], (self.N, self.H + 1, R)),
             i_min[..., None], axis=-1)[..., 0]
         h_err = _wrap(s[:, :, 2] - h_ref)
+        # v346: 恢复双向速度跟踪（v_ref 为目标），弯道减速交给摩擦锥
+        # 硬上限（om<=VMC 能力）与距离成本；v345 已把控制量钳到 VMC 包线。
         v_err = s[:, :, 3] - v_ref
         cost = (self.w_dist * d_min
                 + self.w_h * h_err ** 2
@@ -127,6 +140,9 @@ class BodyMPPI:
         u_seq = np.zeros((self.N, self.H, 2))
         u_seq[:, :, 0] = guide_vx + noise_vx
         u_seq[:, :, 1] = guide_om + noise_om
+        # v349: 采样不硬钳（钳制会改变采样分布触发直道混沌失稳 v346-348 实测）；
+        # 控制上限由 VMC 派生的 omega_max/vx_max 在输出钳制与 rollout 摩擦锥
+        # 中强制执行（软实现：超限样本经摩擦锥/输出钳制吸收）。
         u_seq[0] = prev_u
         s = self._rollout(s0, u_seq, prev_u)
         cost = self._cost(s, u_seq, prev_u, ref, v_ref)
