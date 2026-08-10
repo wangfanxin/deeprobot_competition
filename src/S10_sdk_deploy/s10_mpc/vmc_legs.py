@@ -809,10 +809,19 @@ class CarVMC:
             if not hasattr(self, "_om_ff_lp"):
                 self._om_ff_lp = 0.0
             self._om_ff_lp += (self._om_f - self._om_ff_lp) * min(1.0, dt / 0.15)
-            # v244: 恢复比例项 + 高频阻尼 + 可选摩擦前馈（v242 结构）；
-            # v249 超速时用 _kd_eff 加强阻尼
-            t_yaw = ((-_yk * (self._om_f - body["omega"])
-                      + _kd_eff * _om_hf - _kff * self._om_ff_lp) * side
+            # v289: 滑模式 yaw（RobuROC6）——饱和 tanh 误差项（小误差高增益
+            # 快收敛、大误差饱和不过冲，替代纯比例→消除低速极限环）+
+            # 库仑摩擦前馈（克服低速静摩擦）+ 高频阻尼。
+            _k_sm = float(os.environ.get("S10_CAR_YAW_K_SM", "30.0"))
+            _phi = float(os.environ.get("S10_CAR_YAW_PHI", "0.5"))
+            _err_y = self._om_f - body["omega"]
+            _ff_sign = 0.0
+            if abs(self._om_f) > 0.05:
+                _ff_sign = float(np.sign(self._om_f)) * min(
+                    abs(self._om_f) / 0.3, 1.0)
+            t_yaw = ((-_k_sm * float(np.tanh(_err_y / _phi))
+                      - _kff * _ff_sign
+                      + _kd_eff * _om_hf) * side
                      * _ysc * self._ground_f)
             # v246: yaw 力矩限速——滑移权威（YAW_TMAX）下首次过冲瞬态太快
             # （实测 ω 冲到 3.6 翻车）；限 t_yaw 变化率，平滑起转与刹车。
