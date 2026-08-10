@@ -315,6 +315,10 @@ def main():
                                 body_pos[1] + _fy5 * 0.228 * _sgn])
                 _dmin_r = 1e9
                 for (_rp, _tng, _sr, _dh) in ridge_world:
+                    # v285: 只对 dh>=0.08 的脊抬轮（<0.08 微脊=轮滚微起伏，
+                    # 腿阻抗吸收，不抬）
+                    if _dh < 0.08:
+                        continue
                     _dd = float(np.dot(_ax - _rp, _tng))
                     if -0.3 <= _dd <= 0.8 and _dd < _dmin_r:
                         _dmin_r = _dd
@@ -481,22 +485,25 @@ def main():
         # 不采用腿足式压弯（轮足深压弯→后轮打滑/无悬架抖动，用户总结）
         roll_tar = float(np.clip(-0.06 * om_c * abs(vx_c), -0.06, 0.06))
         pitch_tar = 0.0
-        # v281: 脊前减速——已知横脊 0.5m 内连续压 vx（car42 过脊 1.5 验证；
-        # 用户建议 1.0；连续距离驱动，非门控）
+        # v285: 脊前速度**微缩**（用户"横脊=连续扰动非障碍"）——±0.15m 内
+        # 线性从 vlim 缩到 min(vlim,2.5)，脊后即恢复；严禁硬砍 1.0 制造
+        # 速度凹坑
         if ridge_world:
             _fwd6 = np.array([d.xmat[1][0], d.xmat[1][3]])
             _fn6 = float(np.hypot(_fwd6[0], _fwd6[1])) + 1e-9
             _fx6, _fy6 = _fwd6[0] / _fn6, _fwd6[1] / _fn6
+            _dd6_min = 1e9
             for _sgn6 in (1.0, -1.0):
                 _ax6 = np.array([body_pos[0] + _fx6 * 0.228 * _sgn6,
                                  body_pos[1] + _fy6 * 0.228 * _sgn6])
                 for (_rp, _tng, _sr, _dh) in ridge_world:
                     _dd6 = float(np.dot(_ax6 - _rp, _tng))
-                    if -0.1 <= _dd6 <= 0.5:
-                        _vr = float(os.environ.get(
-                            "S10_RIDGE_APPR_VX", "1.0"))
-                        vx_c = min(vx_c, _vr)
-                        break
+                    if abs(_dd6) < abs(_dd6_min):
+                        _dd6_min = _dd6
+            _d6 = abs(_dd6_min)
+            if _d6 < 0.15:
+                _soft = float(os.environ.get("S10_RIDGE_SOFT_VX", "2.5"))
+                vx_c = min(vx_c, _soft + max(vx_c - _soft, 0.0) * _d6 / 0.15)
         try:
             fwd = np.array([d.xmat[1][0], d.xmat[1][3]])
             fx, fy = fwd[0], fwd[1]
@@ -511,13 +518,25 @@ def main():
             # v218o: 横脊抬前轮时顺坡仰头（防 pitch 控制器对抗抬升导致腿饱和）
             if _lift_act > 0.05:
                 pitch_tar = max(pitch_tar, 0.25 * _lift_act)
-            # v282: 后轮抬脊时轻微前倾（前轮推身，抗抬头——用户"前挂后蹬"）
-            if float(np.max(step_lift[2:4])) > 0.4:
-                pitch_tar = min(
-                    pitch_tar, -0.12 * float(np.max(step_lift[2:4])))
+            # v285: 撤 v282（静态后轮抗抬头会顶起车身）——横脊靠 kd_pitch
+            # 俯仰率阻尼吸收（削峰不硬顶）
         except Exception:
             pass
 
+        # v285: 脊期冻结 yaw——轮心 z 扰动>0.03m（俯仰耦合 yaw 估计）期间
+        # 冻结 ω_cmd（只留轮速闭环差速），0.2s 后恢复
+        _wz_now = np.asarray([d.xpos[WHEEL_BODY[i], 2] for i in range(4)])
+        if not hasattr(vmc, '_ridge_yaw_freeze'):
+            vmc._ridge_yaw_freeze = 0.0
+        if not hasattr(vmc, '_om_c_prev_'):
+            vmc._om_c_prev_ = om_c
+        _disturb = float(np.max(np.abs(_wz_now - (terr + 0.081))))
+        if _disturb > 0.03:
+            vmc._ridge_yaw_freeze = t + 0.2
+        if t < vmc._ridge_yaw_freeze:
+            om_c = vmc._om_c_prev_
+        else:
+            vmc._om_c_prev_ = om_c
         if os.environ.get('VMC_STAND', '0') == '1':
             cmd = dict(vx=0.0, omega=0.0, roll_tar=0.0, pitch_tar=0.0)
         else:
