@@ -482,7 +482,11 @@ class AutoNavFollower:
         for k in range(len(vlim)):
             _kk = abs(float(self.path_curv_signed[k]))
             if _kk > _cvk:
-                vlim[k] = min(vlim[k], float(np.sqrt(_cva / _kk)))
+                _vl9 = float(np.sqrt(_cva / _kk))
+                # v648: 急弯限速**向后延伸 2m**（弯心+出口）——原单点限速
+                # 在弯心释放，狗边转边加速翻车（wp12 κ4.44 实测）
+                _end9 = min(len(vlim), k + int(2.0 / res) + 1)
+                vlim[k:_end9] = np.minimum(vlim[k:_end9], _vl9)
         _sw = int(float(os.environ.get("S10_CURVE_SWING_WINDOW", "4.0")) / res)
         _swing_v = float(os.environ.get("S10_CURVE_SWING_VX", "1.8"))
         for k in range(len(vlim)):
