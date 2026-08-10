@@ -774,15 +774,15 @@ class CarVMC:
                 self._omega_lp = _om_b
             _om_hf = _om_b - self._omega_lp
             self._omega_lp += (_om_b - self._omega_lp) * min(1.0, dt / 0.05)
-            # v249: yaw 超速保护——|ω| 超 a_lat 安全包线（S10_AUTO_LAT_MAX/v）
-            # 时关差速前馈（只留反馈刹）+ 加强阻尼。滑移权威下 S 弯方向反转
-            # 时过冲 -2.5 rad/s 刹不住翻车（aim1 实测）。
+            # v249/v251: yaw 超速保护——|ω| 超 a_lat 安全包线
+            # （S10_AUTO_LAT_MAX/v）时：差速参考**反向**（按安全转速反向给
+            # 速度指令，硬刹；v249 归零不够，-2.87 rad/s 仍刹不住）+ 阻尼+8。
             _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
             _om_safe = _latmax / max(abs(self._vx_f), 0.5)
             _kd_eff = _kd_yaw
             _om_ref = self._om_f
             if abs(_om_b) > _om_safe:
-                _om_ref = 0.0
+                _om_ref = -float(np.clip(_om_b, -_om_safe, _om_safe))
                 _kd_eff = _kd_yaw + 8.0
             # v244: v_ref 用 om_f（超速时 om_ref=0，只靠 t_yaw 反馈刹）
             v_ref = (self._vx_f
