@@ -236,7 +236,7 @@ def main():
             _ref = np.array(_ref) if len(_ref) else np.array([[pos2[0], pos2[1], yaw]])
             st = np.array([pos2[0], pos2[1], yaw,
                            float(d.cvel[1][3]), float(d.cvel[1][4]), float(qvel[5])])
-            if os.environ.get('S10_NAV_DEBUG', '0') == '1' and next_idx == 5:
+            if os.environ.get('S10_NAV_DEBUG', '0') == '1' and next_idx <= 1:
                 print('[NAV] t=%.1f pos=(%.2f,%.2f) yaw=%.2f err=%.2f '
                       'tgt=(%.2f,%.2f) s_cur=%.2f vyaw=%.2f cte=%.2f'
                       % (t, body_pos[0], body_pos[1], yaw,

@@ -539,7 +539,7 @@ class AutoNavFollower:
         # 航点（默认 0.8m，保证 0.5m 判点）或已越过时才瞄准航点本身；
         # 其余时间沿平滑路径前视点瞄准——路径在航点处转向，前视点越过
         # 航点后即提前给出转向指令，避免弯道处 err 突跳触发龟速。
-        if (d_wp < float(os.environ.get("S10_AUTO_WP_AIM", "0.8"))
+        if (d_wp < float(os.environ.get("S10_AUTO_WP_AIM", "2.5"))
                 and os.environ.get("S10_AUTO_WP_AIM_ON", "1") == "1"):
             # 接近航点：瞄航点本身（保证 0.2m 判点）；CarVMC 巡航判点是位置式
             # （S10_WP_ADVANCE_DIST），v271 可关（S10_AUTO_WP_AIM_ON=0）——
@@ -683,7 +683,7 @@ class AutoNavFollower:
                 v_lim = min(v_lim, _start_vx * elev_factor)
             big_err_vx = float(os.environ.get("S10_AUTO_BIGERR_VX", "1.5"))
             turn_vx = float(os.environ.get("S10_AUTO_TURN_VX", "2.5"))
-            near_vx = float(os.environ.get("S10_AUTO_NEAR_VX", "1.8"))
+            near_vx = float(os.environ.get("S10_AUTO_NEAR_VX", "1.5"))
             if abs(err) > 1.0:
                 v_lim = min(v_lim, big_err_vx * elev_factor)
             elif d_wp < 0.5:
