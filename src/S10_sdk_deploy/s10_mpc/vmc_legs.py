@@ -1137,7 +1137,7 @@ class FootPlaceVMC:
             # 刻度 0.0025：0.1rad 滚转角 → 0.02m 轮高修正，含速率阻尼
             _side = -1.0 if leg in (0, 1) else 1.0
             _front = 1.0 if leg in (0, 1) else -1.0
-            wz += (_side * (self.kp_roll * (-float(body["roll"]))
+            wz += (_side * (self.kp_roll * float(body["roll"])
                             - 8.0 * roll_rate) * 0.0025
                    + _front * (self.kp_pitch
                                * (float(cmd.get("pitch_tar", 0.0))
