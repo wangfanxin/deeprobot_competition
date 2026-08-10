@@ -776,15 +776,17 @@ class CarVMC:
             self._omega_lp += (_om_b - self._omega_lp) * min(1.0, dt / 0.05)
             # v249/v251: yaw 超速保护——|ω| 超 a_lat 安全包线
             # （S10_AUTO_LAT_MAX/v）时：差速参考**反向**（按安全转速反向给
-            # 速度指令，硬刹；v249 归零不够，-2.87 rad/s 仍刹不住）+ 阻尼+8。
+            # 速度指令，硬刹）+ 阻尼+8。
             _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
             _om_safe = _latmax / max(abs(self._vx_f), 0.5)
             _kd_eff = _kd_yaw
-            _om_ref = self._om_f
+            _om_ref = float(cmd.get("omega", 0.0))
             if abs(_om_b) > _om_safe:
                 _om_ref = -float(np.clip(_om_b, -_om_safe, _om_safe))
                 _kd_eff = _kd_yaw + 8.0
-            # v244: v_ref 用 om_f（超速时 om_ref=0，只靠 t_yaw 反馈刹）
+            # v252: 差速参考用**即时指令**（导航已 slew 0.8/s，够平滑）——
+            # 低通 _om_f 在指令方向翻转时滞后 ~0.3s，继续推旧方向致过冲
+            # （wp4→5 指令+1.72 实际-2.86 翻车实测）；低通只留反馈项用。
             v_ref = (self._vx_f
                      + side * _om_ref * _ysc * self.track_half)
             # v241/v242: yaw 摩擦前馈（RobuROC6 库仑摩擦补偿）——差速转向需
