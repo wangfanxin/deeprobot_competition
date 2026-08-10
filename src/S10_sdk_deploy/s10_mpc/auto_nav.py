@@ -483,10 +483,14 @@ class AutoNavFollower:
             _kk = abs(float(self.path_curv_signed[k]))
             if _kk > _cvk:
                 _vl9 = float(np.sqrt(_cva / _kk))
-                # v648: 急弯限速**向后延伸 2m**（弯心+出口）——原单点限速
-                # 在弯心释放，狗边转边加速翻车（wp12 κ4.44 实测）
-                _end9 = min(len(vlim), k + int(2.0 / res) + 1)
-                vlim[k:_end9] = np.minimum(vlim[k:_end9], _vl9)
+                # v654: 延伸只对**急弯 κ>1**（弯心+出口 2m，修复 wp12 弯心
+                # 加速翻车）；κ∈(0.2,1] 的缓弯保持单点（延伸会压慢 wp4→5
+                # 横脊动量，v652 翻车实测）
+                if _kk > 1.0:
+                    _end9 = min(len(vlim), k + int(0.5 / res) + 1)
+                    vlim[k:_end9] = np.minimum(vlim[k:_end9], _vl9)
+                else:
+                    vlim[k] = min(vlim[k], _vl9)
         _sw = int(float(os.environ.get("S10_CURVE_SWING_WINDOW", "4.0")) / res)
         _swing_v = float(os.environ.get("S10_CURVE_SWING_VX", "1.8"))
         for k in range(len(vlim)):
