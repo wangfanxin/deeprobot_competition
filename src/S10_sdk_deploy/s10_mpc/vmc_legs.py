@@ -1200,12 +1200,11 @@ class FootPlaceVMC:
             # 目标低通（τ=0.08s）——CPG 波形已连续，低通只滤地形跳变
             self._wz_f[leg] += (wz - self._wz_f[leg]) * min(1.0, dt / 0.08)
             wz = float(self._wz_f[leg])
-            # v732: roll 修正对所有腿生效（抬升腿也纠侧翻，防 roll 放大
-            # IK 失真正反馈）；pitch 修正只作用于支撑腿（避免对抗抬放）
+            # v734: roll 修正对所有腿生效（抬升腿也纠侧翻，防 roll 放大
+            # IK 失真正反馈）；pitch 修正只作用于支撑腿（避免对抗抬放）。
+            # 修正量 clamp ±0.05m 防正反馈猛伸。
             _side = -1.0 if leg in (0, 1) else 1.0
             _front = 1.0 if leg in (0, 1) else -1.0
-            # v732: roll/pitch 修正量 clamp ±0.05m——无界修正会在姿态
-            # 扰动大时正反馈猛伸（wz_tgt 3.2m 实测），量级受限后收敛
             _rc = float(np.clip((self.kp_roll * (-float(body["roll"]))
                                  - 8.0 * roll_rate) * 0.0025,
                                 -0.05, 0.05))

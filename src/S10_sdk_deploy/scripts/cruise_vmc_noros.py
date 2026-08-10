@@ -928,9 +928,9 @@ def main():
                                 _rl_dmin = abs(_dr8)
                                 _rl_top = float(_top)
                     if _fl_cpg + _rl_cpg > 0.02:
-                        # v732: 前轴优先交替——前轴抬升时后轴连续抑制，
-                        # 前轮上台面（fl 回落）后后轮才抬（轮流迈腿）
-                        _rl_cpg *= (1.0 - _fl_cpg)
+                        # v734: 前轴优先交替——前轴抬升时后轴强抑制
+                        # (1-fl)^2，前轮上台面（fl 回落）后后轮才抬
+                        _rl_cpg *= (1.0 - _fl_cpg) ** 2
                         place_z[:] = [_fl_top, _fl_top, _rl_top, _rl_top]
                         step_lift[:] = [_fl_cpg, _fl_cpg, _rl_cpg, _rl_cpg]
                         stair_lift_flag = 1.0
