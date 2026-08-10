@@ -531,7 +531,22 @@ def main():
         if not hasattr(vmc, '_om_c_prev_'):
             vmc._om_c_prev_ = om_c
         _disturb = float(np.max(np.abs(_wz_now - (terr + 0.081))))
-        if _disturb > 0.03:
+        # v286: 冻结仅当**已知脊（dh>=0.08）0.5m 内 + 轮扰动**同时成立——
+        # 起步坡轮高与地图差也>0.03，但无脊，不冻结（v285 起步漂东翻车）
+        _near_ridge_big = False
+        if ridge_world:
+            _fwd7 = np.array([d.xmat[1][0], d.xmat[1][3]])
+            _fn7 = float(np.hypot(_fwd7[0], _fwd7[1])) + 1e-9
+            _fx7, _fy7 = _fwd7[0] / _fn7, _fwd7[1] / _fn7
+            for _sgn7 in (1.0, -1.0):
+                _ax7 = np.array([body_pos[0] + _fx7 * 0.228 * _sgn7,
+                                 body_pos[1] + _fy7 * 0.228 * _sgn7])
+                for (_rp, _tng, _sr, _dh) in ridge_world:
+                    if _dh >= 0.08 and abs(
+                            float(np.dot(_ax7 - _rp, _tng))) < 0.5:
+                        _near_ridge_big = True
+                        break
+        if _disturb > 0.03 and _near_ridge_big:
             vmc._ridge_yaw_freeze = t + 0.2
         if t < vmc._ridge_yaw_freeze:
             om_c = vmc._om_c_prev_
