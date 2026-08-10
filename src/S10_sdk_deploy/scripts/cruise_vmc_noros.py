@@ -254,21 +254,24 @@ def main():
         if os.environ.get('VMC_STAND', '0') == '1':
             cmd = dict(vx=0.0, omega=0.0, roll_tar=0.0, pitch_tar=0.0)
         else:
-            # v218q: 前轮地形前瞻 hop——前方 0.3m 高差>0.08 给前轮向上冲量（不伸腿）
+            # v220n: 前轮地形前瞻 hop——只在横脊区触发（防平地毛刺误触发，
+            # wp3→4 高差毛刺曾导致 hop=300 侧翻）
             hop = np.zeros(4, dtype=np.float64)
-            _fwd2 = d.xmat[1][0:2]
-            _fx, _fy = _fwd2[0], _fwd2[1]
-            _fn = float(np.hypot(_fx, _fy)) + 1e-9
-            _fx, _fy = _fx / _fn, _fy / _fn
-            for _wi in (0, 1):
-                _w0 = wheel_xyz[_wi]
-                # v220l: hop 检测用原始地形（terr 已被 RIDGE_LIFT bump 抬到
-                # 0.60，差值<0.08 导致 hop 永不触发）
-                _h0 = terrain_at(_w0[0], _w0[1])
-                # v219z: 前瞻 0.3->0.8m
-                _ha = terrain_at(_w0[0] + _fx * 0.80, _w0[1] + _fy * 0.80)
-                if _ha - _h0 > 0.08:
-                    hop[_wi] = float(os.environ.get('S10_VMC_HOP_F', '180.0'))
+            _in_hop_zone = any(
+                -1.0 <= sr - s_cur <= 1.5 for (sr, dhv) in ridge_arcs)
+            if _in_hop_zone:
+                _fwd2 = d.xmat[1][0:2]
+                _fx, _fy = _fwd2[0], _fwd2[1]
+                _fn = float(np.hypot(_fx, _fy)) + 1e-9
+                _fx, _fy = _fx / _fn, _fy / _fn
+                for _wi in (0, 1):
+                    _w0 = wheel_xyz[_wi]
+                    # v220l: hop 检测用原始地形（terr 已被 bump 抬高，差值<0.08）
+                    _h0 = terrain_at(_w0[0], _w0[1])
+                    _ha = terrain_at(_w0[0] + _fx * 0.80,
+                                     _w0[1] + _fy * 0.80)
+                    if _ha - _h0 > 0.08:
+                        hop[_wi] = float(os.environ.get('S10_VMC_HOP_F', '180.0'))
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
                       yaw_scale=1.0 - _lift_act, hop=hop,

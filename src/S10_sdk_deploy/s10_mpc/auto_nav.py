@@ -22,6 +22,9 @@ class AutoNavFollower:
         """
         self.wp = np.asarray(waypoints, dtype=np.float64)
         self.max_speed = float(max_speed)
+        # v220q: 爬坡/台阶限速可覆盖（提速调试）
+        self.climb_max_speed = float(os.environ.get(
+            "S10_AUTO_CLIMB_VX", str(climb_max_speed)))
         self.vyaw_max = float(vyaw_max)
         self.yaw_gain = float(yaw_gain)
         # pursuit 前瞻 4m（2026-08-06 用户 1.1）：2.5m 在弯道切内圈 →
@@ -29,7 +32,7 @@ class AutoNavFollower:
         self.lookahead = float(os.environ.get(
             "S10_AUTO_LOOKAHEAD", str(lookahead)))
         self.lat_accel_max = float(lat_accel_max)
-        self.climb_max_speed = float(climb_max_speed)
+
         self.grade_scale = float(grade_scale)
         # v219d: 限速前瞻窗口可覆盖（S10_AUTO_SPEED_WINDOW）。
         # 高架限速只应看当前段+下一段：过长则 wp4→5
