@@ -539,28 +539,32 @@ class AutoNavFollower:
         # 航点（默认 0.8m，保证 0.5m 判点）或已越过时才瞄准航点本身；
         # 其余时间沿平滑路径前视点瞄准——路径在航点处转向，前视点越过
         # 航点后即提前给出转向指令，避免弯道处 err 突跳触发龟速。
-        if d_wp < float(os.environ.get("S10_AUTO_WP_AIM", "0.8")) or passed:
-            # v204: passed 后直接瞄准下一个航点（S10_AUTO_AIM_AHEAD=1），
-            # 避免"为蹭 0.5m 圆门回头绕圈"；默认 0 保持原行为（stair 不受影响）
-            if (os.environ.get("S10_AUTO_AIM_AHEAD", "0") == "1"
+        if d_wp < float(os.environ.get("S10_AUTO_WP_AIM", "0.8")):
+            # 接近航点：瞄航点本身（保证 0.2m 判点）
+            target = wp_next
+        else:
+            # v267: 已越过航点（passed）或未接近 → 一律瞄**路径前视点**
+            # ——修复"passed 后瞄身后当前航点→err 饱和振荡→漂西卡脊"
+            # （wp4→5 实测）；也不切弦（AIM_AHEAD=1 在 S 弯切弦翻车实测）。
+            if (passed
+                    and os.environ.get("S10_AUTO_AIM_AHEAD", "0") == "1"
                     and next_idx + 1 < len(self.wp)):
                 target = self.wp[next_idx + 1]
             else:
-                target = wp_next
-        else:
-            # v217t: 曲率自适应前视——弯道提前转，防“过点后 err 突跳 76°
-            # 硬转”翻车；直道保持 _lk 不切弯。
-            _kfut = min(
-                self._k_near + int(float(os.environ.get(
-                    "S10_AUTO_YAW_FF_DIST", "1.5")) / self.path_res),
-                len(self.path_curv) - 1)
-            _kahead = float(self.path_curv[_kfut])
-            _lk_eff = float(np.clip(
-                _lk * (1.0 + _kahead * float(os.environ.get(
-                    "S10_AUTO_LOOKAHEAD_CURVE_K", "2.0"))),
-                _lk, float(os.environ.get("S10_AUTO_LOOKAHEAD_MAX", "3.2"))))
-            s_target = min(self._s_cur + _lk_eff, self.path_total)
-            target = self._path_point_at(s_target)
+                # v217t: 曲率自适应前视——弯道提前转，防"过点后 err 突跳
+                # 76° 硬转"翻车；直道保持 _lk 不切弯。
+                _kfut = min(
+                    self._k_near + int(float(os.environ.get(
+                        "S10_AUTO_YAW_FF_DIST", "1.5")) / self.path_res),
+                    len(self.path_curv) - 1)
+                _kahead = float(self.path_curv[_kfut])
+                _lk_eff = float(np.clip(
+                    _lk * (1.0 + _kahead * float(os.environ.get(
+                        "S10_AUTO_LOOKAHEAD_CURVE_K", "2.0"))),
+                    _lk, float(os.environ.get(
+                        "S10_AUTO_LOOKAHEAD_MAX", "3.2"))))
+                s_target = min(self._s_cur + _lk_eff, self.path_total)
+                target = self._path_point_at(s_target)
         err = np.arctan2(target[1] - robot_xy[1],
                          target[0] - robot_xy[0]) - yaw
         err = float(np.arctan2(np.sin(err), np.cos(err)))
