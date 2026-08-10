@@ -133,6 +133,9 @@ def main():
     prev_u = np.zeros(2)
     dbg = 0
     last_log = 0.0
+    # v220a: 单步跨越状态机（0=off, 1=前轮抬, 2=后轮抬）
+    _step_state = 0
+    _step_t0 = 0.0
     while t < MAX_SIM:
         qpos = np.asarray(d.qpos, dtype=np.float64)
         qvel = np.asarray(d.qvel, dtype=np.float64)
@@ -185,19 +188,39 @@ def main():
         terr = np.array([terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
                          for i in range(4)])
         s_cur = float(getattr(fol, '_s_cur', 0.0))
+
+        # v220a: 单步跨越状态机——横脊 0.125m > 轮半径 0.081，轮滚不上，
+        # 前轮抬膝跨脊（0.45s）后轮跟抬（0.45s），迈步时关 RIDGE_LIFT 防叠加
+        step_lift = np.zeros(4)
+        if float(os.environ.get('S10_VMC_STEP_OVER', '0')) > 0:
+            _near_ridge = any(
+                0.2 <= sr - s_cur <= 0.9 for (sr, dhv) in ridge_arcs)
+            _step_dur = float(os.environ.get('S10_VMC_STEP_DUR', '0.8'))
+            if _near_ridge and _step_state == 0:
+                _step_state = 1
+                _step_t0 = t
+            elif _step_state == 1 and t - _step_t0 > _step_dur:
+                _step_state = 2
+                _step_t0 = t
+            elif _step_state == 2 and t - _step_t0 > _step_dur:
+                _step_state = 0
+            if _step_state == 1:
+                step_lift[:] = [1.0, 1.0, 0.0, 0.0]
+            elif _step_state == 2:
+                step_lift[:] = [0.0, 0.0, 1.0, 1.0]
+
         _lift = float(os.environ.get('S10_VMC_RIDGE_LIFT', '0.12'))
         _lift_act = 0.0
         for (sr, dhv) in ridge_arcs:
             ds = s_cur - sr
             # v219u: 短促 bump——前轮棱前 0.8m 抬、过棱即放。
-            # 原 0.35m 窗口死锁：狗卡在 s_cur=脊-0.37（差 0.02m 进不了窗口）
-            # 且 s_cur 需狗前进才推进 → 永不抬轮（0.125m 脊 > 轮半径 0.081，
-            # 轮子几何上滚不上去，必须抬轮跨）
             if -0.8 <= ds < 0.08:
                 f = float(np.clip((0.8 - abs(ds + 0.30)) / 0.8, 0.0, 1.0))
                 terr[:] = np.maximum(terr, terr + _lift * f)
                 _lift_act = max(_lift_act, f)
-            elif 0.08 <= ds < 0.55:
+            elif _step_state == 0 and 0.08 <= ds < 0.55:
+                # v220i: 迈步时后轮不抬（前轮由 step_lift 抬 + 前轮 bump 保留，
+                # 组合抬升够脊顶；后轮必须着地推车身）
                 f = float(np.clip((0.55 - ds) / 0.47, 0.0, 1.0))
                 terr[2:] = np.maximum(terr[2:], terr[2:] + _lift * f)
                 _lift_act = max(_lift_act, f)
@@ -207,8 +230,11 @@ def main():
         _wz = np.asarray([d.xpos[WHEEL_BODY[i], 2] for i in range(4)])
         _lf = max(_wz[0], _wz[1]); _lr = min(_wz[2], _wz[3])
         _in_ridge = any(-0.8 <= s_cur - sr <= 1.2 for (sr, dhv) in ridge_arcs)
-        if _in_ridge and _lf > _lr + 0.05:
+        # v220b: 迈步期间禁用后轮跟抬——前轮被迈步抬起时 wz 天然高于后轮，
+        # 会误把后轮也抬离地（全轮无推力死锁）
+        if _step_state == 0 and _in_ridge and _lf > _lr + 0.05:
             terr[2:] = np.maximum(terr[2:], terr[2:] + _lift * 0.8)
+
 
         # 压弯 + 坡度
         roll_tar = float(np.clip(0.20 * om_c * abs(vx_c), -0.40, 0.40))
@@ -236,14 +262,17 @@ def main():
             _fx, _fy = _fx / _fn, _fy / _fn
             for _wi in (0, 1):
                 _w0 = wheel_xyz[_wi]
-                _h0 = terr[_wi]
-                # v219z: 前瞻 0.3->0.8m（0.3m 检测太晚，轮到脊前已被顶住）
+                # v220l: hop 检测用原始地形（terr 已被 RIDGE_LIFT bump 抬到
+                # 0.60，差值<0.08 导致 hop 永不触发）
+                _h0 = terrain_at(_w0[0], _w0[1])
+                # v219z: 前瞻 0.3->0.8m
                 _ha = terrain_at(_w0[0] + _fx * 0.80, _w0[1] + _fy * 0.80)
                 if _ha - _h0 > 0.08:
                     hop[_wi] = float(os.environ.get('S10_VMC_HOP_F', '180.0'))
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
-                      yaw_scale=1.0 - _lift_act, hop=hop)
+                      yaw_scale=1.0 - _lift_act, hop=hop,
+                      step_lift=step_lift)
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
@@ -284,7 +313,8 @@ def main():
                   f'vref={v_ref:.2f} tau_max={np.abs(tau).max():.1f} '
                   f'wz={np.round([d.xpos[WHEEL_BODY[i],2] for i in range(4)],2)} '
                   f'tauH={np.round(tau[[0,4,8,12]],0)} tauY={np.round(tau[[1,5,9,13]],0)} tauK={np.round(tau[[2,6,10,14]],0)} '
-                  f'om={float(qvel[5]):.2f} tauW={np.round(tau[[3,7,11,15]],1)}', flush=True)
+                  f'om={float(qvel[5]):.2f} tauW={np.round(tau[[3,7,11,15]],1)} '
+                  f'stp={_step_state} sl={np.round(step_lift,1)}', flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[VMC-T] *** 侧翻/摔倒 ***', flush=True)
                 break

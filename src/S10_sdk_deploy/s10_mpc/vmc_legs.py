@@ -249,14 +249,21 @@ class VMCController:
             J = self.fk.jac(q1, q2)
             # WBC 腿力（世界系）+ 地形阻抗（垂直跟随，横脊预抬经 terrain_h）
             fw = f_legs[leg * 3:leg * 3 + 3].copy()
-            # v218q: 前轮 hop 冲量（世界 z 向上，短暂弹跳过棱，不伸腿）
+            p = wheel_xyz[leg]
+            # v220k: 单步跨越——迈步腿完全卸载（wrench 支撑力+地形阻抗都清零，
+            # 否则 J^T 支撑力矩抵消 knee 位置 PD，轮抬不起来）
+            _sl = float(np.asarray(
+                cmd.get("step_lift", np.zeros(4)))[leg])
+            fw[:] = fw * (1.0 - _sl)
+            # v218q: 前轮 hop 冲量（世界 z 向上）——必须在卸载后加，
+            # 否则被迈步腿清零乘掉（v220j 实测 hop 无效）
             _hop = cmd.get("hop")
             if _hop is not None:
                 fw[2] += float(_hop[leg])
-            p = wheel_xyz[leg]
             pz_des = float(terrain_h[leg]) + self.fk.r
-            fw[2] += (self.kp_h * (pz_des - p[2])
-                      - self.kd_h * float(wheel_vel[leg, 2]))
+            fw[2] += (1.0 - _sl) * (
+                self.kp_h * (pz_des - p[2])
+                - self.kd_h * float(wheel_vel[leg, 2]))
             f_body = body["R"].T @ fw
             f_sag = np.array([f_body[0], -f_body[2]])       # [x, z_down]
             t_hipy, t_knee = J.T @ f_sag
@@ -272,9 +279,14 @@ class VMCController:
             qhx = float(qpos[LEG_Q_IDX[b]])
             t_hipx += (self.kp_pose * (self.pose_target[b] - qhx)
                        - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b]]))
-            t_hipy += (self.kp_pose * (self.pose_target[b + 1] - q1)
+            # v220g: 迈步腿 hipy 前摆+knee 伸直。前腿 q1 -1.16->-0.5(+0.66)、
+            # 后腿 +1.16->+0.5(-0.66)，符号按腿分（此前统一减号=后摆 bug）
+            _qs = -1.0 if leg in (0, 1) else 1.0
+            _q1_tgt = self.pose_target[b + 1] - _sl * 0.66 * _qs
+            _q2_tgt = self.pose_target[b + 2] + _sl * 0.42
+            t_hipy += (self.kp_pose * (_q1_tgt - q1)
                        - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b + 1]]))
-            t_knee += (self.kp_pose * (self.pose_target[b + 2] - q2)
+            t_knee += (self.kp_pose * (_q2_tgt - q2)
                        - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b + 2]]))
 
             # v218f: hipx 由 wrench 侧向力接管；S10_VMC_HIPX_TORQUE=1 叠加姿态反馈
