@@ -453,6 +453,22 @@ class AutoNavFollower:
         # 弯道动力学（a_lat/om·R/急弯/S弯/前向传播）全部移交 MPPI（摩擦锥 + 2.0s
         # 视界自行决定进弯速度）。path_curv 仍保留供 pursuit yaw_ff / MPPI guide。
         vlim = np.full(len(pts), self.max_speed, dtype=np.float64)
+        # v389: S 弯组合限速（几何，局部曲率门控）——wp2->3->4 连续反向弯
+        # （右66°->左55°->右71°，段长仅4.6-4.8m）2.5m/s 下振荡翻车（全程
+        # 测试 wp3 出弯朝东实测）。仅当**该点本身**曲率显著（|kappa|>0.1，
+        # 即在弯上）且 4m 窗口内同时存在正负大曲率时，该点限速
+        # S10_CURVE_SWING_VX。直道点（wp1->2）不进入窗口判定，避免
+        # v388 的耦合回翻。
+        _sw = int(float(os.environ.get("S10_CURVE_SWING_WINDOW", "4.0")) / res)
+        _swing_v = float(os.environ.get("S10_CURVE_SWING_VX", "1.8"))
+        for k in range(len(vlim)):
+            if abs(float(self.path_curv_signed[k])) <= 0.1:
+                continue
+            lo = max(0, k - _sw)
+            hi = min(len(vlim), k + _sw + 1)
+            if (float(np.max(self.path_curv_signed[lo:hi])) > 0.25
+                    and float(np.min(self.path_curv_signed[lo:hi])) < -0.25):
+                vlim[k] = min(vlim[k], _swing_v)
         # 台阶/楼梯段限速映射到路径弧长（按航点区间）
         for i in range(n - 1):
             if not (self.step_zone[i] or self.stair_zone[i]):
