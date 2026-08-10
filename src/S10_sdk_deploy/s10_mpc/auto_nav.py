@@ -474,6 +474,15 @@ class AutoNavFollower:
         # 即在弯上）且 4m 窗口内同时存在正负大曲率时，该点限速
         # S10_CURVE_SWING_VX。直道点（wp1->2）不进入窗口判定，避免
         # v388 的耦合回翻。
+        # v563: 急弯曲率限速——vmax 6 时 wp1 90° 弯翻车，直线可快、急弯
+        # 限速（v=sqrt(a/κ)）。阈值 S10_CURVE_VLIM_K 默认 0.2、横向加速度
+        # S10_CURVE_VLIM_A 默认 8.0（wp1 κ0.5 → 4.0m/s）。
+        _cvk = float(os.environ.get("S10_CURVE_VLIM_K", "0.2"))
+        _cva = float(os.environ.get("S10_CURVE_VLIM_A", "8.0"))
+        for k in range(len(vlim)):
+            _kk = abs(float(self.path_curv_signed[k]))
+            if _kk > _cvk:
+                vlim[k] = min(vlim[k], float(np.sqrt(_cva / _kk)))
         _sw = int(float(os.environ.get("S10_CURVE_SWING_WINDOW", "4.0")) / res)
         _swing_v = float(os.environ.get("S10_CURVE_SWING_VX", "1.8"))
         for k in range(len(vlim)):
@@ -500,6 +509,13 @@ class AutoNavFollower:
         self.path_total = float(cum[-1])
         # 航点在平滑路径上的弧长（统一 pursuit 的 passed 判断标尺：
         # 平滑弧长 ≠ 折线弧长，直接用折线 cum_len 会错位 10m+）
+        # v562: 固定起步限速（vmax 提高到 5-6 时起步门架+坡在 >4m/s 翻车
+        # 实测；起步段 wp0→1 恒限 min(vmax, S10_AUTO_START_VX 默认 4.0)）。
+        _sv = float(os.environ.get("S10_AUTO_START_VX", "4.0"))
+        if _sv > 0.0:
+            _s_end = float(self.cum_len[1])
+            vlim[cum <= _s_end] = np.minimum(
+                vlim[cum <= _s_end], _sv)
         self.path_wp_s = np.array([
             float(self.path_cum[np.argmin(np.sum(
                 (self.path_pts[:, :2] - self.wp[i, :2]) ** 2, axis=1))])
