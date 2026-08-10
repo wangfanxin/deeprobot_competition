@@ -516,8 +516,11 @@ class AutoNavFollower:
         _tang = self.path_heading[_k0]
         _rel = robot_xy - self.path_pts[_k0, :2]
         _proj = float(_rel[0] * np.cos(_tang) + _rel[1] * np.sin(_tang))
+        # v219p: 最近点兑底每拍最多推进 1m，防狗偏离路径时
+        # s_cur 瞬移到航点后（导航提前切目标）
         self._s_cur = max(
-            getattr(self, "_s_cur", 0.0) + _proj * 0.5, s_proj)
+            getattr(self, "_s_cur", 0.0) + _proj * 0.5,
+            min(s_proj, getattr(self, "_s_cur", 0.0) + 1.0))
         # 上限：不超前当前航点后 2m（2026-08-06 修复：切线投影在弯道过冲
         # → target 指向 wp5 后（偏西）→ 斜撞横脊侧翻，full_course_25 复现）。
         _s_max = (self.path_wp_s[next_idx] + 2.0

@@ -278,7 +278,8 @@ def main():
                   f'roll={roll:.2f} cmd=({vx_c:.2f},{om_c:.2f}) '
                   f'vref={v_ref:.2f} tau_max={np.abs(tau).max():.1f} '
                   f'wz={np.round([d.xpos[WHEEL_BODY[i],2] for i in range(4)],2)} '
-                  f'tauH={np.round(tau[[0,4,8,12]],0)} tauY={np.round(tau[[1,5,9,13]],0)} tauK={np.round(tau[[2,6,10,14]],0)}', flush=True)
+                  f'tauH={np.round(tau[[0,4,8,12]],0)} tauY={np.round(tau[[1,5,9,13]],0)} tauK={np.round(tau[[2,6,10,14]],0)} '
+                  f'om={float(qvel[5]):.2f} tauW={np.round(tau[[3,7,11,15]],1)}', flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[VMC-T] *** 侧翻/摔倒 ***', flush=True)
                 break
