@@ -412,57 +412,10 @@ class AutoNavFollower:
         self.path_curv = np.asarray(kappa, dtype=np.float64)
         self.path_curv_signed = np.asarray(kappa_s, dtype=np.float64)
 
-        # 速度剖面：v(s) = min(v_max, √(a_lat·R))，圆角处按曲率限速
-        curve_accel = float(os.environ.get("S10_CURVE_ACCEL", "6.0"))
+        # v340: 速度剖面极简——导航只保留几何/任务限速（台阶/楼梯区映射在下方），
+        # 弯道动力学（a_lat/om·R/急弯/S弯/前向传播）全部移交 MPPI（摩擦锥 + 2.0s
+        # 视界自行决定进弯速度）。path_curv 仍保留供 pursuit yaw_ff / MPPI guide。
         vlim = np.full(len(pts), self.max_speed, dtype=np.float64)
-        for k, c in enumerate(self.path_curv):
-            if c > 1e-6:
-                vlim[k] = min(vlim[k], np.sqrt(
-                    curve_accel / max(c, 1e-4)))
-        # v191 急转弯限速（按转角，非曲率）：曲率限速（R>=2m -> 3.46）对
-        # 90°+ 急弯仍过快——平地版 wp10（92.7°）暴露；真赛道同弯靠高程
-        # 限速（z=1.165 -> x0.685）才 2.3 通过。阈值默认 88°（wp1 的 85.6°
-        # 不受影响，S 弯 55-67° 完全豁免）。
-        _turn_th = float(os.environ.get("S10_AUTO_SHARP_TURN_DEG", "88"))
-        _turn_vx = float(os.environ.get("S10_AUTO_SHARP_TURN_VX", "2.5"))
-        for i in range(1, n - 1):
-            _da = np.arctan2(
-                np.sin(self.heading[i] - self.heading[i - 1]),
-                np.cos(self.heading[i] - self.heading[i - 1]))
-            if abs(_da) > np.deg2rad(_turn_th):
-                _sw0 = self.cum_len[i] - 2.0
-                _sw1 = self.cum_len[i] + 3.0
-                _mask = (cum >= _sw0) & (cum <= _sw1)
-                vlim[_mask] = np.minimum(vlim[_mask], _turn_vx)
-        # 转向能力约束（2026-08-07；v239 改用实测包线）：弯道速度不能超过
-        # om_max * R——否则实际 yaw 跟不上，转向滞后→过冲→振荡。v = ω·R。
-        # 实测 CarVMC 差速转向 yaw 权威 ~0.65-0.75 rad/s（v232 hipx 辅助后
-        # 0.75），S10_AUTO_OMAX 默认 0.75 即真实上限（替代旧 2.0 的乐观值）。
-        _omax = float(os.environ.get("S10_AUTO_OMAX", "0.75"))
-        for k, c in enumerate(self.path_curv):
-            if c > 1e-6:
-                vlim[k] = min(vlim[k], _omax / max(c, 1e-4))
-        # S 弯组合限速（2026-08-07，nr15/16 wp3 侧翻复现）：wp2→3→4 是
-        # 连续反向弯（右66.7°→左55°→右71.3°，段长仅4.6~4.8m），机器人在
-        # 3 m/s 下转向来不及，err 爆发→饱和→侧翻。检测 6m 窗口内同时存在
-        # 正负大曲率（连续反向弯），组合段整体限速更保守。
-        _sw = int(float(os.environ.get("S10_CURVE_SWING_WINDOW", "6.0")) / res)
-        _swing_v = float(os.environ.get("S10_CURVE_SWING_VX", "2.6"))
-        for k in range(len(vlim)):
-            lo = max(0, k - _sw)
-            hi = min(len(vlim), k + _sw + 1)
-            if (float(np.max(self.path_curv_signed[lo:hi])) > 0.25
-                    and float(np.min(self.path_curv_signed[lo:hi])) < -0.25):
-                vlim[k] = min(vlim[k], _swing_v)
-        # 弯道减速前向传播（2026-08-06 用户 1.1）：曲率大的点往前 5m
-        # 线性压低 vlim——4m/s 冲进 71° 弯转向不及（wp3→4 北偏复现），
-        # 弯道前必须提前减速（距离前瞻而非瞬时曲率）。
-        _decel_ahead = int(float(os.environ.get(
-            "S10_CURVE_DECEL_AHEAD", "5.0")) / res)
-        for k in range(len(vlim)):
-            if vlim[k] < self.max_speed - 0.5:
-                for j in range(max(0, k - _decel_ahead), k):
-                    vlim[j] = min(vlim[j], vlim[k])
         # 台阶/楼梯段限速映射到路径弧长（按航点区间）
         for i in range(n - 1):
             if not (self.step_zone[i] or self.stair_zone[i]):
@@ -665,57 +618,9 @@ class AutoNavFollower:
             "S10_AUTO_VLIM_LOOKAHEAD", "5.0")) / self.path_res),
                      len(self.path_vlim) - 1)
         v_lim = float(np.min(self.path_vlim[self._k_near:_k_far + 1]))
-        # 转向速度分级：|err|>0.3 时——
-        #   近点（d_wp<3m，如起步/航点大转角）：0.4 m/s 原地转向，避免冲过航点；
-        #   远点（如爬坡段）：1.5 m/s 慢速转弯，保持推力爬台阶。
-        if abs(err) > float(os.environ.get("S10_AUTO_ERR_GATE", "0.30")):
-            # 弯道/起步限速（2026-08-07）：err>1.0（起步 90° 或急弯）必须
-            # 慢速转向防侧翻；gate~1.0 用 turn_vx（0.45 可让直线段小偏差
-            # 不触发减速）；进弯前 3m 线性减速。
-            # v195 起步提速：仅 wp0→1（next_idx==0）允许高于 turn_vx 的速度
-            # （默认 0=关）。起步 93° 对准是 wp0→1 最大耗时项；S 弯 next_idx
-            # >=2 不受影响。
-            _start_vx = float(os.environ.get("S10_AUTO_START_VX", "0.0"))
-            if next_idx == 0 and _start_vx > 0.0:
-                v_lim = min(v_lim, _start_vx * elev_factor)
-            big_err_vx = float(os.environ.get("S10_AUTO_BIGERR_VX", "1.5"))
-            turn_vx = float(os.environ.get("S10_AUTO_TURN_VX", "2.5"))
-            near_vx = float(os.environ.get("S10_AUTO_NEAR_VX", "1.5"))
-            if abs(err) > 1.0:
-                v_lim = min(v_lim, big_err_vx * elev_factor)
-            elif d_wp < 0.5:
-                v_lim = min(v_lim, near_vx * elev_factor)
-            elif d_wp < float(os.environ.get("S10_AUTO_NEAR_DIST", "2.0")):
-                v_lim = min(v_lim, max(2.0, self.max_speed * d_wp
-                                       / float(os.environ.get(
-                                           "S10_AUTO_NEAR_RAMP", "2.0")))
-                            * elev_factor)
-            else:
-                v_lim = min(v_lim, turn_vx * elev_factor)
-        else:
-            v_lim = min(v_lim, self.max_speed * elev_factor)
-        # 接近当前航点时减速，保证进入 0.2m 到达半径判定。
-        # 高架（z>0.9）时额外减半——坡顶最后一级台阶高速接近会前翻（实测）。
-        if d_wp < float(os.environ.get("S10_AUTO_NEAR_DIST", "2.0")):
-            # 高架（z>0.9）接近速度压到 1.0 m/s——坡顶侧翻实测（roll -0.5→翻）
-            if robot_z is not None and robot_z > 0.9:
-                v_lim = min(v_lim, 1.0)
-            else:
-                # 航点是 0.5m 半径检查点而非停车点（2026-08-07）：窗口 3m→2m、
-                # 下限 0.2×vmax→1.2 m/s，避免短航段（4.6m）整段被拖慢。
-                v_lim = min(v_lim, max(
-                    float(os.environ.get("S10_AUTO_NEAR_MIN", "1.2")),
-                    self.max_speed * d_wp
-                    / float(os.environ.get("S10_AUTO_NEAR_RAMP", "2.0"))))
-        # v315: 到达制动——aim 窗口内 err 大且贴近航点时把速度压到
-        # r=v/omega<=0.3m 判点半径以内（差速转向轨道半径），消除绕航点转圈
-        # （wp1 0.8m 距航点空转 6s 实测）与切内弯错过航点。连续量驱动
-        # （d_wp/err），仅过点瞬间生效，不拖慢航段。
-        if (d_wp < float(os.environ.get('S10_AUTO_ARRIVE_DIST', '1.0'))
-                and abs(err) > float(os.environ.get(
-                    'S10_AUTO_ARRIVE_ERR', '0.8'))):
-            v_lim = min(v_lim, float(os.environ.get(
-                'S10_AUTO_ARRIVE_VX', '0.55')))
+        # v340: 导航不做 err 分级限速/近点减速/到达制动——速度只由几何任务
+        # 剖面（vlim 窗口）与高程系数决定；转弯/过点速度交给 MPPI 摩擦锥。
+        v_lim = min(v_lim, self.max_speed * elev_factor)
         # 台阶区限速（航点 z 兜底，已知地图，无感知滞后）：目标航段是陡升
         # 且机器人已越过前一航点（或接近该航点）→ 限速 step_vx。
         # 解决 §3.7 翻车机制：3.1 m/s 撞 0.125m riser → 前轮爬升翘头后仰翻。

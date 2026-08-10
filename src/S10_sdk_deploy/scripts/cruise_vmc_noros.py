@@ -131,8 +131,8 @@ def main():
         print('[VMC] 横脊坐标表失败', e, flush=True)
 
     mppi = BodyMPPI(
-        N=int(os.environ.get('VMC_MPPI_N', '256')),
-        H=int(os.environ.get('VMC_MPPI_H', '20')),
+        N=int(os.environ.get('VMC_MPPI_N', '4096')),
+        H=int(os.environ.get('VMC_MPPI_H', '40')),
         vx_max=float(os.environ.get('S10_AUTO_VMAX', '5.0')))
     if os.environ.get('S10_VMC_MODE', 'wbc') == 'pd':
         from s10_mpc.vmc_legs import LegPDDrive
@@ -212,7 +212,9 @@ def main():
         wheel_vel = np.asarray([d.cvel[WHEEL_BODY[i]][0:3] for i in range(4)])
 
         # 20Hz 导航 + MPPI
-        if int(t * 20) % 1 == 0 and (dbg == 0 or t - last_log >= 0.05):
+        # v340: 导航/MPPI 恢复设计 20Hz（原 %1 恒真 = 200Hz，N=4096
+        # /H=40 下不可行）；MPPI 2.0s 视界每次 50ms 内完成。
+        if int(t * 20) % 10 == 0 and (dbg == 0 or t - last_log >= 0.05):
             pos2 = body_pos[:2]
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
@@ -221,7 +223,7 @@ def main():
             # 路径参考轨迹（弧长采样：当前位置起 8m，步长 0.5m）
             _ref = []
             _s0 = float(fol._s_cur)
-            for _ds in np.arange(0.0, 8.0, 0.5):
+            for _ds in np.arange(0.0, 12.0, 0.5):   # v340: H=40 视界 7m，ref 采到 12m
                 _sp = _s0 + _ds
                 if _sp >= fol.path_total:
                     break
@@ -241,29 +243,47 @@ def main():
             try:
                 _aim_tgt = np.asarray(getattr(fol, '_last_tgt', [0, 0, 0])[:2])
                 _aim_wp = np.asarray(fol.wp[next_idx][:2])
-                if (np.abs(_aim_tgt[0] - _aim_wp[0]) < 0.05
-                        and np.abs(_aim_tgt[1] - _aim_wp[1]) < 0.05):
+                _beam_on = (np.abs(_aim_tgt[0] - _aim_wp[0]) < 0.05
+                            and np.abs(_aim_tgt[1] - _aim_wp[1]) < 0.05)
+                # v327: 过点后 3m 内保持"上一航点出口光束"——过点瞬间导航
+                # 目标切到前视点，err 突跳 -> 出弯蛇形（wp1->wp2 7s 实测）。
+                # 用 wp[i-1] 的出口方向（=wp[i]-wp[i-1]）拉直出弯段。
+                _aim_idx = next_idx
+                _after_len = float(os.environ.get(
+                    'S10_AUTO_BEAM_AFTER', '3.0'))
+                # v329: 过点后光束只对真实弯道（wp1 之后）生效——起点
+                # wp0 也在 3m 内会误触发，改变全链路 ref 导致混沌发散。
+                if (not _beam_on and next_idx >= 2):
+                    _pw = np.asarray(fol.wp[next_idx - 1][:2])
+                    _dd = float(np.hypot(pos2[0] - _pw[0],
+                                         pos2[1] - _pw[1]))
+                    if _dd < _after_len:
+                        _beam_on = True
+                        _aim_wp = _pw
+                        _aim_idx = next_idx - 1
+                if _beam_on:
                     _dvec = _aim_wp - pos2
                     _L = float(np.hypot(_dvec[0], _dvec[1]))
                     # v322: 出口方向 = 过点后的路径方向（wp[i+1]-wp[i]），
-                    # 不是狗→wp 的接近方向——wp1 处接近方向指向西南（南坡），
-                    # 会引导狗过点后滑下南坡（v321 实测）。
-                    if next_idx + 1 < len(fol.wp):
-                        _ex = np.asarray(fol.wp[next_idx + 1][:2]) - _aim_wp
-                        _Le = float(np.hypot(_ex[0], _ex[1]))
-                        _uv = (_ex / _Le) if _Le > 1e-3 else (_dvec / _L)
+                    # 不是狗→wp 的接近方向——wp1 处接近方向指向西南（南坡）。
+                    _ex = np.asarray(fol.wp[_aim_idx + 1][:2]) - _aim_wp
+                    _Le = float(np.hypot(_ex[0], _ex[1]))
+                    _uv = (_ex / _Le) if _Le > 1e-3 else (
+                        _dvec / _L if _L > 1e-3 else np.array([1.0, 0.0]))
+                    _hd = float(np.arctan2(_uv[1], _uv[0]))
+                    # 局部零代价陷阱：不能放狗当前位置/航向点（最近点距离=0、
+                    # 航向=当前 yaw -> MPPI 视为已在目标上，om 恒 0）。只给
+                    # wp + 出口延长两点。过点后光束用更长出口拉直出弯。
+                    if _aim_idx == next_idx - 1:
+                        _exit_len = float(os.environ.get(
+                            'S10_AUTO_BEAM_AFTER_EXIT', '2.5'))
                     else:
-                        _uv = _dvec / _L
-                    if _L > 1e-3:
-                        _hd = float(np.arctan2(_uv[1], _uv[0]))
-                        # 局部零代价陷阱：最近点距离=0、航向=当前 yaw——
-                        # 不能放狗当前位置/航向点：最近点距离=0、航向=当前
-                        # yaw -> MPPI 视为已在目标上，om 恒 0（wp1 旁漂 46s
-                        # 实测）。只给 wp + 出口延长两点。
-                        _ref = np.array([
-                            [_aim_wp[0], _aim_wp[1], _hd],
-                            [_aim_wp[0] + 1.0 * _uv[0],
-                             _aim_wp[1] + 1.0 * _uv[1], _hd]])
+                        _exit_len = float(os.environ.get(
+                            'S10_AUTO_BEAM_EXIT', '1.0'))
+                    _ref = np.array([
+                        [_aim_wp[0], _aim_wp[1], _hd],
+                        [_aim_wp[0] + _exit_len * _uv[0],
+                         _aim_wp[1] + _exit_len * _uv[1], _hd]])
             except Exception:
                 pass
             st = np.array([pos2[0], pos2[1], yaw,

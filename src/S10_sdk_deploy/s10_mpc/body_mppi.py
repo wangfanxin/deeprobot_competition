@@ -10,7 +10,8 @@
 摩擦锥硬约束：|vx·ω| ≤ μ·g（采样后 clamp ω），速度越高转向上限越小。
 成本：到目标点距离 + 速度偏差 + 航向偏差 + 控制平滑；softmax 加权平均更新。
 DBaS 自适应 σ：成本高时放大采样噪声，低时收敛。
-纯 numpy，N=256/H=20/dt=0.05 → 单次 plan <5ms，可跑 20-30Hz（CPU）。
+纯 numpy，N=4096/H=40/dt=0.05 → 2.0s 视界（用户 2026-08-10：进弯刹车交给
+MPPI 摩擦锥 + 长视界，导航不再做动力学限速）；20Hz 调用（CPU）。
 """
 import numpy as np
 
@@ -20,11 +21,11 @@ def _wrap(a):
 
 
 class BodyMPPI:
-    def __init__(self, N=256, H=20, dt=0.05,
+    def __init__(self, N=4096, H=40, dt=0.05,
                  tau_v=0.15, tau_w=0.10, mu=0.75, g=9.81,
                  vx_max=5.0, omega_max=3.5,
                  lam=0.35, sigma_vx=0.45, sigma_om=0.55,
-                 w_dist=1.0, w_v=0.30, w_h=0.8, w_s=0.15,
+                 w_dist=2.0, w_v=0.80, w_h=0.0, w_s=0.05,
                  ada_alpha=0.35, ada_min=0.5, ada_max=2.0,
                  seed=0):
         # v269: 关键参数开放环境变量（μ 需匹配实测 a_lat 包线：
