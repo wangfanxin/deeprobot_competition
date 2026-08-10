@@ -536,14 +536,12 @@ class LidarTerrain:
         import mujoco
         m, d = self.m, self.d
         pos = np.asarray(d.site_xpos[self.sid], dtype=np.float64)
-        yaw = self._yaw()
-        c, s = float(np.cos(yaw)), float(np.sin(yaw))
-        fwd = np.array([c, s, 0.0])
-        right = np.array([-s, c, 0.0])
-        up = np.array([0.0, 0.0, 1.0])
+        # v293: 射线用 lidar_site 世界姿态（site_xmat）——安装位置/俯仰
+        # 真正生效（Go2 式头部安装：base 前 0.20m、上 0.30m、前下 8.6°）；
+        # 此前只用机体 yaw，site euler 只是摆设
+        xmat = np.asarray(d.site_xmat[self.sid], dtype=np.float64).reshape(3, 3)
         L = self.dirs_local
-        vec = (L[:, 0:1] * fwd[None, :] + L[:, 1:2] * right[None, :]
-               + L[:, 2:3] * up[None, :])
+        vec = (L @ xmat.T)
         n = len(L)
         geomid = np.full(n, -1, dtype=np.int32)
         dist = np.full(n, -1.0, dtype=np.float64)
