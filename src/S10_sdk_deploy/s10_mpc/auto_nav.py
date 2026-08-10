@@ -779,6 +779,13 @@ class AutoNavFollower:
         # v387（用户：先防错过航点打转，速度>1m/s 即可）：到达制动——
         # 接近航点且偏航大时速度压到 1.2（差速转向轨道半径 r=v/om 缩小，
         # 防过冲后绕航点打转）。连续量，温和版不拖慢正常航段。
+        # v743: err 门控压速——发卡弯后 vlim 窗口已过弯心但 yaw 未转完
+        # （wp4→5 err=2.83 实测冲弯侧翻）。err>0.5 起线性压到弯速。
+        _err_gate = float(os.environ.get("S10_AUTO_ERR_VLIM_GATE", "0.5"))
+        _err_vx = float(os.environ.get("S10_AUTO_ERR_VLIM_VX", "1.5"))
+        if abs(err) > _err_gate:
+            _ef = float(np.clip((abs(err) - _err_gate) / 0.8, 0.0, 1.0))
+            v_lim = min(v_lim, _err_vx + (v_lim - _err_vx) * (1.0 - _ef))
         v_lim = min(v_lim, self.max_speed * elev_factor)
         if (d_wp < float(os.environ.get("S10_AUTO_ARRIVE_DIST", "1.2"))
                 and abs(err) > float(os.environ.get(

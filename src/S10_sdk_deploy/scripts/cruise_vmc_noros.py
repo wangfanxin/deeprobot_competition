@@ -972,11 +972,23 @@ def main():
                         wheel_xyz[:, 1]))) + 0.205
                 except Exception:
                     _zd = 0.0
+            # v746: 到最近横脊的路径距离（连续量）——横脊窗口内轮矩恢复
+            # μN 钳制防弹跳（wp4→5 发卡+横脊 err 门控切换侧翻实测）
+            _ridge_d = 99.0
+            try:
+                _rs_arr = getattr(fol, 'ridge_s', [])
+                if _rs_arr:
+                    _rd = [abs(s_cur - _r) for _r in _rs_arr]
+                    _ridge_d = float(min(_rd))
+            except Exception:
+                pass
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
                       yaw_scale=(1.0 - float(np.clip(
                           float(np.max(step_lift)) * 0.5, 0.0, 0.55))
-                          if _in_stairzone_now else 1.0 - _lift_act), hop=hop,
+                          if _in_stairzone_now else 1.0 - _lift_act),
+                      ridge_dist=_ridge_d,
+                      hop=hop,
                       step_lift=step_lift,
                       body_lift=_body_lift,
                       stair_lift=stair_lift_flag,

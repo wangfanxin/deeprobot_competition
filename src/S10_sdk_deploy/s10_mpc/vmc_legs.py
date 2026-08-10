@@ -1019,16 +1019,30 @@ class CarVMC:
             t_yaw = _ty
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
                        - self.wheel_d * wq + t_yaw)
-            # 动态钳制：按该腿实际分配载荷
+            # v743: 直线全力/弯道按 err 收敛（提速）——旧版全程 μN·r≈3.4Nm
+            # 直线加速到 vref=4 需 16Nm 被压死（各段实际≈vref 一半，实测
+            # wp5→6 vlim3.0 实际1.34）。err 小（直线）给满轮矩，err 大
+            # （弯道）收敛到摩擦锥 μN·r。
             _fz_load = max(F, 0.5 * self.m * self.g / 4.0)
             _mu_w = float(os.environ.get("S10_VMC_WHEEL_MU", "0.9"))
-            # v244: 差速滑移余量——牵引钳制 μN·r 掐死差速滑移（yaw 权威上限
-            # ~0.75 rad/s）；允许差速分量额外力矩（执行器上限 14Nm 内），
-            # 使轮子受控滑移转向（dial-MPC 轮速控制时代 1.5+ rad/s 的原理）。
             _ytm = float(os.environ.get("S10_VMC_YAW_TMAX", "0.0"))
+            _wt_curve = (_mu_w * _fz_load * self.fk.r
+                         + _ytm * min(abs(self._om_f) / 0.5, 1.0))
+            _wt_straight = float(os.environ.get("S10_VMC_WHEEL_TMAX", "13.5"))
+            # 门限用导航偏航误差 err（比 om_cmd 更本质）——S弯 om 交替快、
+            # om 门限来不及切换实测翻车；err 大立即收敛。
+            _yerr = abs(float(cmd.get("yaw_err", 0.0)))
+            _w_f = float(np.clip(
+                1.0 - _yerr / float(os.environ.get(
+                    "S10_VMC_WT_ERR_GATE", "0.4")), 0.0, 1.0))
+            # v746: 横脊窗口（路径距离<0.8m）轮矩恢复 μN——发卡弯+横脊
+            # 复合段 err 门控全力切换导致弹跳侧翻（wp4→5 实测）；连续距离量
+            _rd = float(cmd.get("ridge_dist", 99.0))
+            if _rd < float(os.environ.get("S10_VMC_WT_RIDGE_D", "0.8")):
+                _w_f = 0.0
             _wt = float(np.clip(
-                _mu_w * _fz_load * self.fk.r
-                + _ytm * min(abs(self._om_f) / 0.5, 1.0), -13.5, 13.5))
+                _w_f * _wt_straight + (1.0 - _w_f) * _wt_curve,
+                -13.5, 13.5))
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -_wt, _wt))
         tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
         return tau
