@@ -3,7 +3,7 @@
 # 巡航：N768/H25 提频 + v213b 直线修复（adaptive sigma / CTE_LP / wp 提前通过）
 # 台阶：N2048/H20 + v216 轮锁 v4（stair 会话当前最佳）
 # 用法: S10_VER=xxx S10_AUTO_MAX_WP=33 bash tmp/run_orig_full.sh
-cd /home/wfx/DR_competition/deeprobot_competition
+cd /home/wfx/DR_competition/0810new/deeprobot_competition
 export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-$HOME/.cache/s10_dial_mpc}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.15

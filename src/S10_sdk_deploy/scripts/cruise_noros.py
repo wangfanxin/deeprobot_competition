@@ -10,7 +10,7 @@ try:
 except Exception:
     _HAS_VIEWER = False
 
-PKG = '/home/wfx/DR_competition/deeprobot_competition/src/S10_sdk_deploy'
+PKG = '/home/wfx/DR_competition/0810new/deeprobot_competition/src/S10_sdk_deploy'
 sys.path.insert(0, PKG)
 sys.path.insert(0, '/home/wfx/DR_competition/dial-mpc')
 os.environ.setdefault('JAX_COMPILATION_CACHE_DIR',
@@ -27,7 +27,7 @@ WP_TIMEOUT = float(os.environ.get('S10_WP_TIMEOUT', '60.0'))
 XML = os.environ.get('S10_XML',
     f'{PKG}/S10_description/s10_mjcf/mjcf/S10_track.xml')
 MPC_YAML = os.environ.get('S10_MPC_YAML',
-    '/home/wfx/DR_competition/deeprobot_competition/doc/s10_mpc_deploy.yaml')
+    '/home/wfx/DR_competition/0810new/deeprobot_competition/doc/s10_mpc_deploy.yaml')
 
 JOINT_INIT = np.array([-0.438, -1.16, 2.45, 0.0,
                         0.438, -1.16, 2.45, 0.0,

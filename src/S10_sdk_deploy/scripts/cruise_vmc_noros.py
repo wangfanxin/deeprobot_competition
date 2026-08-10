@@ -13,7 +13,7 @@ try:
 except Exception:
     _HAS_VIEWER = False
 
-PKG = '/home/wfx/DR_competition/deeprobot_competition/src/S10_sdk_deploy'
+PKG = '/home/wfx/DR_competition/0810new/deeprobot_competition/src/S10_sdk_deploy'
 sys.path.insert(0, PKG)
 from s10_mpc.auto_nav import AutoNavFollower
 from s10_mpc.body_mppi import BodyMPPI

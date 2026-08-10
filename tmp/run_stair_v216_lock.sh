@@ -1,7 +1,7 @@
 #!/bin/bash
 # v215 最优楼梯配置（wp6→wp7，稳定可复现）：
 # 右侧（FR/HR）全达标、左侧（HL）为硬墙；防翘头+无撞阶+prox 门控+HL sigma。
-cd /home/wfx/DR_competition/deeprobot_competition
+cd /home/wfx/DR_competition/0810new/deeprobot_competition
 export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-$HOME/.cache/s10_dial_mpc}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.15

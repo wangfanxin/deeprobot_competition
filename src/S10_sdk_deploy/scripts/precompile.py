@@ -2,7 +2,7 @@
 """最小预热脚本：初始化 MPC + plan_once 一次，打印 JIT 耗时。"""
 import os, sys, time
 import numpy as np
-PKG = '/home/wfx/DR_competition/deeprobot_competition/src/S10_sdk_deploy'
+PKG = '/home/wfx/DR_competition/0810new/deeprobot_competition/src/S10_sdk_deploy'
 sys.path.insert(0, PKG)
 sys.path.insert(0, '/home/wfx/DR_competition/dial-mpc')
 os.environ.setdefault('JAX_COMPILATION_CACHE_DIR', os.path.expanduser('~/.cache/s10_dial_mpc'))
@@ -10,7 +10,7 @@ os.environ.setdefault('JAX_COMPILATION_CACHE_DIR', os.path.expanduser('~/.cache/
 import mujoco
 from s10_mpc.mpc_controller import MPCController
 XML = f'{PKG}/S10_description/s10_mjcf/mjcf/S10_track.xml'
-MPC_YAML = '/home/wfx/DR_competition/deeprobot_competition/doc/s10_mpc_deploy.yaml'
+MPC_YAML = '/home/wfx/DR_competition/0810new/deeprobot_competition/doc/s10_mpc_deploy.yaml'
 JOINT_INIT = np.array([-0.438, -1.16, 2.45, 0.0, 0.438, -1.16, 2.45, 0.0,
                        -0.438, 1.16, -2.45, 0.0, 0.438, 1.16, -2.45, 0.0])
 t0 = time.time()

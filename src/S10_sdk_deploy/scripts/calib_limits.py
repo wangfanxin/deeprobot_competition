@@ -4,7 +4,7 @@ import os, sys, json
 import numpy as np
 import mujoco
 
-PKG = '/home/wfx/DR_competition/deeprobot_competition/src/S10_sdk_deploy'
+PKG = '/home/wfx/DR_competition/0810new/deeprobot_competition/src/S10_sdk_deploy'
 sys.path.insert(0, PKG)
 from s10_mpc.vmc_legs import CarVMC, WHEEL_BODY
 
