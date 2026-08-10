@@ -117,6 +117,10 @@ def main():
         # v218m: 横脊限速（同节点 _scan_ridge_zones）——防高速冲棱
         _rv = float(os.environ.get('S10_RIDGE_VX', '1.5'))
         for _k in ridge_idx:
+            if dh[_k] > 0.5:
+                # v689: 墙/垂直障碍（dh>0.5）不做限速——墙绕行/跳过处理，
+                # 限速 2.5 会让狗在墙区爬行拖慢整段（wp11→12 实测）
+                continue
             _lo = max(0, _k - int(2.0 / fol.path_res))
             _hi = min(len(fol.path_vlim), _k + int(1.2 / fol.path_res))
             fol.path_vlim[_lo:_hi] = np.minimum(
@@ -500,7 +504,9 @@ def main():
                 for (_rp, _tng, _sr, _dh) in ridge_world:
                     # v285: 只对 dh>=0.08 的脊抬轮（<0.08 微脊=轮滚微起伏，
                     # 腿阻抗吸收，不抬）
-                    if _dh < 0.08:
+                    if _dh < 0.08 or _dh > 0.5:
+                        # v684: dh>0.5 是墙/垂直障碍（如 wp11→12 的 3.55m 墙），
+                        # 不是可爬台阶——抬轮无用且会翻车，跳过
                         continue
                     _dd = float(np.dot(_ax - _rp, _tng))
                     if -0.3 <= _dd <= 0.8 and _dd < _dmin_r:
@@ -915,6 +921,7 @@ def main():
                       stair_lift=stair_lift_flag,
                       lift_f_scale=_lfs,
                       z_min=1.0 if _in_stairzone_now else 0.0,
+                      fp_place=1.0 if _in_stairzone_now else 0.0,
                       pure_fwd=(1.0 if (float(os.environ.get(
                           'S10_STAIR_PURE_FWD', '0')) > 0
                                         and _in_stairzone_now

@@ -500,7 +500,11 @@ class AutoNavFollower:
                 # wp5→6 翻车 v656-667）；wp8→15 段（wp9 急弯+高架直道）需要
                 # 延伸 0.5m 才稳（v657）——S10_CURVE_EXTEND 分赛段启用
                 if _cext > 0.0 and _kk > 1.0:
-                    _end9 = min(len(vlim), k + int(_cext / res) + 1)
+                    # v681: 分级延伸——κ>4.2（wp12 发卡弯）用满额 _cext；
+                    # 其余 κ>1 只延伸 0.5m（wp9 弯延伸 2m 把 wp9→10 拖到
+                    # 10.71s 超限）
+                    _ext9 = (_cext if _kk > 4.2 else min(_cext, 0.5))
+                    _end9 = min(len(vlim), k + int(_ext9 / res) + 1)
                     vlim[k:_end9] = np.minimum(vlim[k:_end9], _vl9)
                 else:
                     vlim[k] = min(vlim[k], _vl9)
@@ -732,10 +736,20 @@ class AutoNavFollower:
         # 8m 前瞻 = 4m/s 下提前 2s 减速，弯道转向跟得上）
         # v617: STAIR 模式 vlim 前视收窄到 2m——楼梯是直道，5m 前视会
         # 看到 wp7 出口弯（κ2.66→1.73）把爬楼速度压到 1.74（实测）
-        _vll = float(os.environ.get(
+        _vll_env = os.environ.get(
             "S10_AUTO_VLIM_LOOKAHEAD" + ("_STAIR" if self.mode == "STAIR"
-                                         else ""),
-            "2.0" if self.mode == "STAIR" else "5.0"))
+                                         else ""), "")
+        if _vll_env:
+            _vll = float(_vll_env)
+        elif self.mode == "STAIR":
+            _vll = 2.0
+        else:
+            # v688: 速度自适应前视——刹车距离 v²/2a + 1.5m 余量
+            # （低速 2.5→2.6m 不多爬，高速 5→4.6m 刹得住；固定 5m 让
+            # wp12 弯前爬 3m 慢 1s，固定 2m 又刹不住翻车）
+            _vll = float(np.clip(
+                self._last_vx * self._last_vx / (2.0 * self.max_accel)
+                + 1.5, 2.0, 5.0))
         _k_far = min(self._k_near + int(_vll / self.path_res),
                      len(self.path_vlim) - 1)
         v_lim = float(np.min(self.path_vlim[self._k_near:_k_far + 1]))
