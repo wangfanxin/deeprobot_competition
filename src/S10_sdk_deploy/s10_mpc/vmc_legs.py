@@ -177,9 +177,13 @@ class VMCController:
                 1.0 - max(0.0, _lift_amt - 0.02) / 0.05, 0.0, 1.0))
         else:
             self._ground_f = 1.0
-        k = min(1.0, dt / 0.04)
-        # v218c: 身体加速度温和化（轮腿猛推会抬头炸）——0.25s 斜坡
-        k = min(1.0, dt / 0.25)
+        # v746: 楼梯区 vx 低通加快（0.04s）——0.25s 斜坡让狗在楼梯前慢速
+        # 蠕动 v_ref 0.03（实测 WBC 卡死），CPG 抬轮永远等不到。巡航保持 0.25s
+        # 温和加速（防轮腿猛推抬头）。
+        _vt = float(os.environ.get("S10_VMC_VX_TAU", "0.25"))
+        if float(cmd.get("z_min", 0.0)) > 0.0:
+            _vt = 0.04
+        k = min(1.0, dt / _vt)
         self._vx_f += (float(cmd["vx"]) - self._vx_f) * k
         self._om_f += (float(cmd["omega"]) - self._om_f) * k
         self._roll_f += (float(cmd.get("roll_tar", 0.0)) - self._roll_f) * k
@@ -249,17 +253,28 @@ class VMCController:
         T_des_w = body["R"] @ np.array([T_roll_b, T_pitch_b, T_yaw_b])
         W = np.concatenate([F_des_w, T_des_w])
         A6 = np.zeros((6, 12))
+        _sl_all = np.asarray(cmd.get("step_lift", np.zeros(4)))
+        _support_legs = []
         for leg in range(4):
             rw = wheel_xyz[leg] - body["pos"]
             S = np.array([
                 [0.0, -rw[2], rw[1]],
                 [rw[2], 0.0, -rw[0]],
                 [-rw[1], rw[0], 0.0]])
-            # v218f: 身体 wrench = 腿对轮力 f 的反作用（-f）：A6 整体取反
+            # v746: 抬轮腿（sl>0.3）从 wrench 求解中屏蔽——支撑腿承担全部
+            # 载荷。pinv 后乘 (1-sl) 会破坏解使总支撑不足、身体塌陷悬空
+            # （WBC fn=0 卡死实测）。屏蔽后支撑腿力自然加大，抬轮腿=0。
+            if float(_sl_all[leg]) > 0.3:
+                continue
+            _support_legs.append(leg)
             A6[0:3, leg * 3:leg * 3 + 3] = -np.eye(3)
             A6[3:6, leg * 3:leg * 3 + 3] = -S
         try:
             f_legs = np.linalg.pinv(A6) @ W
+            # 抬轮腿力归零（未参与求解）
+            for leg in range(4):
+                if leg not in _support_legs:
+                    f_legs[leg * 3:leg * 3 + 3] = 0.0
             _qpm = os.environ.get("S10_VMC_QP", "0")
             if _qpm == "1":
                 f_legs = self._solve_wbc_qp(A6, W, f_legs)
@@ -404,16 +419,27 @@ class VMCController:
                 _wt = float(_wt_env)
             else:
                 # v218y: 载荷用“静载+地形阻抗力”而非 WBC pinv
-                # 解出的 fw[2]（最小范数解会把垂直分量分散）
                 _mu_w = float(os.environ.get("S10_VMC_WHEEL_MU", "0.9"))
                 _fz_load = (self.m * self.g / 4.0
                             + self.kp_h * (pz_des - p[2])
                             - self.kd_h * float(wheel_vel[leg, 2]))
-                # v219l: 钳制下限用 0.5×静载（防减载轮
-                # 推力崩溃到 0.36Nm 引发正反馈振荡）
+                _wt_curve = (_mu_w * max(
+                    _fz_load, 0.5 * self.m * self.g / 4.0) * self.fk.r)
+                _wt_straight = float(os.environ.get(
+                    "S10_VMC_WBC_WHEEL_TMAX", "13.5"))
+                # v746: 直线全力/弯道收敛（同 CarVMC）——WBC 全程 μN·r
+                # 只有 1.7-3.4Nm，楼梯前推进力不足 fn 单轮卡死实测
+                _yerr = abs(float(cmd.get("yaw_err", 0.0)))
+                _w_f = float(np.clip(
+                    1.0 - _yerr / float(os.environ.get(
+                        "S10_VMC_WT_ERR_GATE", "0.4")), 0.0, 1.0))
+                _rd = float(cmd.get("ridge_dist", 99.0))
+                if _rd < float(os.environ.get(
+                        "S10_VMC_WT_RIDGE_D", "0.8")):
+                    _w_f = 0.0
                 _wt = float(np.clip(
-                    _mu_w * max(_fz_load, 0.5 * self.m * self.g / 4.0)
-                    * self.fk.r, -13.5, 13.5))
+                    _w_f * _wt_straight + (1.0 - _w_f) * _wt_curve,
+                    -13.5, 13.5))
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -_wt, _wt))
             if (os.environ.get('S10_WBC_DEBUG', '0') == '1'
                     and body['pos'][1] > 36.0 and leg == 2):

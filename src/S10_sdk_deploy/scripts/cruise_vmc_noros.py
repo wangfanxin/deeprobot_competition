@@ -444,13 +444,20 @@ def main():
         _iszn9 = (next_idx >= 2 and next_idx - 1 < len(fol.stair_zone)
                   and bool(fol.stair_zone[next_idx - 1]))
         _fp_active = os.environ.get('S10_VMC_MODE', 'wbc') in ('place', 'dual2')
-        # v732/v736: lidar 高程图在楼梯区失真（读出 1.16，实际台面 0.54）。
-        # 用已知地图台面表覆盖轮下地形——所有 stair 模式（FootPlace/WBC）
-        # 都需要正确地形，否则 z_des 过高轮子离地（fn=0 卡死实测）。
-        if _iszn9:
+        # v746: lidar 高程图在楼梯区失真。但轮下地形与抬轮目标要分开——
+        # WBC（力控）：轮下地形用运动学地面（轮心 z - 半径），支撑腿贴地
+        # 承重，body 高度不被台面表顶起（z_des 过高→四轮悬空 fn=0 实测）；
+        # 抬轮目标由 place_z 单独给（见 CPG 分支）。
+        # FootPlace（IK 放轮）：保持台面表覆盖（它把轮直接放台面上）。
+        if _iszn9 and _fp_active:
             try:
                 terr = np.asarray(fol.stair_terrain(wheel_xyz[:, 1]),
                                   dtype=np.float64)
+            except Exception:
+                pass
+        elif _iszn9:
+            try:
+                terr = np.asarray(wheel_xyz[:, 2], dtype=np.float64) - 0.081
             except Exception:
                 pass
         if _iszn9 and stair_world and not _fp_active:
@@ -770,12 +777,12 @@ def main():
             # v225/v583: 巡航段爬坡前倾匹配坡度（轮推力对准）；楼梯区
             # 反向——车身**抬头**匹配台阶坡度，抬升前髋让抬轮过 0.13m 棱
             # （低头会把前髋压低，前轮差 1cm 卡棱实测）。
-            if _in_stairzone_now:
-                # v595: 楼梯段 pitch 用**轴距坡度**（前后轮下地形差/0.456m），
-                # 1.2m 前瞻会把 0.42 rad 抹成 0.157——前髋须 ≥0.751
+            if _in_stairzone_now and float(np.max(step_lift)) > 0.02:
+                # v746: 楼梯 pitch 只在 CPG 实际抬轮时生效，且上限 0.30——
+                # 前轮上台面后后轮必须贴地推（fn 单轮悬空卡死实测）。
                 _pfr = float(np.mean(terr[0:2])); _prr = float(np.mean(terr[2:4]))
                 pitch_tar = float(np.clip(
-                    np.arctan2(_pfr - _prr, 0.456), 0.20, 0.50))
+                    np.arctan2(_pfr - _prr, 0.456), 0.10, 0.30))
             else:
                 pitch_tar = float(np.clip(
                     np.arctan2(h_a - h_b, 1.2), -0.35, 0.35))
