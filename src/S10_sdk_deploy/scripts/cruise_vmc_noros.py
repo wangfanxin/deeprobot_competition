@@ -319,8 +319,10 @@ def main():
                     if -0.3 <= _dd <= 0.8 and _dd < _dmin_r:
                         _dmin_r = _dd
                 if _dmin_r < 0.8:
+                    # v277: 抬轮提前满幅（0.5m 前起抬、0.2m 前满）——
+                    # 0.6 幅值(0.085m)不够 0.12m 脊，撞脊面失速死锁
                     _lift_r = float(
-                        np.clip((0.5 - _dmin_r) / 0.3, 0.0, 1.0)
+                        np.clip((0.8 - _dmin_r) / 0.3, 0.0, 1.0)
                         * np.clip((_dmin_r + 0.3) / 0.3, 0.0, 1.0))
                     if _lift_r > 0.02:
                         if _ai == 0:
