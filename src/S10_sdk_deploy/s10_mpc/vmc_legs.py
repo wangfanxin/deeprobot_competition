@@ -866,7 +866,7 @@ class CarVMC:
             # v664: IK 落脚点覆盖（cmd.fp_place=1 且抬轮 sl>0.3）——轮直接
             # 放到 terrain+r（脚本落脚点地形已传台面高），姿态由 R/P 保持
             _fp = float(cmd.get("fp_place", 0.0))
-            if _fp > 0.0 and sl > 0.3 and terrain_h is not None:
+            if False and _fp > 0.0 and sl > 0.3 and terrain_h is not None:
                 # v732: 启用 IK 落脚（原 if False）——抬轮腿直接放到
                 # 台面+半径（place_z 由脚本 stair 表给，terr 已覆盖）。
                 # 投影用 body 前向 + 世界 z 差（同 FootPlace 修正）。
@@ -1121,14 +1121,20 @@ class FootPlaceVMC:
                     vx=float(vw[0]), R=R)
 
     def _ik(self, xd, zd, q1, q2):
-        """2D IK：轮目标 (xd, zd)（相对髋，sagittal，zd 向上）→ q1/q2。"""
-        for _ in range(8):
+        """2D IK：轮目标 (xd, zd)（相对髋，sagittal，zd 向上）→ q1/q2。
+        v733: 加关节范围钳制——楼梯抬升目标接近工作空间边界时裸迭代会
+        翻到镜像解（q1=2.7 实测），钳制后只收敛到正常半蹲/迈步构型。"""
+        for _ in range(10):
             p = self.fk.wheel_pos(q1, q2)
             err = np.array([xd - p[0], zd + p[1]])
             J = self.fk.jac(q1, q2)
             dq = np.linalg.lstsq(J, err, rcond=None)[0]
-            dq = np.clip(dq, -0.3, 0.3)
+            dq = np.clip(dq, -0.25, 0.25)
             q1 += float(dq[0]); q2 += float(dq[1])
+            # v733: 站姿 hipy≈-1.16（腿在髋下/后）；钳制到负区间防
+            # IK 收敛到前摆镜像解（q1=+0.66 时轮前移 0.21m 实测乱转）
+            q1 = float(np.clip(q1, -1.7, -0.35))
+            q2 = float(np.clip(q2, -0.2, 3.0))
         return q1, q2
 
     def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel,
@@ -1176,15 +1182,20 @@ class FootPlaceVMC:
             # 落脚目标：支撑腿 = 轮下地形+半径；抬升腿按 CPG 波形插值到
             # 台面高+半径+margin（v732 连续抬升轨迹，非二值跳变）
             wz_ground = float(terrain_h[leg]) + self.fk.r
+            # v732: 整体抬身——楼梯区四腿统一加 (z_des - body_z) 抬升量，
+            # body 随台阶逐级升（z_des=台面+站高），轮目标才落在髋下可达区。
+            _zd = float(cmd.get("z_des", 0.0))
+            _zd_lift = 0.0
+            if _zd > 0.01:
+                _zd_lift = float(np.clip(_zd - float(body["pos"][2]),
+                                         -0.08, 0.08))
             if pz > 0.01 and sl > 0.02:
-                # v732: 抬升腿目标 = 台面+半径+margin（直接定目标，不依赖
-                # 当前轮高——狗被顶起后轮高做基准会正反馈猛伸）
-                wz = pz + self.fk.r + _margin
+                # 抬升腿 = 台面+半径+margin + 抬身量（跨步上下一级）
+                wz = pz + self.fk.r + _margin + _zd_lift
             else:
-                wz = wz_ground
-            # v732: 轮目标永远不高于髋（世界 z <= 髋 z）——身体抬升由
-            # CPG 前轮跨步自然带起（前轮上台面→前髋抬高→pitch 抬头）。
-            # 目标高于髋时截断到髋，IK 不会翻转。
+                wz = wz_ground + _zd_lift
+            # v733: 轮目标严格不高于髋——IK 期望轮在髋下方（pz_down 正），
+            # rel_z>0 会让腿反向弯折侧翻（v752 实测）。抬身全靠 zd_lift。
             wz = min(wz, float(hip_w[2]))
             # 目标低通（τ=0.08s）——CPG 波形已连续，低通只滤地形跳变
             self._wz_f[leg] += (wz - self._wz_f[leg]) * min(1.0, dt / 0.08)
@@ -1218,8 +1229,6 @@ class FootPlaceVMC:
             # v732: 抬升腿放宽 IK 伸展钳制（上 0.125m 台面需轮相对髋
             # z≈-0.25~-0.31，原 -0.16 锁死抬升）；支撑腿保持 -0.16 防猛伸
             _lo = -0.34 if sl > 0.1 else -0.16
-            # v732: 轮目标永远不高于髋（rel_z<=0）——正 rel_z 是 IK 翻转
-            # 顶飞身体根因（q1=2.6 实测）。抬升靠 z_des 抬身实现
             _hi = 0.0
             if os.environ.get('S10_FP_DEBUG', '0') == '1' and leg == 0:
                 print('[FP] t=%.2f sl=%.2f pz=%.3f wz_tgt=%.3f wz_act=%.3f '
