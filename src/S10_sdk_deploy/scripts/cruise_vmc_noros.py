@@ -207,9 +207,10 @@ def main():
             terr_foot = np.array([terrain_at(wheel_xyz[i, 0],
                                              wheel_xyz[i, 1])
                                   for i in range(4)])
-            # v230: lidar 无数据区运动学地面估计（轮心-r）——轨道边缘
-            # 射线打空返回 0 致腿塌/yaw失控（wp5→6 缓坡根因）
-            if os.environ.get('S10_VMC_TERRAIN', 'ray') == 'lidar':
+            # v231: 运动学 fallback 默认关（改变 wp4→5 部分格值致混沌翻车）；
+            # 需要时 S10_VMC_TERRAIN_KIN=1（wp5→6 缓坡无数据区）
+            if (os.environ.get('S10_VMC_TERRAIN_KIN', '0') == '1'
+                    and os.environ.get('S10_VMC_TERRAIN', 'ray') == 'lidar'):
                 for _i in range(4):
                     if not lterr.has(wheel_xyz[_i, 0], wheel_xyz[_i, 1]):
                         terr_foot[_i] = float(wheel_xyz[_i, 2] - 0.081)
@@ -293,8 +294,10 @@ def main():
             terr[2:] = np.maximum(terr[2:], terr[2:] + _lift * 0.8)
 
 
-        # 压弯 + 坡度
-        roll_tar = float(np.clip(0.20 * om_c * abs(vx_c), -0.40, 0.40))
+        # v233: 压弯（向心加速度来自重力分量）——左转(om>0)内倾(roll<0)，
+        # 此前符号反了(外倾与离心力同向→高速翻车根因)。0.35 猛倾干扰
+        # 差速(单测 yaw 0.5rad/s+轮振荡)，降 0.25
+        roll_tar = float(np.clip(-0.25 * om_c * abs(vx_c), -0.40, 0.40))
         pitch_tar = 0.0
         try:
             fwd = d.xmat[1][0:2]
