@@ -94,6 +94,16 @@ def main():
         print(f'[VMC] 楼梯区 riser {len(stair_risers)} 处', flush=True)
     except Exception as e:
         print('[VMC] 楼梯预扫描失败', e, flush=True)
+    # v247: 横脊世界坐标表（供物理距离触发，替代 s_cur 投影——转向时 s_cur
+    # 滞后导致步态漏触发，wp4→5 撞脊翻车实测）
+    ridge_world = []
+    try:
+        for (sr, dhv) in ridge_arcs:
+            _k = int(np.searchsorted(fol.path_cum, sr, side='right') - 1)
+            _k = min(max(_k, 0), len(fol.path_pts) - 1)
+            ridge_world.append((fol.path_pts[_k, :2].copy(), sr, dhv))
+    except Exception as e:
+        print('[VMC] 横脊坐标表失败', e, flush=True)
 
     mppi = BodyMPPI(
         N=int(os.environ.get('VMC_MPPI_N', '256')),
@@ -273,23 +283,28 @@ def main():
                 step_lift[:] = [_fl_max, _fl_max, _rl_max, _rl_max]
                 stair_lift_flag = 1.0
         elif float(os.environ.get('S10_VMC_STEP_OVER', '0')) > 0:
-            # v220a: 单步跨越状态机——横脊 0.125m > 轮半径 0.081，轮滚不上，
-            # 前轮抬膝跨脊（0.45s）后轮跟抬（0.45s），迈步时关 RIDGE_LIFT
-            _near_ridge = any(
-                0.2 <= sr - s_cur <= 0.9 for (sr, dhv) in ridge_arcs)
-            _step_dur = float(os.environ.get('S10_VMC_STEP_DUR', '0.8'))
-            if _near_ridge and _step_state == 0:
-                _step_state = 1
-                _step_t0 = t
-            elif _step_state == 1 and t - _step_t0 > _step_dur:
-                _step_state = 2
-                _step_t0 = t
-            elif _step_state == 2 and t - _step_t0 > _step_dur:
-                _step_state = 0
-            if _step_state == 1:
-                step_lift[:] = [1.0, 1.0, 0.0, 0.0]
-            elif _step_state == 2:
-                step_lift[:] = [0.0, 0.0, 1.0, 1.0]
+            # v247: 横脊连续抬放（替代 v220a 状态机）——按前/后轴到横脊的
+            # 世界坐标物理距离触发（s_cur 投影在转向时滞后会漏触发）：
+            # 前轴 0.9m 前起抬、过脊即放；后轴同窗口。与台阶步态同模式。
+            _fwdv = d.xmat[1][0:2]
+            _fn2 = float(np.hypot(_fwdv[0], _fwdv[1])) + 1e-9
+            _fx2, _fy2 = _fwdv[0] / _fn2, _fwdv[1] / _fn2
+            _fax = np.array([body_pos[0] + _fx2 * 0.228,
+                             body_pos[1] + _fy2 * 0.228])
+            _rax = np.array([body_pos[0] - _fx2 * 0.228,
+                             body_pos[1] - _fy2 * 0.228])
+            _fl2, _rl2 = 0.0, 0.0
+            for (_rp, _sr, _dh) in ridge_world:
+                _dfr = float(np.linalg.norm(_fax - _rp))
+                _drr = float(np.linalg.norm(_rax - _rp))
+                _fl2 = max(_fl2, float(
+                    np.clip((0.9 - _dfr) / 0.30, 0.0, 1.0)
+                    * np.clip((_dfr - 0.02) / 0.15, 0.0, 1.0)))
+                _rl2 = max(_rl2, float(
+                    np.clip((0.9 - _drr) / 0.30, 0.0, 1.0)
+                    * np.clip((_drr - 0.02) / 0.15, 0.0, 1.0)))
+            if _fl2 + _rl2 > 0.02:
+                step_lift[:] = [_fl2, _fl2, _rl2, _rl2]
 
         # v221e: 车身抬升（过脊）——渐变：脊前 0.6m 起、0.2m 处满，
         # 过脊后 0.4m 内回落（防阶跃弹跳侧翻）
@@ -360,7 +375,10 @@ def main():
             # wp3→4 高差毛刺曾导致 hop=300 侧翻）
             hop = np.zeros(4, dtype=np.float64)
             _in_hop_zone = any(
-                -1.0 <= sr - s_cur <= 1.5 for (sr, dhv) in ridge_arcs)
+                float(np.linalg.norm(
+                    np.array([body_pos[0] + d.xmat[1][0] * 0.228,
+                              body_pos[1] + d.xmat[1][1] * 0.228])
+                    - _rp)) < 1.5 for (_rp, _sr, _dh) in ridge_world)
             if _in_hop_zone and stair_lift_flag <= 0.0:
                 _fwd2 = d.xmat[1][0:2]
                 _fx, _fy = _fwd2[0], _fwd2[1]
