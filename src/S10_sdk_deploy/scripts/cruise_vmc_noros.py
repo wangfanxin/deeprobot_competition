@@ -80,6 +80,7 @@ def main():
 
     # 已知地图横脊预扫描（与节点 _scan_ridge_zones 同法）
     ridge_arcs = []
+    _ridge_signed = {}
     try:
         pts = fol.path_pts
         hs = np.empty(len(pts))
@@ -88,10 +89,13 @@ def main():
             hit = mujoco.mj_ray(m, d, [p[0], p[1], 8.0], [0, 0, -1],
                                 None, False, -1, g, nrm)
             hs[k] = (8.0 - hit) if g[0] >= 0 else float(p[2])
-        dh = np.abs(np.diff(hs))
+        dh_s = np.diff(hs)
+        dh = np.abs(dh_s)
         skip_s = float(fol.path_wp_s[1]) - 2.0
         ridge_idx = np.where((dh > 0.12) & (fol.path_cum[:len(dh)] > skip_s))[0]
         ridge_arcs = [(float(fol.path_cum[k]), float(dh[k])) for k in ridge_idx]
+        _ridge_signed = {float(fol.path_cum[k]): float(dh_s[k])
+                         for k in ridge_idx}
         # v218m: 横脊限速（同节点 _scan_ridge_zones）——防高速冲棱
         _rv = float(os.environ.get('S10_RIDGE_VX', '1.5'))
         for _k in ridge_idx:
@@ -109,8 +113,11 @@ def main():
     stair_risers = []
     try:
         _s6 = float(fol.path_wp_s[6]); _s7 = float(fol.path_wp_s[7])
-        stair_risers = [(sr, dhv) for (sr, dhv) in ridge_arcs
-                        if _s6 <= sr <= _s7 and dhv >= 0.09]
+        # v587: 楼梯 riser 只取**上升沿**（dh_s>=0.12）——wp5→6 第二级是
+        # 0.60 平台降到 0.48 的**下降沿**，|dh| 误判为台阶导致 CPG 空转。
+        stair_risers = [(sr, _ridge_signed.get(sr, dhv))
+                        for (sr, dhv) in ridge_arcs
+                        if _s6 <= sr <= _s7 and _ridge_signed.get(sr, dhv) >= 0.12]
         print(f'[VMC] 楼梯区 riser {len(stair_risers)} 处', flush=True)
     except Exception as e:
         print('[VMC] 楼梯预扫描失败', e, flush=True)
@@ -131,6 +138,24 @@ def main():
             ridge_world.append((_pt, _tng, sr, dhv))
     except Exception as e:
         print('[VMC] 横脊坐标表失败', e, flush=True)
+    # v571: 楼梯 riser 世界坐标表（供几何同步抬放窗——s_cur 投影在转弯/
+    # 卡死时不可靠，用轮轴到 riser 面的沿路径物理距离触发）
+    stair_world = []
+    try:
+        for (_pt, _tng, _sr, _dhv) in ridge_world:
+            if stair_risers and (stair_risers[0][0] - 1.0
+                                 <= _sr <= stair_risers[-1][0] + 1.0):
+                _g9 = np.array([-1], dtype=np.int32)
+                _d9 = np.zeros(1); _n9 = np.zeros(3)
+                _hit9 = mujoco.mj_ray(
+                    m, d, [_pt[0] + _tng[0] * 0.06,
+                          _pt[1] + _tng[1] * 0.06, 8.0],
+                    [0, 0, -1], None, False, -1, _g9, _n9)
+                _top9 = (8.0 - _hit9) if _hit9 > 0 else 0.0
+                stair_world.append((_pt, _tng, _sr, _dhv, float(_top9)))
+        print(f'[VMC] 楼梯世界坐标 {len(stair_world)} 处', flush=True)
+    except Exception as e:
+        print('[VMC] 楼梯坐标表失败', e, flush=True)
 
     mppi = BodyMPPI(
         N=int(os.environ.get('VMC_MPPI_N', '4096')),
@@ -360,6 +385,24 @@ def main():
             else:
                 _terr_f = _tlp * terr + (1.0 - _tlp) * _terr_f
             terr = _terr_f
+        # v595: 楼梯落脚点——轴接近 riser 时把该轴轮下地形设为台面高
+        # （z_des 随地形中点升、pitch 用轴距坡度，前髋抬高跨棱、后轮
+        # 仍贴地受力；raw 地面会导致 z 控制把轮子悬空、后轮失牵引）
+        _iszn9 = (next_idx >= 2 and next_idx - 1 < len(fol.stair_zone)
+                  and bool(fol.stair_zone[next_idx - 1]))
+        if _iszn9 and stair_world:
+            _fwd9 = np.array([d.xmat[1][0], d.xmat[1][3]])
+            _fn9 = float(np.hypot(_fwd9[0], _fwd9[1])) + 1e-9
+            _fx9, _fy9 = _fwd9[0] / _fn9, _fwd9[1] / _fn9
+            _fax9 = body_pos[:2] + np.array([_fx9 * 0.228, _fy9 * 0.228])
+            _rax9 = body_pos[:2] - np.array([_fx9 * 0.228, _fy9 * 0.228])
+            for (_rp, _tng, _sr, _dhv, _top) in stair_world:
+                _df9 = float(np.dot(_fax9 - _rp, _tng))
+                _dr9 = float(np.dot(_rax9 - _rp, _tng))
+                if -0.30 <= _df9 <= 0.15:
+                    terr[0:2] = np.maximum(terr[0:2], _top)
+                if -0.30 <= _dr9 <= 0.15:
+                    terr[2:4] = np.maximum(terr[2:4], _top)
         s_cur = float(getattr(fol, '_s_cur', 0.0))
         # v292: 台阶窗 vx 连续插值到 STAIR_WIN_VX（默认 1.8，不归零）——
         # 窗内只换腿控制（几何相位）与轮力矩模式，vx 参考保持连续
@@ -383,6 +426,10 @@ def main():
         # 前轴窗口 = 棱边前 0.40m -> 棱边后 0.30m；后轴按半轴距 0.228m 延后。
         step_lift = np.zeros(4)
         stair_lift_flag = 0.0
+        # v573: 楼梯区标识——stair_zone 内由 CPG 步态独占抬轮，
+        # 巡航横脊抬轮/后轮跟抬/地形 bump 全部禁用（防前后轴双抬+塌身）。
+        _in_stairzone_now = (next_idx >= 2 and next_idx - 1 < len(fol.stair_zone)
+                             and bool(fol.stair_zone[next_idx - 1]))
         # v264: 连续前瞻抬轮（无门控）——按"轴前 0.35m 地形高 - 轴下地形高"
         # 连续抬放（比例 clamp 0.15m）。纯几何连续量，替代 hop 冲量/横脊
         # 步态等离散触发（用户原则：除 cruise/stair 切换外无门控）。
@@ -392,7 +439,7 @@ def main():
         # 近场盲区噪声；已知地图连续响应，与台阶 skill 同类）。0.5m 前起抬、
         # 过脊 0.3m 释放，前/后轴分别。
         if (float(os.environ.get('S10_VMC_RIDGE_LIFT_CONT', '1')) > 0
-                and ridge_world):
+                and ridge_world and not _in_stairzone_now):
             _fwd5 = np.array([d.xmat[1][0], d.xmat[1][3]])
             _fn5 = float(np.hypot(_fwd5[0], _fwd5[1])) + 1e-9
             _fx5, _fy5 = _fwd5[0] / _fn5, _fwd5[1] / _fn5
@@ -461,7 +508,7 @@ def main():
         # v264: lidar rise 抬轮（仅 S10_VMC_RIDGE_LIFT_CONT=0 时兜底）
         _lk_c = float(os.environ.get('S10_VMC_LIFT_LOOKAHEAD', '0.35'))
         if (float(os.environ.get('S10_VMC_RIDGE_LIFT_CONT', '1')) <= 0
-                and _lk_c > 0.05):
+                and _lk_c > 0.05 and not _in_stairzone_now):
             _fwd4 = np.array([d.xmat[1][0], d.xmat[1][3]])
             _fn4 = float(np.hypot(_fwd4[0], _fwd4[1])) + 1e-9
             _fx4, _fy4 = _fwd4[0] / _fn4, _fwd4[1] / _fn4
@@ -585,19 +632,20 @@ def main():
                 _body_lift = 1.0
         _lift = float(os.environ.get('S10_VMC_RIDGE_LIFT', '0.12'))
         _lift_act = 0.0
-        for (sr, dhv) in ridge_arcs:
-            ds = s_cur - sr
-            # v219u: 短促 bump——前轮棱前 0.8m 抬、过棱即放。
-            if -0.8 <= ds < 0.08:
-                f = float(np.clip((0.8 - abs(ds + 0.30)) / 0.8, 0.0, 1.0))
-                terr[:] = np.maximum(terr, terr + _lift * f)
-                _lift_act = max(_lift_act, f)
-            elif _step_state == 0 and 0.08 <= ds < 0.55:
-                # v220i: 迈步时后轮不抬（前轮由 step_lift 抬 + 前轮 bump 保留，
-                # 组合抬升够脊顶；后轮必须着地推车身）
-                f = float(np.clip((0.55 - ds) / 0.47, 0.0, 1.0))
-                terr[2:] = np.maximum(terr[2:], terr[2:] + _lift * f)
-                _lift_act = max(_lift_act, f)
+        if not _in_stairzone_now:
+            for (sr, dhv) in ridge_arcs:
+                ds = s_cur - sr
+                # v219u: 短促 bump——前轮棱前 0.8m 抬、过棱即放。
+                if -0.8 <= ds < 0.08:
+                    f = float(np.clip((0.8 - abs(ds + 0.30)) / 0.8, 0.0, 1.0))
+                    terr[:] = np.maximum(terr, terr + _lift * f)
+                    _lift_act = max(_lift_act, f)
+                elif _step_state == 0 and 0.08 <= ds < 0.55:
+                    # v220i: 迈步时后轮不抬（前轮由 step_lift 抬 + 前轮 bump 保留，
+                    # 组合抬升够脊顶；后轮必须着地推车身）
+                    f = float(np.clip((0.55 - ds) / 0.47, 0.0, 1.0))
+                    terr[2:] = np.maximum(terr[2:], terr[2:] + _lift * f)
+                    _lift_act = max(_lift_act, f)
         # v219i: 后轮跟抬——前轮已上棱即抬后轮。加 s_cur 接近横脊的条件：
         # 弯道/上坡时前轮天然高于后轮（>0.05），无条件触发会误抬后轮
         # 导致失去驱动力（v219a 实测 wp3→4 卡死根因）。
@@ -609,7 +657,8 @@ def main():
         # the rear wheel center target >= ridge top, and restores rear
         # step_lift to full (overrides yaw-alignment decay only for the rear).
         _crest = (float(np.clip((_lf - _lr - 0.03) / 0.06, 0.0, 1.0))
-                  if (_in_ridge and _lf > _lr + 0.03) else 0.0) * _roll_env
+                  if (_in_ridge and _lf > _lr + 0.03
+                         and not _in_stairzone_now) else 0.0) * _roll_env
         # v220b: 迈步期间禁用后轮跟抬——前轮被迈步抬起时 wz 天然高于后轮，
         # 会误把后轮也抬离地（全轮无推力死锁）
         if _step_state == 0 and _crest > 0.0:
@@ -650,12 +699,18 @@ def main():
             fx, fy = fwd[0], fwd[1]
             h_a = terrain_at(body_pos[0] + fx*0.6, body_pos[1] + fy*0.6)
             h_b = terrain_at(body_pos[0] - fx*0.6, body_pos[1] - fy*0.6)
-            # v225: 爬坡前倾匹配坡度（借鉴 dial-MPC stair_pitch_tar）——
-            # 缓坡 0.8°~15° 时车身前倾，轮推力方向对准
-            _slope = (h_a - h_b) / 1.2
-            pitch_tar = -float(np.clip(np.arctan(_slope),
-                                       -0.30, 0.30))
-            pitch_tar = float(np.clip(np.arctan2(h_a - h_b, 1.2), -0.35, 0.35))
+            # v225/v583: 巡航段爬坡前倾匹配坡度（轮推力对准）；楼梯区
+            # 反向——车身**抬头**匹配台阶坡度，抬升前髋让抬轮过 0.13m 棱
+            # （低头会把前髋压低，前轮差 1cm 卡棱实测）。
+            if _in_stairzone_now:
+                # v595: 楼梯段 pitch 用**轴距坡度**（前后轮下地形差/0.456m），
+                # 1.2m 前瞻会把 0.42 rad 抹成 0.157——前髋须 ≥0.751
+                _pfr = float(np.mean(terr[0:2])); _prr = float(np.mean(terr[2:4]))
+                pitch_tar = float(np.clip(
+                    np.arctan2(_pfr - _prr, 0.456), 0.20, 0.50))
+            else:
+                pitch_tar = float(np.clip(
+                    np.arctan2(h_a - h_b, 1.2), -0.35, 0.35))
             # v218o: 横脊抬前轮时顺坡仰头（防 pitch 控制器对抗抬升导致腿饱和）
             if _lift_act > 0.05:
                 pitch_tar = max(pitch_tar, 0.25 * _lift_act)
@@ -730,25 +785,62 @@ def main():
                 else:
                     _lsw = float(os.environ.get(
                         'S10_VMC_LIFT_SWING_STEP', '1.0'))
-                # v568: CPG 步态（S10_STAIR_CPG=1）——台阶区用相位振荡器生成
-                # 前后轴交替抬放：每前进 S10_STAIR_TREAD(0.5m) 相位走 2π，
-                # 前轴 [0,π) 抬放、后轴 [π,2π)，sin² 波形（抬到顶自动落下
-                # 放置到台面，无悬空死锁）。完全替代航点窗口触发。
+                # v568/v571: CPG 步态（S10_STAIR_CPG=1）——台阶区按**每个
+                # riser 物理位置**同步的抬放窗（sin² 波形），轮轴到棱面
+                # 距离 ±S10_STAIR_CPG_SWING(0.15m) 内抬放，棱面处达峰。
+                # 轴距 0.456m > riser 间距 0.4m：前轮跨 Rk+1 与后轮跨 Rk
+                # 仅差 0.056m，必须几何同步（自由相位会漂移错位）。相位
+                # 由实际前进/轴-棱距离驱动，卡死时冻结，无原地空转。
                 _in_stairzone = (next_idx - 1 < len(fol.stair_zone)
                                  and fol.stair_zone[next_idx - 1])
                 if (_in_stairzone
-                        and float(os.environ.get('S10_STAIR_CPG', '0')) > 0):
-                    _tread = float(os.environ.get('S10_STAIR_TREAD', '0.5'))
-                    _cpg_phase += (max(vx_c, 0.0) * DT) / _tread * 2.0 * np.pi
-                    _ph = _cpg_phase % (2.0 * np.pi)
-                    if _ph < np.pi:
-                        _fl_cpg = float(np.sin(_ph / 2.0) ** 2)
-                        _rl_cpg = 0.0
-                    else:
-                        _fl_cpg = 0.0
-                        _rl_cpg = float(np.sin((_ph - np.pi) / 2.0) ** 2)
-                    step_lift[:] = [_fl_cpg, _fl_cpg, _rl_cpg, _rl_cpg]
-                    stair_lift_flag = 1.0
+                        and float(os.environ.get('S10_STAIR_CPG', '0')) > 0
+                        and stair_world):
+                    _swing = float(os.environ.get(
+                        'S10_STAIR_CPG_SWING', '0.15'))
+                    _fwd8 = np.array([d.xmat[1][0], d.xmat[1][3]])
+                    _fn8 = float(np.hypot(_fwd8[0], _fwd8[1])) + 1e-9
+                    _fx8, _fy8 = _fwd8[0] / _fn8, _fwd8[1] / _fn8
+                    _fl_cpg, _rl_cpg = 0.0, 0.0
+                    _fax8 = body_pos[:2] + np.array([_fx8 * 0.228, _fy8 * 0.228])
+                    _rax8 = body_pos[:2] - np.array([_fx8 * 0.228, _fy8 * 0.228])
+                    _hold8 = float(os.environ.get('S10_STAIR_CPG_HOLD', '0.10'))
+                    _sw8 = _swing + _hold8
+                    for (_rp, _tng, _sr, _dhv, _top) in stair_world:
+                        _df8 = float(np.dot(_fax8 - _rp, _tng))
+                        _dr8 = float(np.dot(_rax8 - _rp, _tng))
+                        if -_sw8 <= _df8 <= _sw8:
+                            if _df8 < -_hold8:
+                                _l8 = float(np.sin(
+                                    0.5 * np.pi * (-_hold8 - _df8) / _swing)
+                                    ** 2)
+                            elif _df8 <= _hold8:
+                                _l8 = 1.0
+                            else:
+                                _l8 = float(np.sin(
+                                    0.5 * np.pi * (_sw8 - _df8) / _swing)
+                                    ** 2)
+                            _fl_cpg = max(_fl_cpg, _l8)
+                        if -_sw8 <= _dr8 <= _sw8:
+                            if _dr8 < -_hold8:
+                                _l8 = float(np.sin(
+                                    0.5 * np.pi * (-_hold8 - _dr8) / _swing)
+                                    ** 2)
+                            elif _dr8 <= _hold8:
+                                _l8 = 1.0
+                            else:
+                                _l8 = float(np.sin(
+                                    0.5 * np.pi * (_sw8 - _dr8) / _swing)
+                                    ** 2)
+                            _rl_cpg = max(_rl_cpg, _l8)
+                    if _fl_cpg + _rl_cpg > 0.02:
+                        step_lift[:] = [_fl_cpg, _fl_cpg, _rl_cpg, _rl_cpg]
+                        stair_lift_flag = 1.0
+                    if os.environ.get('S10_STAIR_DEBUG', '0') == '1':
+                        print('[CPG] t=%.1f pos=(%.2f,%.2f) yaw=%.2f fl=%.2f rl=%.2f swing=%.2f n_riser=%d'
+                              % (t, body_pos[0], body_pos[1], yaw,
+                                 _fl_cpg, _rl_cpg, _swing, len(stair_world)),
+                              flush=True)
                 elif (_in_stairzone
                         and float(os.environ.get('S10_STAIR_ANTI', '0')) > 0):
                     _fln = float(np.mean(step_lift[0:2]))
@@ -765,7 +857,9 @@ def main():
                             step_lift[0:2] * (1.0 - _ra), _afloor)
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
-                      yaw_scale=1.0 - _lift_act, hop=hop,
+                      yaw_scale=(1.0 - float(np.clip(
+                          float(np.max(step_lift)) * 0.5, 0.0, 0.55))
+                          if _in_stairzone_now else 1.0 - _lift_act), hop=hop,
                       step_lift=step_lift,
                       body_lift=_body_lift,
                       stair_lift=stair_lift_flag,

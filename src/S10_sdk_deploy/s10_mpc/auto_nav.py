@@ -847,9 +847,13 @@ class AutoNavFollower:
             # 是到段末航点 3m 内——爬楼全程仍 CRUISE，wp6→7 卡 y=38）。
             # 进入段前 S10_STAIR_ENTER_DIST（默认 1.5m）即切 STAIR，保持到
             # 段末航点通过（update_mode 里 next_idx>7 回 CRUISE）。
-            _s_zone0 = float(self.path_wp_s[next_idx - 1])
-            _use_global = (self._s_cur >= _s_zone0 - float(os.environ.get(
-                "S10_STAIR_ENTER_DIST", "1.5"))
+            # v584: 切换用**到段首航点（wp6）的物理距离**——s_cur 投影
+            # 比物理位置超前（>4m），按 s_cur 会提前到 wp5→6 第一级台阶
+            # 就切 WBC，新抬升姿态在 0.06m 小台阶上翻车实测。
+            _dseg0 = float(np.linalg.norm(
+                robot_xy - self.wp[next_idx - 1, :2]))
+            _use_global = (_dseg0 <= float(os.environ.get(
+                "S10_STAIR_ENTER_DIST", "1.5")) + 1.5
                            and self._seg_in_stair_band(next_idx - 1))
             _use_percept = (d_wp < _confirm_dist
                             and self._stair_confirmed(

@@ -157,7 +157,8 @@ class VMCController:
         vw = R.T @ np.asarray(qvel[0:3], dtype=np.float64)
         return dict(pos=qpos[0:3], yaw=yaw, roll=roll, pitch=pitch,
                     vx=float(vw[0]), vy=float(vw[1]),
-                    omega=float(qvel[5]), R=R)
+                    omega=float(qvel[5]), R=R,
+                    omega_body=float(np.dot(qvel[3:6], R[:, 2])))
 
     def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel,
                     cmd, terrain_h, dt=0.005):
@@ -306,9 +307,10 @@ class VMCController:
                 # 够 0.125m riser+余量；后轮=髋前摆+膝直，修复 v220g 后轮方向）
                 _amp = float(os.environ.get(
                     "S10_VMC_STAIR_LIFT_AMP", "1.0"))
-                if _qs < 0.0:   # 前腿：髋前摆+膝屈
-                    _q1_tgt = self.pose_target[b + 1] + _sl * 0.80 * _amp
-                    _q2_tgt = self.pose_target[b + 2] + _sl * 0.60 * _amp
+                if _qs < 0.0:   # 前腿：髋大幅前摆过竖直+膝微屈——轮心抬到
+                    # 髋上（FK: q1≈0.4/q2≈2.7 轮高+1.4cm），清 0.13m 棱
+                    _q1_tgt = self.pose_target[b + 1] + _sl * 1.55 * _amp
+                    _q2_tgt = self.pose_target[b + 2] + _sl * 0.42 * _amp
                 else:           # 后腿：髋大幅前摆+膝伸直
                     _q1_tgt = self.pose_target[b + 1] + _sl * 1.10 * _amp
                     _q2_tgt = self.pose_target[b + 2] - _sl * 0.65 * _amp
@@ -333,19 +335,24 @@ class VMCController:
             wq = float(qvel[WHEEL_QV_IDX[leg]])
             # v218j: 校准正 wq=倒车，前进速度 = -wq*r（此前符号反导致超速失控）
             v_wheel = -wq * self.fk.r
-            v_ref = self._vx_f + wd_side * self._om_f * self.track_half
+            # v589: 抬轮期间差速淡出（ysc 由 cmd.yaw_scale 传入）——前轮
+            # 抬起时左右对转只会空耗推力，四轮统一向前推才能跨棱
+            v_ref = (self._vx_f
+                     + wd_side * self._om_f * self.track_half * _ysc)
             # v218: 实测 +轮力矩=倒车（S10 轮轴符号），取反前进
             # v218h: 驱动按校准取反，阻尼必须始终反向（否则负转速时放大）
             # v218j: 直接 yaw 差速力矩（轮全幅差速，参考 dial-MPC）
             # v218k: 左转(ω>0)左轮需向后力矩——符号与 wd_side 相反
             # v219o: yaw 差速增益随 |omega 指令| 自适应——直行小增益防
             # 差速振荡（v219m/n 实测 60→5/15），转弯大增益保证转向力。
-            _yk = self.yaw_k_wheel * (0.3 + 0.7 * min(
-                abs(self._om_f) / 0.4, 1.0))
+            _yk = float(os.environ.get(
+                "S10_VMC_WBC_YAW_K", str(self.yaw_k_wheel))) * (
+                    0.3 + 0.7 * min(abs(self._om_f) / 0.4, 1.0))
             # v237: yaw 高频阻尼——v235 符号修正（-kd 削弱恢复力矩）
             _kd_yaw = float(os.environ.get("S10_CAR_KD_YAW", "2.0"))
-            t_yaw = ((-_yk * (self._om_f - body["omega"])
-                      + _kd_yaw * body["omega"]) * wd_side
+            _om_b = body.get("omega_body", body["omega"])
+            t_yaw = ((-_yk * (self._om_f - _om_b)
+                      + _kd_yaw * _om_b) * wd_side
                      * _ysc * getattr(self, "_ground_f", 1.0))
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
                        - self.wheel_d * wq + t_yaw)
