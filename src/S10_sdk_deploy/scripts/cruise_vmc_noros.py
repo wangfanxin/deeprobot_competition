@@ -213,21 +213,31 @@ def main():
             _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
             _omcap = min(_omcap, _latmax / max(abs(vx_c), 0.5))
             om_c = float(np.clip(om_c, -_omcap, _omcap))
-            # v257: 近横脊限 yaw（垂直过脊）——斜角过脊单侧先触脊是
-            # 侧翻源；脊前 1.2m 内把 yaw 指令压到 ±0.35，过脊后再放开
+            # v261: 脊前对准——2.5m 内把 yaw 指令向**最近脊**的路径切线
+            # 方向强引导（覆盖导航指令振荡；保证垂直过脊，转弯在脊前完成
+            # → err 门控放开→地形前瞻恢复抬轮）。
             if ridge_world:
                 _fwdv0 = d.xmat[1][0:2]
                 _fn0 = float(np.hypot(_fwdv0[0], _fwdv0[1])) + 1e-9
                 _fx0, _fy0 = _fwdv0[0] / _fn0, _fwdv0[1] / _fn0
                 _fa0 = np.array([body_pos[0] + _fx0 * 0.228,
                                  body_pos[1] + _fy0 * 0.228])
-                _dmin = min(float(abs(np.dot(_fa0 - _rp, _tng)))
-                            for (_rp, _tng, _sr, _dh) in ridge_world)
-                if _dmin < 0.8:
-                    # v260: 放宽近脊限幅（0.35 把 wp4→5 所需 0.9rad 转弯卡住，
-                    # 到脊未对准→后轮抬放在转弯中触发侧翻）；±0.8 只防极端
-                    _k_st = float(np.clip((_dmin - 0.15) / 0.65, 0.0, 1.0))
-                    om_c *= float(np.clip(0.8 + 0.2 * _k_st, 0.0, 1.0))
+                _dmin = 1e9
+                _tng_near = None
+                for (_rp, _tng, _sr, _dh) in ridge_world:
+                    _dd = float(abs(np.dot(_fa0 - _rp, _tng)))
+                    if _dd < _dmin:
+                        _dmin = _dd
+                        _tng_near = _tng
+                if _dmin < 2.5 and _tng_near is not None:
+                    _k_st = float(np.clip((2.5 - _dmin) / 2.0, 0.0, 1.0))
+                    _nn = float(np.linalg.norm(_tng_near)) + 1e-9
+                    _tt = _tng_near / _nn
+                    _hdg_t = float(np.arctan2(_tt[1], _tt[0]))
+                    _err_t = float((_hdg_t - yaw + np.pi) % (2 * np.pi) - np.pi)
+                    _om_align = float(np.clip(
+                        2.0 * _err_t, -_omcap, _omcap))
+                    om_c = (1.0 - _k_st) * om_c + _k_st * _om_align
             prev_u = np.array([vx_c, om_c])
             last_log = t
         else:
