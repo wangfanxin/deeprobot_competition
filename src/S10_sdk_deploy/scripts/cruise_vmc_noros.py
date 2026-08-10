@@ -549,13 +549,19 @@ def main():
             # v238: 收窄抬放窗口（梯面0.4m≈轴距0.456m，宽窗口致前轮持续
             # 抬起不落地）——前轴 df∈[-0.08,0.18]、后轴 dr∈[-0.06,0.20]，
             # 每级 riser 前后轴快速衔接抬放；可选 FRONT_HOLD 连续挂前轮
+            # v465: 前后抬升窗口可调（S10_STAIR_FRONT_START/REAR_START）。
+            # 原后轮窗起点 -0.06m 与前轮释放 +0.18m 之间有 0.22m 空档——
+            # 空档里两轴都不抬，后轮 0.081m 半径撞 0.13m 台阶面失速（wp6→7
+            # 卡 y=38 死锁）。后轮窗提前到 -0.20~-0.25 与前轮衔接。
+            _fst = float(os.environ.get('S10_STAIR_FRONT_START', '0.08'))
+            _rst = float(os.environ.get('S10_STAIR_REAR_START', '0.06'))
             for (sr, dhv) in stair_risers:
                 _df = s_cur - (sr - 0.228)   # 前轴到棱边
                 _dr = s_cur - (sr + 0.228)   # 后轴到棱边
                 _fl = (float(np.clip((0.18 - _df) / 0.06, 0.0, 1.0))
-                       * float(np.clip((_df + 0.08) / 0.06, 0.0, 1.0)))
+                       * float(np.clip((_df + _fst) / 0.06, 0.0, 1.0)))
                 _rl = (float(np.clip((0.20 - _dr) / 0.06, 0.0, 1.0))
-                       * float(np.clip((_dr + 0.06) / 0.06, 0.0, 1.0)))
+                       * float(np.clip((_dr + _rst) / 0.06, 0.0, 1.0)))
                 _fl_max = max(_fl_max, _fl); _rl_max = max(_rl_max, _rl)
             if (float(os.environ.get('S10_VMC_STAIR_FRONT_HOLD', '0')) > 0
                     and stair_risers[0][0] - 0.6 <= s_cur
