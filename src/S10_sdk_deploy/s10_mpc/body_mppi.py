@@ -95,22 +95,28 @@ class BodyMPPI:
                                   axis=(1, 2))
         return cost
 
-    def plan(self, state, ref, v_ref, prev_u=None):
-        """state: (x,y,yaw,vx,vy,ω)；ref: (R,3) 路径参考轨迹；v_ref: 限速。"""
+    def plan(self, state, ref, v_ref, prev_u=None, guide_om=None):
+        """state: (x,y,yaw,vx,vy,ω)；ref: (R,3) 路径参考轨迹；v_ref: 限速；
+        guide_om: 可选曲率前馈（κ·v_ref）作采样中心——默认用参考航向变化率。
+        """
         s0 = np.asarray(state, dtype=np.float64)
         ref = np.asarray(ref, dtype=np.float64)
         prev_u = np.asarray(prev_u if prev_u is not None else self._u,
                             dtype=np.float64)
         sv = self.sigma_vx0 * self.sigma_scale
         so = self.sigma_om0 * self.sigma_scale
-        # v218: 围绕"标称控制"采样（v_ref + 参考航向变化率），保证样本覆盖
-        # 低成本区（纯 prev±σ 在 σ 小时永远到不了 v_ref 处的最优）。
+        # v270: 采样中心 = v_ref + 曲率前馈 κ·v（赛用摩托恒定转向率），
+        # 约束仍在 _rollout 摩擦锥内；默认用参考航向变化率兜底。
         guide_vx = float(np.clip(v_ref, 0.0, self.vx_max))
-        guide_om = 0.0
-        if ref.shape[0] >= 3:
-            _dh = _wrap(float(ref[2, 2]) - float(ref[0, 2]))
+        if guide_om is None:
+            guide_om = 0.0
+            if ref.shape[0] >= 3:
+                _dh = _wrap(float(ref[2, 2]) - float(ref[0, 2]))
+                guide_om = float(np.clip(
+                    _dh * guide_vx / 2.0, -self.omega_max, self.omega_max))
+        else:
             guide_om = float(np.clip(
-                _dh * guide_vx / 2.0, -self.omega_max, self.omega_max))
+                guide_om, -self.omega_max, self.omega_max))
         noise_vx = self.rng.normal(0.0, sv, (self.N, self.H))
         noise_om = self.rng.normal(0.0, so, (self.N, self.H))
         u_seq = np.zeros((self.N, self.H, 2))

@@ -214,7 +214,17 @@ def main():
             if os.environ.get('S10_VMC_USE_NAV', '0') == '1':
                 vx_c, om_c = vx, vyaw   # 直接导航指令（无 MPPI 随机性）
             else:
-                vx_c, om_c = mppi.plan(st, _ref, v_ref, prev_u)
+                # v270: MPPI 采样中心加曲率前馈 κ·v_ref（导航放开、MPPI
+                # 约束兜底；样本围绕正确转向率，约束仍在摩擦锥内）
+                _g_om = 0.0
+                try:
+                    _kn0 = int(getattr(fol, '_k_near', 0))
+                    _kn0 = min(max(_kn0, 0), len(fol.path_curv_signed) - 1)
+                    _g_om = float(fol.path_curv_signed[_kn0]) * max(v_ref, 0.5)
+                except Exception:
+                    pass
+                vx_c, om_c = mppi.plan(
+                    st, _ref, v_ref, prev_u, guide_om=_g_om)
             # v218p: omega 上限匹配 VMC yaw 能力（防指令远超执行导致振荡）
             # v245: 速度相关上限——横向加速度包线 a_lat=ω·v 防高速大 ω 侧翻
             # （实测 YAW_TMAX 滑移权威下 ω 可达 3.6+，v=1.9 时 a_lat 7m/s2 翻车）
