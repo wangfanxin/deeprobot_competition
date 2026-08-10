@@ -560,7 +560,23 @@ class AutoNavFollower:
         # 航点（默认 0.8m，保证 0.5m 判点）或已越过时才瞄准航点本身；
         # 其余时间沿平滑路径前视点瞄准——路径在航点处转向，前视点越过
         # 航点后即提前给出转向指令，避免弯道处 err 突跳触发龟速。
-        if (d_wp < float(os.environ.get("S10_AUTO_WP_AIM", "2.5"))
+        # v517: WP_AIM 按前方曲率自适应收缩（S10_AUTO_WP_AIM_CURVE_K 默认 0）
+        # ——直道（起步门架）保持原 2.5m 瞄航点；弯道（wp1 前视点曲率 0.5）
+        # 瞄距自动缩小，狗更早沿圆角路径转向，避免过点后 180° 急转冲远
+        # （wp1 超调 1.3m 实测）。连续量：aim_eff = AIM / (1 + K*curv)。
+        _aim_k = 0.0
+        _acv = float(os.environ.get("S10_AUTO_WP_AIM_CURVE_K", "0"))
+        if _acv > 0.0 and len(self.path_curv) > 0:
+            _kf = min(self._k_near + int(
+                float(os.environ.get("S10_AUTO_YAW_FF_DIST", "1.5"))
+                / self.path_res), len(self.path_curv) - 1)
+            # v519: 只对 κ>0.2 的真弯收缩瞄距（起步门架偏移 κ0.115 不受
+            # 影响——v517 无阈值破坏了起步）
+            _aim_k = float(max(0.0, self.path_curv[_kf] - 0.2))
+        _aim_eff = float(os.environ.get("S10_AUTO_WP_AIM", "2.5"))
+        if _acv > 0.0:
+            _aim_eff = _aim_eff / (1.0 + _acv * _aim_k)
+        if (d_wp < _aim_eff
                 and os.environ.get("S10_AUTO_WP_AIM_ON", "1") == "1"):
             target = wp_next
         else:
