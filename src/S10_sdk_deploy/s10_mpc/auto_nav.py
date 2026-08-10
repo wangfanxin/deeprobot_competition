@@ -571,20 +571,16 @@ class AutoNavFollower:
                         "S10_AUTO_LOOKAHEAD_MAX", "3.2"))))
                 s_target = min(self._s_cur + _lk_eff, self.path_total)
                 target = self._path_point_at(s_target)
-        # v374b: 过点后出口瞄准——刚过 wp[i-1]（3m 内）时目标 = 出口方向点
-        # （wp[i]-wp[i-1] 方向 2.5m），与脚本侧"过点后光束"一致，拉直出弯。
-        # 仅 wp1 之后生效（起点 wp0 在 3m 内会误触发）。
+        # v396: 过点后直接瞄**下一个航点**（wp[i]）——v374b 瞄 wp[i-1]+
+        # 出口 2.5m 是单点目标，狗绕该点打转（wp3->4 实测绕 (-13,17.5)
+        # 27s 翻车）。直接瞄下一航点：目标远、方位连续，不形成轨道中心，
+        # 且保证 0.3m 判点。仅 wp1 之后生效。
         if next_idx >= 2:
             _pw = self.wp[next_idx - 1][:2]
             _dd = float(np.linalg.norm(robot_xy - _pw))
             _after_len = float(os.environ.get("S10_AUTO_BEAM_AFTER", "3.0"))
             if _dd < _after_len:
-                _ex = self.wp[next_idx][:2] - _pw
-                _Le = float(np.linalg.norm(_ex))
-                if _Le > 1e-3:
-                    _exit_len = float(os.environ.get(
-                        "S10_AUTO_BEAM_AFTER_EXIT", "2.5"))
-                    target = _pw + (_ex / _Le) * _exit_len
+                target = self.wp[next_idx][:2]
         err = np.arctan2(target[1] - robot_xy[1],
                          target[0] - robot_xy[0]) - yaw
         err = float(np.arctan2(np.sin(err), np.cos(err)))
