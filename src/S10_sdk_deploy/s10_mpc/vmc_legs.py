@@ -470,28 +470,27 @@ class TerrainMap:
 # ==================== PD 站姿 + 轮驱动模式（v218k，稳定基线） ====================
 
 class LidarTerrain:
-    """v219g: lidar 传感器视角高程（替代上帝视角 raycast/TerrainMap）。
+    """v223: lidar 传感器增量建世界高程图（可部署，地图变化鲁棒）。
 
     从 lidar_site 按机器人航向发射扇形射线（mj_multiRay 批量），命中点
-    写入以 lidar 为原点的局部栅格；height(x,y) 与 TerrainMap 接口一致
-    （O(1) 查表），未覆盖区域返回 0。
-
-    与 ROS2 mujoco-lidar 一致的传感器建模：
-      - geomgroup 只留 group 0（地形），排除机器人(group 1)/赛道标记(group 2)；
-      - 排除 base_link 自身；
-      - 前向扇形 ±fov_h × 俯仰 +10°~-55°（近场地面到远场高台）；
-      - 10Hz 更新，近处盲区/遮挡/延迟与真 lidar 一致。
+    累积写入**固定世界栅格**（min-z 去噪）——像真机 lidar SLAM 建图：
+      - 数据随时间累积，起步坡/远处地形保留（此前局部栅格每帧清空，
+        10Hz 更新间隔 0.15m 导致脚下无数据 → 腿塌，wp0→1 卡死根因）
+      - geomgroup 只留 group 0（地形），排除机器人/赛道标记
+      - 前向扇形 ±fov_h × 俯仰 +10°~-55°（近场地面到远场高台）
+      - 高度查询 O(1)；未覆盖格返回 0（真机近场盲区同样存在）
     """
 
-    def __init__(self, model, data, half=6.0, res=0.10,
-                 th_n=32, phi_n=12,
-                 fov_h=None, cutoff=20.0):
+    def __init__(self, model, data, x0=-25.0, x1=40.0, y0=-5.0, y1=55.0,
+                 res=0.10, th_n=32, phi_n=12, fov_h=None, cutoff=20.0):
         import mujoco
         self.m, self.d = model, data
         self.res = float(res)
-        self.n = int(2.0 * half / res) + 1
-        self.h = np.zeros((self.n, self.n), dtype=np.float64)
-        self.valid = np.zeros((self.n, self.n), dtype=np.int32)
+        self.ox, self.oy = float(x0), float(y0)
+        self.nx = int(round((x1 - x0) / res)) + 1
+        self.ny = int(round((y1 - y0) / res)) + 1
+        self.h = np.full((self.ny, self.nx), np.inf, dtype=np.float64)
+        self.valid = np.zeros((self.ny, self.nx), dtype=np.int32)
         self.sid = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_SITE, "lidar_site")
         if self.sid < 0:
@@ -499,7 +498,6 @@ class LidarTerrain:
         self.cutoff = float(cutoff)
         if fov_h is None:
             fov_h = float(np.radians(55))
-        # 俯仰：+10°(远处高台) .. -55°(近场地面)
         ths = np.linspace(-fov_h, fov_h, int(th_n))
         phs = np.linspace(np.radians(10.0), np.radians(-55.0), int(phi_n))
         dirs = []
@@ -509,8 +507,6 @@ class LidarTerrain:
                              float(np.cos(ph) * np.sin(th)),
                              float(np.sin(ph))])
         self.dirs_local = np.asarray(dirs, dtype=np.float64)
-        self.ox = 0.0
-        self.oy = 0.0
         self.geomgroup = np.zeros((mujoco.mjNGROUP,), dtype=np.ubyte)
         self.geomgroup[0] = 1
 
@@ -521,48 +517,51 @@ class LidarTerrain:
             1.0 - 2.0 * (q[2] ** 2 + q[3] ** 2)))
 
     def update(self):
-        """发射一帧射线并刷新栅格（10Hz 调用）。"""
+        """发射一帧射线，命中点累积入世界栅格（min-z）。"""
         import mujoco
         m, d = self.m, self.d
         pos = np.asarray(d.site_xpos[self.sid], dtype=np.float64)
-        self.ox = pos[0]
-        self.oy = pos[1]
-        self.h.fill(0.0)
-        self.valid.fill(0)
         yaw = self._yaw()
         c, s = float(np.cos(yaw)), float(np.sin(yaw))
         fwd = np.array([c, s, 0.0])
         right = np.array([-s, c, 0.0])
         up = np.array([0.0, 0.0, 1.0])
         L = self.dirs_local
-        # 局部扇形 -> 世界：x*前向 + y*右向 + z*上
         vec = (L[:, 0:1] * fwd[None, :] + L[:, 1:2] * right[None, :]
                + L[:, 2:3] * up[None, :])
         n = len(L)
-        pnt = pos.copy()          # mj_multiRay: 单起点 + (nray,3) 方向
         geomid = np.full(n, -1, dtype=np.int32)
         dist = np.full(n, -1.0, dtype=np.float64)
-        # vec 需展平 (nray*3,)（mujoco bindings_test 示例）
-        mujoco.mj_multiRay(m, d, pnt, vec.reshape(-1), self.geomgroup,
-                           True, 1, geomid, dist, None, n, self.cutoff)
+        mujoco.mj_multiRay(m, d, pos.copy(), vec.reshape(-1),
+                           self.geomgroup, True, 1, geomid, dist, None,
+                           n, self.cutoff)
         hit = dist > 0.0
         if hit.any():
-            pts = pnt + dist[:, None] * vec
+            pts = pos + dist[:, None] * vec
             for i in np.where(hit)[0]:
                 p = pts[i]
-                ix = int(np.floor((p[0] - self.ox) / self.res + 0.5 * self.n))
-                iy = int(np.floor((p[1] - self.oy) / self.res + 0.5 * self.n))
-                if 0 <= ix < self.n and 0 <= iy < self.n:
-                    # min-z：同格多条射线取最低（地面优先于障碍顶）
-                    if not self.valid[iy, ix] or p[2] < self.h[iy, ix]:
+                ix = int(np.floor((p[0] - self.ox) / self.res))
+                iy = int(np.floor((p[1] - self.oy) / self.res))
+                if 0 <= ix < self.nx and 0 <= iy < self.ny:
+                    # min-z：地面优先（多条射线/多帧取最低）
+                    if p[2] < self.h[iy, ix]:
                         self.h[iy, ix] = p[2]
                     self.valid[iy, ix] = 1
 
     def height(self, x, y):
-        ix = int(np.floor((x - self.ox) / self.res + 0.5 * self.n))
-        iy = int(np.floor((y - self.oy) / self.res + 0.5 * self.n))
-        if 0 <= ix < self.n and 0 <= iy < self.n and self.valid[iy, ix]:
-            return float(self.h[iy, ix])
+        """3x3 邻域有效格取平均——lidar 栅格稀疏（射线间隙 0.1-0.2m），
+        精确格缺失时返回 0 会致地形高度跳变（0<->0.479 腿抖侧翻）。"""
+        ix = int(np.floor((x - self.ox) / self.res))
+        iy = int(np.floor((y - self.oy) / self.res))
+        vals = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                jx, jy = ix + dx, iy + dy
+                if 0 <= jx < self.nx and 0 <= jy < self.ny:
+                    if self.valid[jy, jx]:
+                        vals.append(self.h[jy, jx])
+        if vals:
+            return float(np.mean(vals))
         return 0.0
 
 

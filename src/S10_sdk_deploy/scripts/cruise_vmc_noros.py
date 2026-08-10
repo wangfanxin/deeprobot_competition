@@ -139,6 +139,7 @@ def main():
     # v220a: 单步跨越状态机（0=off, 1=前轮抬, 2=后轮抬）
     _step_state = 0
     _step_t0 = 0.0
+    _terr_f = None
     while t < MAX_SIM:
         qpos = np.asarray(d.qpos, dtype=np.float64)
         qvel = np.asarray(d.qvel, dtype=np.float64)
@@ -203,6 +204,14 @@ def main():
         else:
             terr = np.array([terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
                              for i in range(4)])
+        # v223b: 地形低通（lidar 栅格稀疏/噪声，防腿抖）
+        _tlp = float(os.environ.get('S10_VMC_TERRAIN_LP', '0.0'))
+        if _tlp > 0.0:
+            if _terr_f is None:
+                _terr_f = terr.copy()
+            else:
+                _terr_f = _tlp * terr + (1.0 - _tlp) * _terr_f
+            terr = _terr_f
         s_cur = float(getattr(fol, '_s_cur', 0.0))
 
         # v220a: 单步跨越状态机——横脊 0.125m > 轮半径 0.081，轮滚不上，
