@@ -37,7 +37,7 @@ def main():
     m = mujoco.MjModel.from_xml_path(XML)
     m.opt.timestep = DT
     d = mujoco.MjData(m)
-    d.qpos[0:3] = [0.0, -2.5, 0.2]
+    d.qpos[0:3] = [0.0, -2.5, float(os.environ.get('S10_INIT_Z', '0.2'))]
     iy = float(os.environ.get('S10_INIT_YAW', '0'))
     if abs(iy) > 1e-3:
         d.qpos[3:7] = [np.cos(iy/2), 0, 0, np.sin(iy/2)]
@@ -198,6 +198,10 @@ def main():
     elif _vmode == 'car':
         vmc = CarVMC()
         print('[VMC] CarVMC 模式（车化：轮驱动/差速，腿=主动悬架姿态）', flush=True)
+    elif _vmode == 'place':
+        from s10_mpc.vmc_legs import FootPlaceVMC
+        vmc = FootPlaceVMC()
+        print('[VMC] FootPlaceVMC 模式（逐轮 IK 落脚点位置控制）', flush=True)
     elif _vmode == 'dual':
         # v466: 双技能执行器——巡航用 CarVMC（已调优），STAIR 模式用
         # VMCController（WBC 全身力控，老 dial-MPC 时代爬台阶执行器）。

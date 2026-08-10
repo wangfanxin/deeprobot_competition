@@ -1021,3 +1021,102 @@ class LegPDDrive:
                   - self.wheel_d * wq), -14, 14))
         tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
         return tau
+
+
+class FootPlaceVMC:
+    """v660: 逐轮落脚点位置控制（楼梯/台阶）——每腿 IK 把轮放到目标高度
+    （terrain_h+r，脚本的落脚点地形输入自动给出台面目标），身体姿态由四轮
+    位置自然形成（前轮上台面→前髋抬高→车身抬头）；轮驱动纯前向。彻底去掉
+    全局 wrench/z/pitch 控制，规避"身体悬空"死结（WBC 84 组实验失败）。"""
+
+    def __init__(self, mass=19.0, g=9.81, L1=0.18, L2=0.18, r=0.081,
+                 track_half=0.24, kp=220.0, kd=6.0,
+                 wheel_k=4.0, wheel_d=0.08):
+        import os
+        self.m, self.g = mass, g
+        self.fk = S10LegFK(L1, L2, r)
+        self.track_half = track_half
+        self.kp = float(os.environ.get("S10_FP_KP", str(kp)))
+        self.kd = float(os.environ.get("S10_FP_KD", str(kd)))
+        self.wheel_k = float(os.environ.get("S10_FP_WHEEL_K", str(wheel_k)))
+        self.wheel_d = float(os.environ.get("S10_FP_WHEEL_D", str(wheel_d)))
+        self.pose_target = np.array([-0.05, -1.10, 1.90,
+                                     0.05, -1.10, 1.90,
+                                    -0.05,  1.10, -1.90,
+                                     0.05,  1.10, -1.90], dtype=np.float64)
+        self._vx_f = 0.0
+        self.kp_roll = float(os.environ.get("S10_FP_KP_ROLL", "80.0"))
+        self.kp_pitch = float(os.environ.get("S10_FP_KP_PITCH", "60.0"))
+
+    def _body_state(self, qpos, qvel):
+        q = qpos[3:7]
+        w, x, y, z = q
+        yaw = float(np.arctan2(2.0 * (w * z + x * y),
+                               1.0 - 2.0 * (y * y + z * z)))
+        roll = float(np.arctan2(2.0 * (w * x + y * z),
+                                1.0 - 2.0 * (x * x + y * y)))
+        pitch = float(np.arctan2(2.0 * (w * y - z * x),
+                                 1.0 - 2.0 * (y * y + x * x)))
+        R = np.asarray([
+            [1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y)],
+            [2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x)],
+            [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x + y*y)],
+        ], dtype=np.float64)
+        vw = R.T @ np.asarray(qvel[0:3], dtype=np.float64)
+        return dict(pos=qpos[0:3], yaw=yaw, roll=roll, pitch=pitch,
+                    vx=float(vw[0]), R=R)
+
+    def _ik(self, xd, zd, q1, q2):
+        """2D IK：轮目标 (xd, zd)（相对髋，sagittal，zd 向上）→ q1/q2。"""
+        for _ in range(8):
+            p = self.fk.wheel_pos(q1, q2)
+            err = np.array([xd - p[0], zd + p[1]])
+            J = self.fk.jac(q1, q2)
+            dq = np.linalg.lstsq(J, err, rcond=None)[0]
+            dq = np.clip(dq, -0.3, 0.3)
+            q1 += float(dq[0]); q2 += float(dq[1])
+        return q1, q2
+
+    def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel,
+                    cmd, terrain_h, dt=0.005):
+        body = self._body_state(qpos, qvel)
+        self._vx_f += (float(cmd.get("vx", 0.0)) - self._vx_f) * min(
+            1.0, dt / 0.10)
+        tau = np.zeros(16, dtype=np.float64)
+        for leg in range(4):
+            b = leg * 3
+            hipx_i, hipy_i, knee_i = (LEG_CTRL_IDX[b],
+                                      LEG_CTRL_IDX[b + 1],
+                                      LEG_CTRL_IDX[b + 2])
+            qhx = float(qpos[LEG_Q_IDX[b]])
+            q1 = float(qpos[LEG_Q_IDX[b + 1]])
+            q2 = float(qpos[LEG_Q_IDX[b + 2]])
+            hip_w = (body["pos"]
+                     + body["R"] @ np.array([LEG_ATTACH[leg, 0],
+                                             LEG_ATTACH[leg, 1], 0.0]))
+            wz = float(terrain_h[leg]) + self.fk.r
+            # v661: 姿态修正（保持车身水平/按 pitch_tar）——纯轮位控制无姿态
+            # 稳定会滚翻（v660 起步 roll -1.47）；修正量远小于落脚点目标
+            _side = -1.0 if leg in (0, 1) else 1.0
+            _front = 1.0 if leg in (0, 1) else -1.0
+            wz += (_side * self.kp_roll * (-float(body["roll"])) * 0.002
+                   + _front * self.kp_pitch
+                   * (float(cmd.get("pitch_tar", 0.0)) - float(body["pitch"]))
+                   * 0.002)
+            rel = body["R"].T @ (np.array([wheel_xyz[leg, 0],
+                                           wheel_xyz[leg, 1], wz]) - hip_w)
+            q1t, q2t = self._ik(float(rel[0]), float(rel[2]), q1, q2)
+            tau[hipx_i] = (self.kp * (self.pose_target[b] - qhx)
+                           - self.kd * float(qvel[6 + LEG_QV_LEG[b]]))
+            tau[hipy_i] = (self.kp * (q1t - q1)
+                           - self.kd * float(qvel[6 + LEG_QV_LEG[b + 1]]))
+            tau[knee_i] = (self.kp * (q2t - q2)
+                           - self.kd * float(qvel[6 + LEG_QV_LEG[b + 2]]))
+            wq = float(qvel[WHEEL_QV_IDX[leg]])
+            v_wheel = -wq * self.fk.r
+            tau[WHEEL_Q_IDX[leg]] = (
+                -(self.wheel_k * (self._vx_f - v_wheel))
+                - self.wheel_d * wq)
+        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
+        tau[WHEEL_Q_IDX] = np.clip(tau[WHEEL_Q_IDX], -13.5, 13.5)
+        return tau
