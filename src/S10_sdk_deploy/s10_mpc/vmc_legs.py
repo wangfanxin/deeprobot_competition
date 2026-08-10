@@ -355,6 +355,16 @@ class VMCController:
                     _mu_w * max(_fz_load, 0.5 * self.m * self.g / 4.0)
                     * self.fk.r, -13.5, 13.5))
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -_wt, _wt))
+            if (os.environ.get('S10_WBC_DEBUG', '0') == '1'
+                    and body['pos'][1] > 36.0 and leg == 2):
+                print('[WBCD] y=%.2f vx_f=%.2f om_f=%.2f wq=%.1f '
+                      'v_ref=%.2f v_wheel=%.2f wk=%.2f t_yaw=%.2f '
+                      't_wheel=%.2f wt=%.2f gf=%.2f bodyz=%.3f'
+                      % (body['pos'][1], self._vx_f, self._om_f, wq,
+                         v_ref, v_wheel, self.wheel_k, t_yaw, t_wheel,
+                         _wt, getattr(self, '_ground_f', 1.0),
+                         body['pos'][2]),
+                      flush=True)
         tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
         return tau
 

@@ -149,6 +149,13 @@ def main():
         # VMCController（WBC 全身力控，老 dial-MPC 时代爬台阶执行器）。
         vmc_car = CarVMC()
         vmc_wbc = VMCController()
+        # v480: WBC 独立轮参数（CarVMC 共享 env 会被改坏巡航）——WBC 轮
+        # 驱动被阻尼抵消（t_wheel≈0 打滑空转卡楼梯），加大 wheel_k 减小
+        # wheel_d 给足突破推力。
+        vmc_wbc.wheel_k = float(os.environ.get(
+            'S10_VMC_WBC_WHEEL_K', '10'))
+        vmc_wbc.wheel_d = float(os.environ.get(
+            'S10_VMC_WBC_WHEEL_D', '0.02'))
         vmc = vmc_car
         print('[VMC] 双技能模式：CRUISE=CarVMC, STAIR=VMCController(WBC)', flush=True)
     else:
