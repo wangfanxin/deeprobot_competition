@@ -284,7 +284,16 @@ class VMCController:
             A6[0:3, leg * 3:leg * 3 + 3] = -np.eye(3)
             A6[3:6, leg * 3:leg * 3 + 3] = -S
         try:
-            f_legs = np.linalg.pinv(A6) @ W
+            # v754: stair_pose 激活时禁用全局 wrench（历史建议"逐轮独立
+            # 腿长位置控制"）——wrench 力控与 stair_pose 位置目标打架，
+            # 反复导致前/后轮悬空卡死（80+ 组实验）；位置 PD + 地形阻抗
+            # 单独控制 4 腿，轮子驱动推进。
+            if (float(cmd.get("stair_pose", 0.0)) > 0.0
+                    and float(cmd.get("z_min", 0.0)) > 0.0
+                    and float(os.environ.get("S10_VMC_WBC_NOWRENCH", "0")) > 0):
+                f_legs = np.zeros(12)
+            else:
+                f_legs = np.linalg.pinv(A6) @ W
             # 抬轮腿力归零（未参与求解）
             for leg in range(4):
                 if leg not in _support_legs:
