@@ -157,8 +157,28 @@ def main():
 
     # v219f: 地形感知来源。ray=上帝视角实时 raycast（调试，零噪声）；
     # lidar=lidar_site 扇形射线局部栅格（传感器视角，10Hz 更新，部署同款）
+    _vis_hf = None
     if os.environ.get('S10_VMC_TERRAIN', 'ray') == 'lidar':
         lterr = LidarTerrain(m, d)
+        if (os.environ.get('S10_VMC_VIEW_TERRAIN', '0') == '1'
+                and os.environ.get('S10_USE_VIEWER', '0') == '1'):
+            _g_hf = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, 'lidar_hf_geom')
+            _h_hf = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_HFIELD, 'lidar_hf')
+            if _g_hf >= 0 and _h_hf >= 0:
+                _vis_hf = (_g_hf, _h_hf)
+                print('[VMC] lidar 高程图可视化开启 (20Hz hfield)', flush=True)
+            else:
+                print('[VMC] 警告: 模型无 lidar_hf_geom，'
+                      '请用 S10_XML=.../S10_track_lidar.xml', flush=True)
+            _pal = [(0.90,0.15,0.15),(0.95,0.55,0.10),(0.90,0.85,0.10),
+                    (0.25,0.75,0.30),(0.15,0.75,0.80),(0.20,0.35,0.90),
+                    (0.60,0.25,0.90),(0.85,0.20,0.60),(0.95,0.90,0.90),
+                    (0.45,0.45,0.45)]
+            for _wi in range(min(10, len(wp))):
+                _gwi = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM,
+                                         'track_waypoint_%03d' % _wi)
+                if _gwi >= 0:
+                    m.geom_rgba[_gwi, 0:3] = _pal[_wi]
         _lupd = -1.0
         def terrain_at(x, y):
             nonlocal _lupd
@@ -190,6 +210,12 @@ def main():
     _step_state = 0
     _step_t0 = 0.0
     _terr_f = None
+    # v292: 力矩合规统计（腿 ±50 Nm / 轮 ±14 Nm，连续超限>0.5s 不合格）
+    _max_tau_leg = 0.0
+    _max_tau_wh = 0.0
+    _over_run = 0.0
+    _over_worst = 0.0
+    _over_total = 0.0
     while t < MAX_SIM:
         qpos = np.asarray(d.qpos, dtype=np.float64)
         qvel = np.asarray(d.qvel, dtype=np.float64)
@@ -314,6 +340,22 @@ def main():
                 _terr_f = _tlp * terr + (1.0 - _tlp) * _terr_f
             terr = _terr_f
         s_cur = float(getattr(fol, '_s_cur', 0.0))
+        # v292: 台阶窗 vx 连续插值到 STAIR_WIN_VX（默认 1.8，不归零）——
+        # 窗内只换腿控制（几何相位）与轮力矩模式，vx 参考保持连续
+        if stair_risers:
+            _sw0 = float(stair_risers[0][0]) - 1.0
+            _sw1 = float(stair_risers[-1][0]) + 2.0
+            _sramp = float(os.environ.get('S10_STAIR_VX_RAMP', '1.0'))
+            _win_vx = float(os.environ.get('S10_STAIR_WIN_VX', '1.8'))
+            if _sw0 - _sramp <= s_cur <= _sw1 + _sramp:
+                if s_cur < _sw0:
+                    _f = (s_cur - (_sw0 - _sramp)) / _sramp
+                elif s_cur > _sw1:
+                    _f = (_sw1 + _sramp - s_cur) / _sramp
+                else:
+                    _f = 1.0
+                _f = float(np.clip(_f, 0.0, 1.0))
+                vx_c = _win_vx * _f + vx_c * (1.0 - _f)
 
         # v236: 台阶相位步态——按弧长对每级 riser 调度前轴/后轴抬放
         # （几何已知，无硬模式：仅当台阶 riser 在前方窗口内才产生抬放量）。
@@ -637,6 +679,16 @@ def main():
                       body_lift=_body_lift,
                       stair_lift=stair_lift_flag)
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
+        _tleg = float(np.abs(tau[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]]).max())
+        _twh = float(np.abs(tau[[3, 7, 11, 15]]).max())
+        _max_tau_leg = max(_max_tau_leg, _tleg)
+        _max_tau_wh = max(_max_tau_wh, _twh)
+        if _tleg >= 50.0 or _twh >= 14.0:
+            _over_run += DT
+            _over_total += DT
+            _over_worst = max(_over_worst, _over_run)
+        else:
+            _over_run = 0.0
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
         t += DT
@@ -645,19 +697,33 @@ def main():
                 print('[VMC] viewer 已关闭，结束', flush=True)
                 break
             _viewer.sync()
+        if _vis_hf is not None and int(t * 200) % 10 == 0:
+            _g_hf, _h_hf = _vis_hf
+            _cx = body_pos[0] + float(d.xmat[1][0]) * 3.0
+            _cy = body_pos[1] + float(d.xmat[1][3]) * 3.0
+            m.geom_pos[_g_hf, 0] = _cx
+            m.geom_pos[_g_hf, 1] = _cy
+            _nrow = int(m.hfield_nrow[_h_hf]); _ncol = int(m.hfield_ncol[_h_hf])
+            _hrx = 12.0 / _ncol; _hry = 10.0 / _nrow
+            _x0 = _cx - 6.0; _y0 = _cy - 5.0
+            _data = np.full(_nrow * _ncol, -0.3, dtype=np.float64)
+            for _jy in range(_nrow):
+                _iy = int(np.floor((_y0 + (_jy + 0.5) * _hry - lterr.oy) / lterr.res))
+                if 0 <= _iy < lterr.ny:
+                    for _jx in range(_ncol):
+                        _ix = int(np.floor((_x0 + (_jx + 0.5) * _hrx - lterr.ox) / lterr.res))
+                        if 0 <= _ix < lterr.nx and lterr.valid[_iy, _ix]:
+                            _data[_jy * _ncol + _jx] = float(lterr.h[_iy, _ix]) - 0.3
+            _off = _h_hf * _nrow * _ncol
+            m.hfield_data[_off:_off + len(_data)] = _data
 
         # 航点推进（0.5m + v204 捷径）
         if next_idx < len(wp):
             rp = d.xpos[1][:2]
             dist = float(np.linalg.norm(rp - wp[next_idx][:2]))
-            reached = dist <= 0.5
-            if not reached:
-                adv = float(os.environ.get('S10_WP_ADVANCE_DIST', '2.5'))
-                if (next_idx >= 1 and adv > 0.0
-                        and next_idx < len(fol.path_wp_s)
-                        and fol._s_cur > fol.path_wp_s[next_idx] - 0.05
-                        and dist <= adv):
-                    reached = True
+            # v292: 官方判据——base 进入航点 0.2m 水平半径即过（逐点推进）
+            _adv = float(os.environ.get('S10_WP_ADVANCE_DIST', '0.2'))
+            reached = dist <= _adv
             if reached:
                 if next_idx == 0 and t_start is None:
                     t_start = t
@@ -699,6 +765,15 @@ def main():
     print(f'完成: {next_idx >= MAX_WP}，最终 wp={next_idx}/{MAX_WP}')
     if t_start is not None:
         print(f'wp0→wp{min(next_idx-1, MAX_WP-1)} 用时 {wp_times.get(max(next_idx-1,0),0)-t_start:.1f}s')
+    print('[VMC] 力矩合规: 腿max|tau|=%.1fNm(限50) 轮max|tau|=%.1fNm(限14) '
+          '连续超限最长 %.2fs / 累计 %.2fs%s' % (
+              _max_tau_leg, _max_tau_wh, _over_worst, _over_total,
+              '  [超0.5s不合格!]' if _over_worst > 0.5 else ''), flush=True)
+    if _viewer is not None:
+        try:
+            _viewer.close()
+        except Exception:
+            pass
     if os.environ.get('VMC_TRAJ'):
         np.save(os.environ['VMC_TRAJ'], np.array(traj))
 
