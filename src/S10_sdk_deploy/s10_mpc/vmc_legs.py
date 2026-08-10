@@ -838,6 +838,12 @@ class CarVMC:
             # 库仑摩擦前馈（克服低速静摩擦）+ 高频阻尼。
             _k_sm = float(os.environ.get("S10_CAR_YAW_K_SM", "30.0"))
             _phi = float(os.environ.get("S10_CAR_YAW_PHI", "0.5"))
+            # v436: 滑模误差改用 body 系 yaw 率（S10_CAR_YAW_OM_BODY 默认
+            # 0=原世界系 qvel[5]）。v237 注释即指出世界系被地形俯仰/横滚
+            # 污染——脊上 θ̇ 会混进 qvel[5]，滑模误判 yaw 误差→脊期需要
+            # 冻结兜底；body 系 ωz≈ψ̇·cosθ 隔离俯仰，脊上不误动。
+            if float(os.environ.get("S10_CAR_YAW_OM_BODY", "0")) > 0:
+                _err_y = self._om_f - body["omega_body"]
             # v428: 管误差 = 超出 |误差|≤TUBE 的部分（死区），管内误差=0
             _err_t = _err_y
             if _tube > 0.0:

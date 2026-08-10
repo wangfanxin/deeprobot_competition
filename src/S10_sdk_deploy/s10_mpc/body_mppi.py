@@ -48,6 +48,14 @@ class BodyMPPI:
             vx_max = min(vx_max, float(_vmc_vx))
         w_dist = float(_os.environ.get('S10_MPPI_W_DIST', w_dist))
         w_g = float(_os.environ.get('S10_MPPI_W_GUIDE', '0.5'))
+        # v435: 距离成本对准衰减——狗当前航向与参考航向误差大时（离线/
+        # 转向中），距离成本整体淡出，让 guide 指令主导（实测 wp3→4 狗偏
+        # 北 1.5m 时 w_dist*d_min 压过 w_g，MPPI 输出 om≈0 不转向绕圈）；
+        # 对准后距离成本恢复精修路线。连续量，无门控。
+        self.align_gate = float(_os.environ.get(
+            'S10_MPPI_ALIGN_GATE', '0.8'))
+        self.w_dist_align = float(_os.environ.get(
+            'S10_MPPI_W_DIST_ALIGN', '0'))
         self.N, self.H, self.dt = N, H, dt
         self.tau_v, self.tau_w = tau_v, tau_w
         self.mu, self.g = mu, g
@@ -92,6 +100,14 @@ class BodyMPPI:
         约束内跟随导航转向，距离成本只做辅助（wp1 后 donut 实测）。"""
         R = ref.shape[0]
         xy = s[:, :, 0:2]                               # (N,H+1,2)
+        # v435: 用当前狗状态（s0）相对最近参考点的航向误差算对准系数
+        _a = 1.0
+        if self.w_dist_align > 0.0 and R > 0:
+            _d2_0 = np.sum((s[:, None, 0, 0:2] - ref[None, :, 0:2]) ** 2, axis=1)
+            _h0 = float(ref[int(np.argmin(_d2_0)), 2])
+            _e0 = abs(float(_wrap(s[0, 0, 2] - _h0)))
+            _a = float(np.clip(1.0 - _e0 / max(self.align_gate, 1e-3),
+                               0.0, 1.0))
         d2 = np.sum((xy[:, :, None, :] - ref[None, None, :, 0:2]) ** 2,
                     axis=-1)                             # (N,H+1,R)
         i_min = np.argmin(d2, axis=-1)                  # (N,H+1)
@@ -102,7 +118,7 @@ class BodyMPPI:
             i_min[..., None], axis=-1)[..., 0]
         h_err = _wrap(s[:, :, 2] - h_ref)
         v_err = s[:, :, 3] - v_ref
-        cost = (self.w_dist * d_min
+        cost = (self.w_dist * _a * d_min
                 + self.w_h * h_err ** 2
                 + self.w_v * v_err ** 2)
         cost = cost.sum(axis=1)

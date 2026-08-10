@@ -211,10 +211,14 @@ def main():
         wheel_xyz = np.asarray([d.xpos[WHEEL_BODY[i]] for i in range(4)])
         wheel_vel = np.asarray([d.cvel[WHEEL_BODY[i]][0:3] for i in range(4)])
 
-        # 20Hz 导航 + MPPI
-        # v340: 导航/MPPI 恢复设计 20Hz（原 %1 恒真 = 200Hz，N=4096
-        # /H=40 下不可行）；MPPI 2.0s 视界每次 50ms 内完成。
-        if int(t * 20) % 10 == 0 and (dbg == 0 or t - last_log >= 0.05):
+        # 导航 + MPPI 更新率（S10_NAV_HZ，默认 2）
+        # v437: 原 int(t*20)%10==0 实为 2Hz（0.5s 一次）——方向翻转后 0.5s
+        # 才更新，2.5m/s 下已转过 0.75rad，过弯振荡的直接放大器。
+        # MPPI N=4096/H=40 单次 89ms → 实际上限 ~10Hz；默认 2 保 v410。
+        _nav_period = max(1, int(round(200.0 / float(os.environ.get(
+            'S10_NAV_HZ', '2')))))
+        if int(t * 200) % _nav_period == 0 and (
+                dbg == 0 or t - last_log >= 0.05):
             pos2 = body_pos[:2]
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
@@ -280,15 +284,43 @@ def main():
                     else:
                         _exit_len = float(os.environ.get(
                             'S10_AUTO_BEAM_EXIT', '1.0'))
+                    # v434: 光束起点投影（S10_AUTO_BEAM_PROJ 默认开）——狗沿
+                    # 出口方向已越过 wp 时（如 wp3→4 狗偏北 1.5m），原光束从
+                    # wp 起算，最近点=身后 wp → MPPI 距离成本往回拉（绕圈
+                    # 打转 wp3→4 实测）；把起点平移到狗在出口线上的投影，
+                    # 距离成本只剩垂直拉线（走廊效应），转向交给 guide 主导。
+                    _bproj = float(os.environ.get('S10_AUTO_BEAM_PROJ', '0'))
+                    _bs = np.array([_aim_wp[0], _aim_wp[1]])
+                    if _bproj > 0.0:
+                        _pp = float(np.dot(pos2 - _bs, _uv))
+                        if _pp > 0.0:
+                            _bs = _bs + _pp * _uv
+                    # v439: 过点后光束指向下一航点（S10_AUTO_BEAM_AIM_NEXT
+                    # 默认 0）——wp4→5 实测：出口光束沿 wp4 出口线向北
+                    # (x=-15.02)，狗在 x=-15.3 偏西 0.28m，距离成本把狗往东
+                    # 拉，与"右转去 wp5"的 guide 打架 → MPPI 输出 om≈0 直线
+                    # 西行错过 wp5。改为从狗前方 0.5m 指向 wp[next_idx]
+                    # （方向=guide 方向，距离成本无横向偏置；0.5m 前移避免
+                    # v318 局部零代价陷阱）。连续量，仅过点后分支。
+                    if (_aim_idx == next_idx - 1 and float(os.environ.get(
+                            'S10_AUTO_BEAM_AIM_NEXT', '0')) > 0):
+                        _nv = np.asarray(fol.wp[next_idx][:2]) - pos2
+                        _Lv = float(np.hypot(_nv[0], _nv[1]))
+                        if _Lv > 1e-3:
+                            _uv = _nv / _Lv
+                        _hd = float(np.arctan2(_uv[1], _uv[0]))
+                        _bs = pos2 + 0.5 * _uv
+                        _exit_len = float(os.environ.get(
+                            'S10_AUTO_BEAM_AFTER_EXIT', '2.5'))
                     _ref = np.array([
-                        [_aim_wp[0], _aim_wp[1], _hd],
-                        [_aim_wp[0] + _exit_len * _uv[0],
-                         _aim_wp[1] + _exit_len * _uv[1], _hd]])
+                        [_bs[0], _bs[1], _hd],
+                        [_bs[0] + _exit_len * _uv[0],
+                         _bs[1] + _exit_len * _uv[1], _hd]])
             except Exception:
                 pass
             st = np.array([pos2[0], pos2[1], yaw,
                            float(d.cvel[1][3]), float(d.cvel[1][4]), float(qvel[5])])
-            if os.environ.get('S10_NAV_DEBUG', '0') == '1' and next_idx <= 3:
+            if os.environ.get('S10_NAV_DEBUG', '0') == '1' and next_idx <= 6:
                 print('[NAV] t=%.1f pos=(%.2f,%.2f) yaw=%.2f err=%.2f '
                       'tgt=(%.2f,%.2f) s_cur=%.2f vyaw=%.2f cte=%.2f'
                       % (t, body_pos[0], body_pos[1], yaw,
@@ -309,7 +341,7 @@ def main():
                 vx_c, om_c = mppi.plan(
                     st, _ref, v_ref, prev_u, guide_om=_g_om)
                 if (os.environ.get('S10_NAV_DEBUG', '0') == '1'
-                        and next_idx <= 3):
+                        and next_idx <= 6):
                     print('[MPPI] g_om=%.2f out=(%.2f,%.2f) vref=%.2f'
                           % (_g_om, vx_c, om_c, v_ref), flush=True)
             # v218p: omega 上限匹配 VMC yaw 能力（防指令远超执行导致振荡）
@@ -653,35 +685,6 @@ def main():
         except Exception:
             pass
 
-        # v285: 脊期冻结 yaw——轮心 z 扰动>0.03m（俯仰耦合 yaw 估计）期间
-        # 冻结 ω_cmd（只留轮速闭环差速），0.2s 后恢复
-        _wz_now = np.asarray([d.xpos[WHEEL_BODY[i], 2] for i in range(4)])
-        if not hasattr(vmc, '_ridge_yaw_freeze'):
-            vmc._ridge_yaw_freeze = 0.0
-        if not hasattr(vmc, '_om_c_prev_'):
-            vmc._om_c_prev_ = om_c
-        _disturb = float(np.max(np.abs(_wz_now - (terr + 0.081))))
-        # v286: 冻结仅当**已知脊（dh>=0.08）0.5m 内 + 轮扰动**同时成立——
-        # 起步坡轮高与地图差也>0.03，但无脊，不冻结（v285 起步漂东翻车）
-        _near_ridge_big = False
-        if ridge_world:
-            _fwd7 = np.array([d.xmat[1][0], d.xmat[1][3]])
-            _fn7 = float(np.hypot(_fwd7[0], _fwd7[1])) + 1e-9
-            _fx7, _fy7 = _fwd7[0] / _fn7, _fwd7[1] / _fn7
-            for _sgn7 in (1.0, -1.0):
-                _ax7 = np.array([body_pos[0] + _fx7 * 0.228 * _sgn7,
-                                 body_pos[1] + _fy7 * 0.228 * _sgn7])
-                for (_rp, _tng, _sr, _dh) in ridge_world:
-                    if _dh >= 0.08 and abs(
-                            float(np.dot(_ax7 - _rp, _tng))) < 0.5:
-                        _near_ridge_big = True
-                        break
-        if _disturb > 0.03 and _near_ridge_big:
-            vmc._ridge_yaw_freeze = t + 0.2
-        if t < vmc._ridge_yaw_freeze:
-            om_c = vmc._om_c_prev_
-        else:
-            vmc._om_c_prev_ = om_c
         if os.environ.get('VMC_STAND', '0') == '1':
             cmd = dict(vx=0.0, omega=0.0, roll_tar=0.0, pitch_tar=0.0)
         else:

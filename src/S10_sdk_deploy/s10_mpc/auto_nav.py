@@ -670,9 +670,14 @@ class AutoNavFollower:
                          - self.yaw_damp * yaw_rate)
         vyaw = float(np.clip(vyaw, -vyaw_max_eff, vyaw_max_eff))
         # 变化率限制（防反馈振荡；每次调用 = 0.05s）
+        # v442: 每拍增量按真实更新周期缩放（原 0.05s 假设在 NAV_HZ=5 下
+        # 实际加速度/转向率只有 1/4——wp4→5 到脊时 vx 只到 1.5m/s，0.12m
+        # 脊需动量冲过，低速+前轮抬升=卡脊）。dt_nav=1/NAV_HZ。
+        _dt_nav = 1.0 / max(float(os.environ.get('S10_NAV_HZ', '2')), 1e-3)
+        _slew_eff = self.vyaw_slew * (_dt_nav / 0.05)
         vyaw = float(np.clip(
-            vyaw, self._last_vyaw_out - self.vyaw_slew,
-            self._last_vyaw_out + self.vyaw_slew))
+            vyaw, self._last_vyaw_out - _slew_eff,
+            self._last_vyaw_out + _slew_eff))
         self._last_vyaw_out = vyaw
 
         # 限速：平滑路径速度剖面（全局导航层，曲率/坡度/台阶已编码；
@@ -705,10 +710,15 @@ class AutoNavFollower:
                 v_lim = min(v_lim, self.stair_vx)
             else:
                 v_lim = min(v_lim, self.step_vx)
-        # v219h: 横脊前加速窗口－－0.125m 脊 > 轮半径(0.081)，
-        # 低速轮子无法滚上，需动量冲过（S10_RIDGE_MIN_VX>0 启用）
+        # v219h/v444: 横脊前加速窗口——0.125m 脊 > 轮半径(0.081)，低速轮子
+        # 无法滚上，需动量冲过（S10_RIDGE_MIN_VX>0 启用）。只对**平脊**
+        # （当前航段非 step_zone）生效——wp5→6 是 0.125m 缓升台阶区，需
+        # 慢速爬（step_vx），动量提升会让它 2.5m/s 撞面卡死（v443 实测
+        # 卡在 y=28.2 前轮抬升 17s）。
         _rmin = float(os.environ.get("S10_RIDGE_MIN_VX", "0.0"))
-        if _rmin > 0.0:
+        _in_step = (next_idx >= 2 and next_idx - 1 < len(self.step_zone)
+                    and bool(self.step_zone[next_idx - 1]))
+        if _rmin > 0.0 and not _in_step:
             for _rs in getattr(self, "ridge_s", []):
                 _ds = _rs - self._s_cur
                 if 0.0 <= _ds <= float(os.environ.get(
@@ -716,7 +726,7 @@ class AutoNavFollower:
                     v_lim = max(v_lim, _rmin)
                     break
         # 速度限幅：避免转向后瞬间 0→4 m/s 的侧向冲击（侧翻风险）
-        dv = self.max_accel * 0.05   # 每 10 步(0.05s)更新的速度增量
+        dv = self.max_accel * (_dt_nav)   # 每拍增量按真实更新周期缩放（v442）
         vx = float(np.clip(v_lim,
                            self._last_vx - dv,
                            self._last_vx + dv))
