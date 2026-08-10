@@ -495,7 +495,12 @@ class AutoNavFollower:
         for k in range(len(vlim)):
             _kk = abs(float(self.path_curv_signed[k]))
             if _kk > _cvk:
-                _vl9 = float(np.sqrt(_cva / _kk))
+                # v749: 发卡弯(κ>2.5)限速固定用 min(_cva,8.0)——wp4→5
+                # 发卡+0.125m台阶复合段，VLIM_A 提到 9.5 时入弯速度高
+                # 西飘 0.3m 斜撞台阶卡死实测（751 vs 756 轨迹对比）；
+                # 普通弯道(κ<=2.5)享受 VLIM_A 提速。
+                _cva_eff = (min(_cva, 8.0) if _kk > 2.5 else _cva)
+                _vl9 = float(np.sqrt(_cva_eff / _kk))
                 # v673: 急弯限速向后延伸**默认关**（延伸会扰动 wp0→5 剖面致
                 # wp5→6 翻车 v656-667）；wp8→15 段（wp9 急弯+高架直道）需要
                 # 延伸 0.5m 才稳（v657）——S10_CURVE_EXTEND 分赛段启用

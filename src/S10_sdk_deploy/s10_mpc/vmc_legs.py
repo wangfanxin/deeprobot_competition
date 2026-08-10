@@ -832,6 +832,20 @@ class CarVMC:
         # 轮差速 yaw 反馈（自适应：转弯大、直行小）
         _ysc = float(cmd.get("yaw_scale", 1.0))
         _yk = self.yaw_k_wheel * (0.3 + 0.7 * min(abs(self._om_f) / 0.4, 1.0))
+        # v750: 差速反馈随实际速度缩放——低速/倒车时轮速差相对 vx 过大，
+        # yaw 正反馈自旋（起步坡实际 ω -4.9 翻车实测，om_ref 0.96 → 轮子
+        # 对转极限环）。连续量；默认 0 = v746 恒等，开大压弯/提速时建议
+        # S10_CAR_YAW_VX_GATE=1.5（vx<1.5 差速反馈降至 15%）。
+        _yvg = float(os.environ.get("S10_CAR_YAW_VX_GATE", "0.0"))
+        if _yvg > 0.0:
+            # 用实际 body 前向速度（_vx_f 是 cmd 低通，起步段=4 让缩放失效）
+            _bq = qpos[3:7]
+            _f2 = np.array([
+                1.0 - 2.0 * (_bq[2] ** 2 + _bq[3] ** 2),
+                2.0 * (_bq[1] * _bq[2] + _bq[0] * _bq[3]), 0.0])
+            _vx_b = float(np.dot(qvel[0:3], _f2))
+            _yv_sc = float(np.clip(abs(_vx_b) / _yvg, 0.0, 1.0))
+            _yk *= (0.15 + 0.85 * _yv_sc)
 
         tau = np.zeros(16, dtype=np.float64)
         step_lift = np.asarray(cmd.get("step_lift", np.zeros(4)))
@@ -985,6 +999,20 @@ class CarVMC:
                 self._om_ref_f = _om_ref
             self._om_ref_f += (_om_ref - self._om_ref_f) * min(1.0, dt / _om_ref_tau)
             _om_ref = self._om_ref_f
+            # v750: 低速滑模 yaw 反馈缩放因子（连续量）——起步/倒车时
+            # err_y 反馈正反馈自旋（起步坡实际 ω -4.9 翻车实测）。只缩
+            # **反馈**（_k_sm），差速前馈（_om_ref）保留航向保持能力。
+            # 默认 0 = v746 恒等；提速测试建议 S10_CAR_YAW_VX_GATE=2.0
+            # （vx<2.0 时滑模反馈线性降至 50%）。
+            _yvg = float(os.environ.get("S10_CAR_YAW_VX_GATE", "0.0"))
+            self._yv_scale = 1.0
+            if _yvg > 0.0:
+                _bq = qpos[3:7]
+                _f2 = np.array([
+                    1.0 - 2.0 * (_bq[2] ** 2 + _bq[3] ** 2),
+                    2.0 * (_bq[1] * _bq[2] + _bq[0] * _bq[3]), 0.0])
+                _vx_b = float(np.dot(qvel[0:3], _f2))
+                self._yv_scale = float(np.clip(abs(_vx_b) / _yvg, 0.0, 1.0))
             # v428: Tube-MPPI 灵感（RSS18 Williams et al.）——MPPI 规划
             # 标称轨迹，低层跟踪器保证实际轨迹在"管"内：管内不干预（让差速
             # 前馈自然执行），只有偏差超管才拉回。对应 yaw 通道：
@@ -1022,6 +1050,9 @@ class CarVMC:
             # 快收敛、大误差饱和不过冲，替代纯比例→消除低速极限环）+
             # 库仑摩擦前馈（克服低速静摩擦）+ 高频阻尼。
             _k_sm = float(os.environ.get("S10_CAR_YAW_K_SM", "30.0"))
+            # v750: 滑模 yaw 力矩随实际速度缩放（低速抑制正反馈自旋，
+            # 下限 0.5 保留基本航向保持——0.15 时起步 yaw 漂 57° 转不回）
+            _k_sm *= (0.5 + 0.5 * float(getattr(self, "_yv_scale", 1.0)))
             _phi = float(os.environ.get("S10_CAR_YAW_PHI", "0.5"))
             # v436: 滑模误差改用 body 系 yaw 率（S10_CAR_YAW_OM_BODY 默认
             # 0=原世界系 qvel[5]）。v237 注释即指出世界系被地形俯仰/横滚
