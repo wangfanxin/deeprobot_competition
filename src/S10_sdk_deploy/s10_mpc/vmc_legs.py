@@ -766,10 +766,6 @@ class CarVMC:
             wq = float(qvel[WHEEL_QV_IDX[leg]])
             v_wheel = -wq * self.fk.r
             side = -1.0 if leg in (0, 2) else 1.0
-            # v244: 回退 v243（yaw 反馈入参考实测方向异常），v_ref 直接用
-            # om_f；差速乘 yaw_scale（抬轮/腾空时减弱）
-            v_ref = (self._vx_f
-                     + side * self._om_f * _ysc * self.track_half)
             # v237: yaw 高频阻尼——修正 v235 符号（-kd 削弱恢复力矩），
             # body 系 yaw 率 + 高通（只阻尼振荡，稳态零偏置；RobuROC6 思路）
             _kd_yaw = float(os.environ.get("S10_CAR_KD_YAW", "2.0"))
@@ -778,6 +774,19 @@ class CarVMC:
                 self._omega_lp = _om_b
             _om_hf = _om_b - self._omega_lp
             self._omega_lp += (_om_b - self._omega_lp) * min(1.0, dt / 0.05)
+            # v249: yaw 超速保护——|ω| 超 a_lat 安全包线（S10_AUTO_LAT_MAX/v）
+            # 时关差速前馈（只留反馈刹）+ 加强阻尼。滑移权威下 S 弯方向反转
+            # 时过冲 -2.5 rad/s 刹不住翻车（aim1 实测）。
+            _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
+            _om_safe = _latmax / max(abs(self._vx_f), 0.5)
+            _kd_eff = _kd_yaw
+            _om_ref = self._om_f
+            if abs(_om_b) > _om_safe:
+                _om_ref = 0.0
+                _kd_eff = _kd_yaw + 8.0
+            # v244: v_ref 用 om_f（超速时 om_ref=0，只靠 t_yaw 反馈刹）
+            v_ref = (self._vx_f
+                     + side * _om_ref * _ysc * self.track_half)
             # v241/v242: yaw 摩擦前馈（RobuROC6 库仑摩擦补偿）——差速转向需
             # 先克服侧向滑移阻力才有 yaw 运动，纯误差反馈有死区滞后；按指令
             # 方向给基础差速力矩。**默认 0**：v241 线性 FF 在导航指令突变时
@@ -786,9 +795,10 @@ class CarVMC:
             if not hasattr(self, "_om_ff_lp"):
                 self._om_ff_lp = 0.0
             self._om_ff_lp += (self._om_f - self._om_ff_lp) * min(1.0, dt / 0.15)
-            # v244: 恢复比例项 + 高频阻尼 + 可选摩擦前馈（v242 结构）
+            # v244: 恢复比例项 + 高频阻尼 + 可选摩擦前馈（v242 结构）；
+            # v249 超速时用 _kd_eff 加强阻尼
             t_yaw = ((-_yk * (self._om_f - body["omega"])
-                      + _kd_yaw * _om_hf - _kff * self._om_ff_lp) * side
+                      + _kd_eff * _om_hf - _kff * self._om_ff_lp) * side
                      * _ysc * self._ground_f)
             # v246: yaw 力矩限速——滑移权威（YAW_TMAX）下首次过冲瞬态太快
             # （实测 ω 冲到 3.6 翻车）；限 t_yaw 变化率，平滑起转与刹车。
