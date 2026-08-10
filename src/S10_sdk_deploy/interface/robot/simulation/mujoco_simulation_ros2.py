@@ -1,4 +1,4 @@
-"""
+﻿"""
  * @file mujoco_simulation.py
  * @brief simulation in mujoco
  * @author Bo (Percy) Peng
@@ -123,7 +123,7 @@ MPC_STAND_KD = 2.0
 MPC_STAND_WHEEL_KD = 0.3   # 站姿时轮子只施加刹车力矩，避免被腿 PD 力矩误驱
 MPC_STAND_TIME = 2.0      # 站起保持时间（秒）
 # 遥控目标速度上限（与 yaml remote 节一致）
-MPC_VX_MAX = float(os.environ.get("S10_MPC_VX_MAX", "4.5"))                               
+MPC_VX_MAX = float(os.environ.get("S10_MPC_VX_MAX", "6.0"))                               
 MPC_VY_MAX = float(os.environ.get("S10_MPC_VY_MAX", "0.5"))
 MPC_VYAW_MAX = float(os.environ.get("S10_MPC_VYAW_MAX", "2.0"))
 # MBDPI 主线程规划间隔（仿真步数）：50 步 = 每 1s 规划一次（~0.25s 阻塞）
@@ -603,7 +603,7 @@ class MuJoCoSimulationNode(Node):
             # 横脊限速 1.5（2026-08-06 实测）：2.0 高速斜撞 wp4→5 横脊
             # 侧翻（full_course_24）；1.5 慢速正对过（full_course_23 过了
             # wp4→5）。传播窗口 2m 提前减速（原 3m 覆盖前段太长）。
-            step_vx = float(os.environ.get("S10_RIDGE_VX", "1.5"))
+            step_vx = float(os.environ.get("S10_RIDGE_VX", "2.5"))
             n_ahead = int(float(os.environ.get(
                 "S10_RIDGE_AHEAD", "2.0")) / f.path_res)
             n_after = int(float(os.environ.get(
