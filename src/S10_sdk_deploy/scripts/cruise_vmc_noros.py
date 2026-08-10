@@ -246,7 +246,7 @@ def main():
         _lk = float(os.environ.get('S10_VMC_TERRAIN_LOOKAHEAD', '0.0'))
         if _lk > 0.0:
             _bx = d.xmat[1][0]
-            _by = d.xmat[1][1]
+            _by = d.xmat[1][3]
             _bn = float(np.hypot(_bx, _by)) + 1e-9
             _bx, _by = _bx / _bn, _by / _bn
             # v223g: 前瞻权重随导航 yaw 误差连续衰减——弯道未完成(err大)
@@ -297,7 +297,7 @@ def main():
         # 阻抗过激翻车实测；抬轮用自身 0.35m 窗口）
         _lk_c = float(os.environ.get('S10_VMC_LIFT_LOOKAHEAD', '0.35'))
         if _lk_c > 0.05:
-            _fwd4 = d.xmat[1][0:2]
+            _fwd4 = np.array([d.xmat[1][0], d.xmat[1][3]])
             _fn4 = float(np.hypot(_fwd4[0], _fwd4[1])) + 1e-9
             _fx4, _fy4 = _fwd4[0] / _fn4, _fwd4[1] / _fn4
             for _ai in range(2):
@@ -352,7 +352,7 @@ def main():
             # v247: 横脊连续抬放（替代 v220a 状态机）——按前/后轴到横脊的
             # 世界坐标物理距离触发（s_cur 投影在转向时滞后会漏触发）：
             # 前轴 0.9m 前起抬、过脊即放；后轴同窗口。与台阶步态同模式。
-            _fwdv = d.xmat[1][0:2]
+            _fwdv = np.array([d.xmat[1][0], d.xmat[1][3]])
             _fn2 = float(np.hypot(_fwdv[0], _fwdv[1])) + 1e-9
             _fx2, _fy2 = _fwdv[0] / _fn2, _fwdv[1] / _fn2
             _fax = np.array([body_pos[0] + _fx2 * 0.228,
@@ -392,7 +392,7 @@ def main():
         # v221g: 物理检测——前轮前方 0.5m 真实地形高差>0.07 才抬身
         # （s_cur 投影推进快于物理位置，弯道出口误触发侧翻实测）
         if os.environ.get('S10_VMC_BODY_LIFT', '1') == '1':
-            _fwd3 = d.xmat[1][0:2]
+            _fwd3 = np.array([d.xmat[1][0], d.xmat[1][3]])
             _fl = float(np.hypot(_fwd3[0], _fwd3[1])) + 1e-9
             _fx3, _fy3 = _fwd3[0] / _fl, _fwd3[1] / _fl
             _hf = terrain_at(body_pos[0] + _fx3 * 0.5,
@@ -432,7 +432,7 @@ def main():
         roll_tar = float(np.clip(-0.06 * om_c * abs(vx_c), -0.06, 0.06))
         pitch_tar = 0.0
         try:
-            fwd = d.xmat[1][0:2]
+            fwd = np.array([d.xmat[1][0], d.xmat[1][3]])
             fx, fy = fwd[0], fwd[1]
             h_a = terrain_at(body_pos[0] + fx*0.6, body_pos[1] + fy*0.6)
             h_b = terrain_at(body_pos[0] - fx*0.6, body_pos[1] - fy*0.6)
@@ -457,10 +457,10 @@ def main():
             _in_hop_zone = any(
                 float(abs(np.dot(
                     np.array([body_pos[0] + d.xmat[1][0] * 0.228,
-                              body_pos[1] + d.xmat[1][1] * 0.228])
+                              body_pos[1] + d.xmat[1][3] * 0.228])
                     - _rp, _tng))) < 1.5 for (_rp, _tng, _sr, _dh) in ridge_world)
             if _in_hop_zone and stair_lift_flag <= 0.0:
-                _fwd2 = d.xmat[1][0:2]
+                _fwd2 = np.array([d.xmat[1][0], d.xmat[1][3]])
                 _fx, _fy = _fwd2[0], _fwd2[1]
                 _fn = float(np.hypot(_fx, _fy)) + 1e-9
                 _fx, _fy = _fx / _fn, _fy / _fn
