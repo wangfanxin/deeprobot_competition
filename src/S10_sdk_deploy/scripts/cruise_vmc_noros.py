@@ -180,6 +180,12 @@ def main():
         yaw = float(np.arctan2(
             2.0*(quat[3]*quat[0]+quat[1]*quat[2]),
             1.0-2.0*(quat[2]**2+quat[3]**2)))
+        # v291d: continuous roll safety envelope for crest-driven rear
+        # lift boost (banked approach must not get extra rear lift).
+        _roll_now = float(np.arctan2(
+            2.0*(quat[0]*quat[1]+quat[2]*quat[3]),
+            1.0-2.0*(quat[1]**2+quat[2]**2)))
+        _roll_env = float(np.clip((0.35 - abs(_roll_now)) / 0.15, 0.0, 1.0))
         wheel_xyz = np.asarray([d.xpos[WHEEL_BODY[i]] for i in range(4)])
         wheel_vel = np.asarray([d.cvel[WHEEL_BODY[i]][0:3] for i in range(4)])
 
@@ -309,6 +315,14 @@ def main():
             _fwd5 = np.array([d.xmat[1][0], d.xmat[1][3]])
             _fn5 = float(np.hypot(_fwd5[0], _fwd5[1])) + 1e-9
             _fx5, _fy5 = _fwd5[0] / _fn5, _fwd5[1] / _fn5
+            # v291d: crest state (front axle already above rear axle) selects
+            # the long rear release window; otherwise rear keeps the proven
+            # 0.30m window (v291b regression at the wp2->3 turn). Crest boost
+            # also fades with body roll (continuous safety envelope).
+            _wzc = np.asarray([d.xpos[WHEEL_BODY[i], 2] for i in range(4)])
+            _crest_pre = (float(np.clip((float(np.max(_wzc[0:2]))
+                                          - float(np.min(_wzc[2:4])) - 0.03)
+                                         / 0.06, 0.0, 1.0)) * _roll_env)
             for _ai in range(2):
                 _sgn = 1.0 if _ai == 0 else -1.0
                 _ax = np.array([body_pos[0] + _fx5 * 0.228 * _sgn,
@@ -326,9 +340,17 @@ def main():
                     # v278: 紧窗口满幅——棱边前 0.25m 起抬、0.1m 前满幅、
                     # 过棱 0.1m 后保持、0.3m 后释放。0.141m 够清 0.12m 脊；
                     # v277 提前 0.5m 满幅→前轮长时间离地失驱动侧翻
+                    # v291c: front axle keeps the proven 0.30m release
+                    # (v277/v288: long front lift during turns loses drive);
+                    # rear axle gets the 0.50m window only at crest state
+                    # (front already on the ridge top).
+                    if _ai == 0 or _crest_pre <= 0.0:
+                        _release, _span = 0.30, 0.20
+                    else:
+                        _release, _span = 0.50, 0.25
                     _lift_r = float(
                         np.clip((0.25 - _dmin_r) / 0.15, 0.0, 1.0)
-                        * np.clip((0.30 - _dmin_r) / 0.20, 0.0, 1.0))
+                        * np.clip((_release - _dmin_r) / _span, 0.0, 1.0))
                     if _lift_r > 0.02:
                         if _ai == 0:
                             step_lift[0:2] = np.maximum(
@@ -371,7 +393,7 @@ def main():
                 # 抬轮在起步坡误触发侧翻，收紧上限）
                 _rise0 = float(_ha - _hb)
                 _rise = 0.0
-                if _rise0 > 0.02 and _rise0 < 0.35:
+                if _rise0 > 0.08 and _rise0 < 0.35:
                     _rise = (float(np.clip(_rise0 / 0.15, 0.0, 1.0))
                              * float(np.clip((0.35 - _rise0) / 0.15, 0.0, 1.0)))
                 if _rise > 0.02:
@@ -477,10 +499,19 @@ def main():
         _wz = np.asarray([d.xpos[WHEEL_BODY[i], 2] for i in range(4)])
         _lf = max(_wz[0], _wz[1]); _lr = min(_wz[2], _wz[3])
         _in_ridge = any(-0.8 <= s_cur - sr <= 1.2 for (sr, dhv) in ridge_arcs)
+        # v291: crest = continuous geometry (front axle already on ridge top,
+        # rear axle at the face). Boosts rear terrain bump to ~1.4x _lift so
+        # the rear wheel center target >= ridge top, and restores rear
+        # step_lift to full (overrides yaw-alignment decay only for the rear).
+        _crest = (float(np.clip((_lf - _lr - 0.03) / 0.06, 0.0, 1.0))
+                  if (_in_ridge and _lf > _lr + 0.03) else 0.0) * _roll_env
         # v220b: 迈步期间禁用后轮跟抬——前轮被迈步抬起时 wz 天然高于后轮，
         # 会误把后轮也抬离地（全轮无推力死锁）
-        if _step_state == 0 and _in_ridge and _lf > _lr + 0.05:
-            terr[2:] = np.maximum(terr[2:], terr[2:] + _lift * 0.8)
+        if _step_state == 0 and _crest > 0.0:
+            _rear_x = float(os.environ.get('S10_VMC_REAR_CREST_EXTRA', '0.6'))
+            terr[2:] = np.maximum(
+                terr[2:], terr[2:] + _lift * (0.8 + _rear_x * _crest))
+            step_lift[2:4] = np.maximum(step_lift[2:4], _crest)
 
 
         # v234: 巡航转弯=差速为主 + hip 微 roll ±3.5°(0.06 rad)协调——
