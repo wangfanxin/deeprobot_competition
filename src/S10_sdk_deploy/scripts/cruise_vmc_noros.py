@@ -769,13 +769,16 @@ def main():
           '连续超限最长 %.2fs / 累计 %.2fs%s' % (
               _max_tau_leg, _max_tau_wh, _over_worst, _over_total,
               '  [超0.5s不合格!]' if _over_worst > 0.5 else ''), flush=True)
+    if os.environ.get('VMC_TRAJ'):
+        np.save(os.environ['VMC_TRAJ'], np.array(traj))
     if _viewer is not None:
         try:
             _viewer.close()
         except Exception:
             pass
-    if os.environ.get('VMC_TRAJ'):
-        np.save(os.environ['VMC_TRAJ'], np.array(traj))
+        # v293: mujoco.viewer 在 WSLg 下正常退出会段错误，改用 os._exit
+        sys.stdout.flush()
+        os._exit(0)
 
 
 if __name__ == '__main__':

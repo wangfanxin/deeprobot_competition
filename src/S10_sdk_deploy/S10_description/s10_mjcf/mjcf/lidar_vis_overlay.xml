@@ -1,0 +1,10 @@
+<mujoco model="lidar_vis">
+  <asset>
+    <hfield name="lidar_hf" nrow="40" ncol="48" size="6 5 1.0 0.3"/>
+  </asset>
+  <worldbody>
+    <geom name="lidar_hf_geom" type="hfield" hfield="lidar_hf" group="5"
+          contype="0" conaffinity="0" pos="0 0 0"
+          rgba="0.30 0.75 0.45 0.55"/>
+  </worldbody>
+</mujoco>
