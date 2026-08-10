@@ -308,7 +308,13 @@ def main():
                     np.clip((0.45 - _drr) / 0.15, 0.0, 1.0)
                     * np.clip((_drr - 0.02) / 0.15, 0.0, 1.0)))
             if _fl2 + _rl2 > 0.02:
-                step_lift[:] = [_fl2, _fl2, _rl2, _rl2]
+                # v255: 横脊只抬前轮，后轮滚动/蹬过（斜过脊时后轮单侧先触
+                # 脊，双侧同抬反而侧翻，wp4→5 roll -2.75 实测；"前挂后蹬"）
+                if float(os.environ.get(
+                        "S10_VMC_RIDGE_REAR_LIFT", "0.0")) > 0:
+                    step_lift[:] = [_fl2, _fl2, _rl2, _rl2]
+                else:
+                    step_lift[:] = [_fl2, _fl2, 0.0, 0.0]
 
         # v221e: 车身抬升（过脊）——渐变：脊前 0.6m 起、0.2m 处满，
         # 过脊后 0.4m 内回落（防阶跃弹跳侧翻）
