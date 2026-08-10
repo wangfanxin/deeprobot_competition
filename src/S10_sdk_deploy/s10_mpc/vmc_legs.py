@@ -716,8 +716,14 @@ class CarVMC:
                        - self.kd_leg * float(qvel[6 + LEG_QV_LEG[b + 1]]))
             t_knee += (self.kp_leg * (_q2_tgt - q2)
                        - self.kd_leg * float(qvel[6 + LEG_QV_LEG[b + 2]]))
-            # hipx：位置 PD + 侧身（压弯时弯内 hipx 外展）
+            # hipx：位置 PD + 侧身（压弯）+ v232 扭胯 yaw 辅助——
+            # 左转(om_f>0)时左腿 hipx 外展/右腿内收，产生 yaw 力矩
+            # （用户"扭肩/胯转向"思路，突破轮差速 0.65rad/s 物理上限）
             _q0_tgt = self.pose_target[b] - 0.12 * self.roll_sign[leg] * self._roll_f
+            _hipx_yaw = float(os.environ.get("S10_CAR_HIPX_YAW", "0.0"))
+            if _hipx_yaw > 0.0:
+                _ys = -1.0 if leg in (0, 1) else 1.0   # 前腿/后腿
+                _q0_tgt += _hipx_yaw * _ys * self._om_f * self._ground_f
             t_hipx = (self.kp_leg * (_q0_tgt - q0)
                       - self.kd_leg * float(qvel[6 + LEG_QV_LEG[b]]))
 
