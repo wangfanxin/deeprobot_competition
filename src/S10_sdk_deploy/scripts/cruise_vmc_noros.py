@@ -713,7 +713,8 @@ def main():
                     for _jx in range(_ncol):
                         _ix = int(np.floor((_x0 + (_jx + 0.5) * _hrx - lterr.ox) / lterr.res))
                         if 0 <= _ix < lterr.nx and lterr.valid[_iy, _ix]:
-                            _data[_jy * _ncol + _jx] = float(lterr.h[_iy, _ix]) - 0.3
+                            # +0.02 浮高：避免与真实地形 z-fighting
+                            _data[_jy * _ncol + _jx] = float(lterr.h[_iy, _ix]) - 0.3 + 0.02
             _off = _h_hf * _nrow * _ncol
             m.hfield_data[_off:_off + len(_data)] = _data
 
