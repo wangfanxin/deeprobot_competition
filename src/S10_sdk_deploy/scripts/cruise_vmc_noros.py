@@ -147,7 +147,13 @@ def main():
             if t - _lupd >= 0.1:
                 lterr.update()
                 _lupd = t
-            return lterr.height(x, y)
+            _h = lterr.height(x, y)
+            # v275: 高架伪影抑制——lidar 在起步坡看到上方高架盒底面
+            # （2.16m 读数，实测抬轮误触发/腿阻抗过激侧翻）；读数高于
+            # 机体+1.0m 视为伪影，用运动学地面（机高-0.55）兜底
+            if _h > body_pos[2] + 1.0:
+                return float(body_pos[2] - 0.55)
+            return _h
     else:
         def terrain_at(x, y):
             g = np.array([-1], dtype=np.int32); dist = np.zeros(1); nrm = np.zeros(3)
