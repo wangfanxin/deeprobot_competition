@@ -190,7 +190,11 @@ def main():
             else:
                 vx_c, om_c = mppi.plan(st, _ref, v_ref, prev_u)
             # v218p: omega 上限匹配 VMC yaw 能力（防指令远超执行导致振荡）
+            # v245: 速度相关上限——横向加速度包线 a_lat=ω·v 防高速大 ω 侧翻
+            # （实测 YAW_TMAX 滑移权威下 ω 可达 3.6+，v=1.9 时 a_lat 7m/s2 翻车）
             _omcap = float(os.environ.get("S10_VMC_OM_CAP", "0.5"))
+            _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
+            _omcap = min(_omcap, _latmax / max(abs(vx_c), 0.5))
             om_c = float(np.clip(om_c, -_omcap, _omcap))
             prev_u = np.array([vx_c, om_c])
             last_log = t

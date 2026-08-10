@@ -790,6 +790,17 @@ class CarVMC:
             t_yaw = ((-_yk * (self._om_f - body["omega"])
                       + _kd_yaw * _om_hf - _kff * self._om_ff_lp) * side
                      * _ysc * self._ground_f)
+            # v246: yaw 力矩限速——滑移权威（YAW_TMAX）下首次过冲瞬态太快
+            # （实测 ω 冲到 3.6 翻车）；限 t_yaw 变化率，平滑起转与刹车。
+            _tslew = float(os.environ.get("S10_CAR_YAW_SLEW", "30.0"))
+            if not hasattr(self, "_t_yaw_prev"):
+                self._t_yaw_prev = np.zeros(4)
+            _ty = float(np.clip(
+                t_yaw,
+                self._t_yaw_prev[leg] - _tslew * dt,
+                self._t_yaw_prev[leg] + _tslew * dt))
+            self._t_yaw_prev[leg] = _ty
+            t_yaw = _ty
             t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
                        - self.wheel_d * wq + t_yaw)
             # 动态钳制：按该腿实际分配载荷
