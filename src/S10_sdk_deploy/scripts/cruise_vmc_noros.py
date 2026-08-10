@@ -342,11 +342,10 @@ def main():
             _lift_align = float(np.clip(
                 1.0 - _err_l / float(os.environ.get(
                     'S10_VMC_LIFT_ERR_GATE', '0.8')), 0.0, 1.0))
-            # v287: 对准衰减只作用于**后轮**——前轮抬轮转弯中清脊必需
-            # （wp4→5 转弯中前轮抬轮被抑制→撞脊翻车）；后轮转弯中抬放
-            # 才需要抑制（wp2→3 后轮满抬转弯中翻车）
+            # v288: 回退 v287——前轮抬轮转弯中同样不稳（wp1→2 sl满幅+ω4.08
+            # 翻车）；wp4→5 真问题=偏航处导航命令反向，需 NAV_DEBUG 定位
             if _lift_align < 1.0:
-                step_lift[2:4] *= _lift_align
+                step_lift *= _lift_align
             if float(np.max(step_lift)) > 0.02:
                 stair_lift_flag = 1.0
         # v264: lidar rise 抬轮（仅 S10_VMC_RIDGE_LIFT_CONT=0 时兜底）
