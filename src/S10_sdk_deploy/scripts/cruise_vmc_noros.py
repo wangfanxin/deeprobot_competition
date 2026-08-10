@@ -423,6 +423,14 @@ def main():
                 wp_times[next_idx] = t
                 print(f'[VMC-T] wp{next_idx} @ t={t:.2f}s', flush=True)
                 next_idx += 1
+                # v253: 过航点后强制弧长游标越过该航点——切弯时 s_cur 投影
+                # 滞后会令前视目标回指后方（wp4→5 指令反向侧翻实测）
+                try:
+                    _s_min = float(fol.path_wp_s[next_idx - 1]) - 0.05
+                    if fol._s_cur < _s_min:
+                        fol._s_cur = _s_min
+                except Exception:
+                    pass
                 if STOP_AT > 0 and next_idx > STOP_AT:
                     print(f'[VMC-T] 到达 wp{STOP_AT}，结束', flush=True)
                     break
