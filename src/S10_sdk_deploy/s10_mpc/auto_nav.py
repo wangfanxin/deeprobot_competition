@@ -751,9 +751,15 @@ class AutoNavFollower:
             _vll = float(np.clip(
                 self._last_vx * self._last_vx / (2.0 * self.max_accel)
                 + 1.5, 2.0, 5.0))
-        _k_far = min(self._k_near + int(_vll / self.path_res),
+        # v743: vlim 前视用单调弧长 s_cur（非欧氏最近点）——弯道外侧时
+        # 最近点已在弯后，vlim 提前恢复导致高速冲弯侧翻（wp1 90° 弯实测
+        # vx=5.05/vlim=1.44 同帧）。s_cur 只随切线投影前进，弯中仍见弯心限速。
+        _k_near_v = int(np.searchsorted(
+            self.path_cum, self._s_cur, side="right") - 1)
+        _k_near_v = max(0, min(_k_near_v, len(self.path_vlim) - 1))
+        _k_far = min(_k_near_v + int(_vll / self.path_res),
                      len(self.path_vlim) - 1)
-        v_lim = float(np.min(self.path_vlim[self._k_near:_k_far + 1]))
+        v_lim = float(np.min(self.path_vlim[_k_near_v:_k_far + 1]))
         # v669: 急弯航点入弯减速——航点转角 >60° 且距航点 3m 内压速到 1.5
         # （替代曲线延伸：延伸会扰动 wp0→5 速度剖面致 wp5→6 翻车 v656-667；
         # 急弯航点 wp12 等单点 κ 尖峰在弯心释放加速翻车，需提前压速）
