@@ -136,13 +136,21 @@ def main():
         N=int(os.environ.get('VMC_MPPI_N', '4096')),
         H=int(os.environ.get('VMC_MPPI_H', '40')),
         vx_max=float(os.environ.get('S10_AUTO_VMAX', '5.0')))
-    if os.environ.get('S10_VMC_MODE', 'wbc') == 'pd':
+    _vmode = os.environ.get('S10_VMC_MODE', 'wbc')
+    if _vmode == 'pd':
         from s10_mpc.vmc_legs import LegPDDrive
         vmc = LegPDDrive()
         print('[VMC] LegPDDrive 模式（腿锁蹲姿+轮驱动）', flush=True)
-    elif os.environ.get('S10_VMC_MODE', 'wbc') == 'car':
+    elif _vmode == 'car':
         vmc = CarVMC()
         print('[VMC] CarVMC 模式（车化：轮驱动/差速，腿=主动悬架姿态）', flush=True)
+    elif _vmode == 'dual':
+        # v466: 双技能执行器——巡航用 CarVMC（已调优），STAIR 模式用
+        # VMCController（WBC 全身力控，老 dial-MPC 时代爬台阶执行器）。
+        vmc_car = CarVMC()
+        vmc_wbc = VMCController()
+        vmc = vmc_car
+        print('[VMC] 双技能模式：CRUISE=CarVMC, STAIR=VMCController(WBC)', flush=True)
     else:
         vmc = VMCController()
 
@@ -747,6 +755,8 @@ def main():
                       stair_lift=stair_lift_flag,
                       lift_f_scale=_lfs,
                       lift_swing=_lsw)
+        if (os.environ.get('S10_VMC_MODE', 'wbc') == 'dual'):
+            vmc = vmc_wbc if fol.mode == 'STAIR' else vmc_car
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         _tleg = float(np.abs(tau[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]]).max())
         _twh = float(np.abs(tau[[3, 7, 11, 15]]).max())
