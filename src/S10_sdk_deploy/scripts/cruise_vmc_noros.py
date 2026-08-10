@@ -332,6 +332,14 @@ def main():
                         else:
                             step_lift[2:4] = np.maximum(
                                 step_lift[2:4], _lift_r)
+            # v279: 抬轮幅度乘航向对准系数——转弯（|err| 大）时抬轮衰减，
+            # 防"转弯+抬轮"叠加侧翻（wp2→3 后轮满抬转弯中翻车实测）。
+            _err_l = abs(float(getattr(fol, '_last_err', 0.0)))
+            _lift_align = float(np.clip(
+                1.0 - _err_l / float(os.environ.get(
+                    'S10_VMC_LIFT_ERR_GATE', '0.8')), 0.0, 1.0))
+            if _lift_align < 1.0:
+                step_lift *= _lift_align
             if float(np.max(step_lift)) > 0.02:
                 stair_lift_flag = 1.0
         # v264: lidar rise 抬轮（仅 S10_VMC_RIDGE_LIFT_CONT=0 时兜底）
