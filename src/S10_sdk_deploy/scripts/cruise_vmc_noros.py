@@ -206,6 +206,19 @@ def main():
             _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
             _omcap = min(_omcap, _latmax / max(abs(vx_c), 0.5))
             om_c = float(np.clip(om_c, -_omcap, _omcap))
+            # v257: 近横脊限 yaw（垂直过脊）——斜角过脊单侧先触脊是
+            # 侧翻源；脊前 1.2m 内把 yaw 指令压到 ±0.35，过脊后再放开
+            if ridge_world:
+                _fwdv0 = d.xmat[1][0:2]
+                _fn0 = float(np.hypot(_fwdv0[0], _fwdv0[1])) + 1e-9
+                _fx0, _fy0 = _fwdv0[0] / _fn0, _fwdv0[1] / _fn0
+                _fa0 = np.array([body_pos[0] + _fx0 * 0.228,
+                                 body_pos[1] + _fy0 * 0.228])
+                _dmin = min(float(np.linalg.norm(_fa0 - _rp))
+                            for (_rp, _sr, _dh) in ridge_world)
+                if _dmin < 1.2:
+                    _k_st = float(np.clip((_dmin - 0.2) / 1.0, 0.0, 1.0))
+                    om_c *= float(np.clip(0.35 + 0.65 * _k_st, 0.0, 1.0))
             prev_u = np.array([vx_c, om_c])
             last_log = t
         else:
@@ -315,7 +328,7 @@ def main():
                 # v255: 横脊只抬前轮，后轮滚动/蹬过（斜过脊时后轮单侧先触
                 # 脊，双侧同抬反而侧翻；"前挂后蹬"）
                 if float(os.environ.get(
-                        "S10_VMC_RIDGE_REAR_LIFT", "0.0")) > 0:
+                        "S10_VMC_RIDGE_REAR_LIFT", "1.0")) > 0:
                     step_lift[:] = [_fl2, _fl2, _rl2, _rl2]
                 else:
                     step_lift[:] = [_fl2, _fl2, 0.0, 0.0]
