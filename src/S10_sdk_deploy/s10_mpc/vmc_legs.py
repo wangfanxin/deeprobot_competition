@@ -262,7 +262,13 @@ class VMCController:
             # 否则 J^T 支撑力矩抵消 knee 位置 PD，轮抬不起来）
             _sl = float(np.asarray(
                 cmd.get("step_lift", np.zeros(4)))[leg])
-            fw[:] = fw * (1.0 - _sl)
+            # v491: 垂直支撑保留（S10_VMC_WBC_Z_KEEP，默认 0.5）——原 (1-sl)
+            # 在 pinv 求解后清零抬轮腿力，总支撑不再满足 wrench，车身塌到
+            # 0.11m 离地卡死（wp6→7 第一级前 0.4m 实测）。水平力照常衰减，
+            # 垂直力保留部分防塌陷；姿态 PD 仍抬轮。
+            _zk = float(os.environ.get("S10_VMC_WBC_Z_KEEP", "0.5"))
+            fw[0:2] *= (1.0 - _sl)
+            fw[2] *= (1.0 - _zk * _sl)
             # v218q: 前轮 hop 冲量（世界 z 向上）——必须在卸载后加，
             # 否则被迈步腿清零乘掉（v220j 实测 hop 无效）
             _hop = cmd.get("hop")

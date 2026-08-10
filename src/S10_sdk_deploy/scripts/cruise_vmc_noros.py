@@ -789,18 +789,31 @@ def main():
                 else:
                     _lsw = float(os.environ.get(
                         'S10_VMC_LIFT_SWING_STEP', '1.0'))
-                # v471: 终局防同抬（放在 crest/相位/连续抬轮全部之后）——
+                # v471/v493: 终局防同抬（放在 crest/相位/连续抬轮全部之后）——
                 # 前轴抬升时后轴按比例抑制，后轴同理；交替抬升保至少一轴
-                # 接地牵引（六级楼梯 sl=[0.8,1] 同抬卡死实测）。
-                if float(os.environ.get('S10_STAIR_ANTI', '0')) > 0:
+                # 接地牵引（六级楼梯 sl=[0.8,1] 同抬卡死实测）。仅 stair_zone
+                # 生效（wp5→6 双级间距 2m 无窗重叠，防同抬会拖慢——60.55s
+                # 实测）；S10_STAIR_ANTI=1 开启。
+                _in_stairzone = (next_idx - 1 < len(fol.stair_zone)
+                                 and fol.stair_zone[next_idx - 1])
+                if (_in_stairzone
+                        and float(os.environ.get('S10_STAIR_ANTI', '0')) > 0):
                     _fln = float(np.mean(step_lift[0:2]))
                     _rln = float(np.mean(step_lift[2:4]))
                     _fa = float(np.clip((_fln - 0.15) / 0.35, 0.0, 1.0))
                     _ra = float(np.clip((_rln - 0.15) / 0.35, 0.0, 1.0))
+                    # v492: 防同抬加下限（S10_STAIR_ANTI_FLOOR 默认 0.4）——
+                    # 前轮 sl 持续 1.0（连续 riser 窗重叠）时若后轮被完全清零，
+                    # 狗永远等不到前轮释放，死锁（v491 卡第一级实测）。后轮
+                    # 保留部分抬升让序列推进。
+                    _afloor = float(os.environ.get(
+                        'S10_STAIR_ANTI_FLOOR', '0.4'))
                     if _fa >= _ra:
-                        step_lift[2:4] *= (1.0 - _fa)
+                        step_lift[2:4] = np.maximum(
+                            step_lift[2:4] * (1.0 - _fa), _afloor)
                     else:
-                        step_lift[0:2] *= (1.0 - _ra)
+                        step_lift[0:2] = np.maximum(
+                            step_lift[0:2] * (1.0 - _ra), _afloor)
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
                       yaw_scale=1.0 - _lift_act, hop=hop,
