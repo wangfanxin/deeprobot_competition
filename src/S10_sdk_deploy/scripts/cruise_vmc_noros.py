@@ -213,32 +213,9 @@ def main():
             _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
             _omcap = min(_omcap, _latmax / max(abs(vx_c), 0.5))
             om_c = float(np.clip(om_c, -_omcap, _omcap))
-            # v261: 脊前对准——2.5m 内把 yaw 指令向**最近脊**的路径切线
-            # 方向强引导（覆盖导航指令振荡；保证垂直过脊，转弯在脊前完成
-            # → err 门控放开→地形前瞻恢复抬轮）。
-            if ridge_world:
-                _fwdv0 = d.xmat[1][0:2]
-                _fn0 = float(np.hypot(_fwdv0[0], _fwdv0[1])) + 1e-9
-                _fx0, _fy0 = _fwdv0[0] / _fn0, _fwdv0[1] / _fn0
-                _fa0 = np.array([body_pos[0] + _fx0 * 0.228,
-                                 body_pos[1] + _fy0 * 0.228])
-                _dmin = 1e9
-                _tng_near = None
-                for (_rp, _tng, _sr, _dh) in ridge_world:
-                    # v262: 只考虑**前方**的脊（沿路径切线投影为负=脊在前）
-                    _dd = float(np.dot(_fa0 - _rp, _tng))
-                    if _dd < 0.0 and abs(_dd) < _dmin:
-                        _dmin = abs(_dd)
-                        _tng_near = _tng
-                if _dmin < 2.5 and _tng_near is not None:
-                    _k_st = float(np.clip((2.5 - _dmin) / 2.0, 0.0, 1.0))
-                    _nn = float(np.linalg.norm(_tng_near)) + 1e-9
-                    _tt = _tng_near / _nn
-                    _hdg_t = float(np.arctan2(_tt[1], _tt[0]))
-                    _err_t = float((_hdg_t - yaw + np.pi) % (2 * np.pi) - np.pi)
-                    _om_align = float(np.clip(
-                        2.0 * _err_t, -_omcap, _omcap))
-                    om_c = (1.0 - _k_st) * om_c + _k_st * _om_align
+            # v263: 回退 v261/v262 脊前对准（起步被扰动 + wp4→5 仍不稳，
+            # 脆）。过脊靠地形前瞻（ERR_GATE 提高后转弯中保持生效）+ 慢速。
+            # 近脊仅保留速度相关 omcap（v245）。
             prev_u = np.array([vx_c, om_c])
             last_log = t
         else:
