@@ -601,8 +601,9 @@ class AutoNavFollower:
         # 航点（默认 0.8m，保证 0.5m 判点）或已越过时才瞄准航点本身；
         # 其余时间沿平滑路径前视点瞄准——路径在航点处转向，前视点越过
         # 航点后即提前给出转向指令，避免弯道处 err 突跳触发龟速。
-        if (d_wp < float(os.environ.get("S10_AUTO_WP_AIM", "2.5"))
-                and os.environ.get("S10_AUTO_WP_AIM_ON", "1") == "1"):
+        if (self.mode == "STAIR"
+                or (d_wp < float(os.environ.get("S10_AUTO_WP_AIM", "2.5"))
+                    and os.environ.get("S10_AUTO_WP_AIM_ON", "1") == "1")):
             target = wp_next
         else:
             # v267: 已越过航点（passed）或未接近 → 一律瞄**路径前视点**

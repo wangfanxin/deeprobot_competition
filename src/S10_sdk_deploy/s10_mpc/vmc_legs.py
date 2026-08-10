@@ -1250,10 +1250,9 @@ class FootPlaceVMC:
             _side = -1.0 if leg in (0, 1) else 1.0
             v_ref = (self._vx_f
                      + _side * self._om_f * self.track_half)
-            # v737: 抬升腿轮速归零（后推前抬，防悬空空转打滑）——
-            # sl>0.1 即归零，支撑腿全驱
-            if sl > 0.1:
-                v_ref = 0.0
+            # v732: 抬升腿轮速轻驱（防悬空空转/冲击），支撑腿全驱
+            if sl > 0.5:
+                v_ref *= 0.35
             t_yaw = -6.0 * _om_body * _side
             tau[WHEEL_Q_IDX[leg]] = (
                 -(self.wheel_k * (v_ref - v_wheel))
