@@ -1484,8 +1484,9 @@ class FootPlaceVMC:
             # 修正量 clamp ±0.05m 防正反馈猛伸。
             _side = -1.0 if leg in (0, 1) else 1.0
             _front = 1.0 if leg in (0, 1) else -1.0
+            _kdr = float(os.environ.get('S10_FP_ROLL_KD', '20.0'))
             _rc = float(np.clip((self.kp_roll * (-float(body["roll"]))
-                                 - 8.0 * roll_rate) * 0.0025,
+                                 - _kdr * roll_rate) * 0.0025,
                                 -0.05, 0.05))
             wz += _side * _rc
             if sl < 0.3:

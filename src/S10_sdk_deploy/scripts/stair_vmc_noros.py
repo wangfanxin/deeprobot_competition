@@ -342,6 +342,7 @@ def main():
     # v822: 布尔几何相位状态（用户方案：位置基全身控制，硬切换非 sin²）
     _sp_f = 0.0; _sp_r = 0.0
     _sp_f_top = 0.0; _sp_r_top = 0.0
+    _sp_f_t0 = None; _sp_r_t0 = None
     _exit_cnt = [0.0]
     wp_times = {}
     t_start = None
@@ -630,6 +631,18 @@ def main():
         # v573: 楼梯区标识——stair_zone 内由 CPG 步态独占抬轮，
         # 巡航横脊抬轮/后轮跟抬/地形 bump 全部禁用（防前后轴双抬+塌身）。
         _in_stairzone_now = (fol.mode == 'STAIR')
+        # v871: 执行器解耦——STAIR 模式 + 前轴距首级 riser < S10_STAIR_EXEC_D
+        # （默认 1.0m）才切位置基执行器；接近段保持 CarVMC 平稳减速，
+        # 避免高速切换 FP 弹跳
+        _stair_exec = False
+        if _in_stairzone_now and stair_world:
+            try:
+                (_rp0, _tng0, _sr0, _dh0, _top0) = stair_world[0]
+                _d_first = float(np.dot(body_pos[:2] - _rp0, _tng0))
+                _stair_exec = _d_first < float(os.environ.get(
+                    'S10_STAIR_EXEC_D', '1.0'))
+            except Exception:
+                _stair_exec = True
         # v789: 恢复 v752 USC 关键姿态插值因子——前轴到最近棱距离连续量：
         # 棱前 0.05m 起、过棱 0.05m 满。驱动前腿伸长+后腿收缩（几何前倾），
         # 前轮贴台面接触（当年卡"接触但不推进"，轮矩钳制已 v755b 解锁）。
@@ -650,7 +663,7 @@ def main():
         # 用硬切换状态机（前/后轴 |到棱|<0.05m 切位置抬升，过棱且轮落台面
         # 释放），替代 sin² CPG 连续窗。位置目标由 stair_world 台面顶给出。
         _posmode_st = float(os.environ.get('S10_STAIR_POSMODE', '0'))
-        if _posmode_st > 0.0 and _in_stairzone_now and stair_world:
+        if _posmode_st > 0.0 and _stair_exec and stair_world:
             _fwd_p = np.array([d.xmat[1][0], d.xmat[1][3]])
             _fn_p = float(np.hypot(_fwd_p[0], _fwd_p[1])) + 1e-9
             _fx_p, _fy_p = _fwd_p[0] / _fn_p, _fwd_p[1] / _fn_p
@@ -672,16 +685,25 @@ def main():
             if _sp_f <= 0.0:
                 if abs(_df_p) < 0.05:
                     _sp_f = 1.0; _sp_f_top = _tf_p
+                    _sp_f_t0 = t
             elif (_df_p < -0.05
                   and float(np.mean(_wz4p[0:2])) >= _sp_f_top + self_fk_r):
-                _sp_f = 0.0
+                _sp_f = 0.0; _sp_f_t0 = None
+            # v871: SWING 超时释放（1.5s 内未达台面顶则回 STANCE，防卡死空跳）
+            if _sp_f > 0 and _sp_f_t0 is not None and t - _sp_f_t0 > float(
+                    os.environ.get('S10_STAIR_SWING_TO', '1.5')):
+                _sp_f = 0.0; _sp_f_t0 = None
             # 后轴相位机：前轴不在抬升时 |d|<0.05 才抬（防同抬）
             if _sp_r <= 0.0:
                 if abs(_dr_p) < 0.05 and _sp_f <= 0.0:
                     _sp_r = 1.0; _sp_r_top = _tr_p
+                    _sp_r_t0 = t
             elif (_dr_p < -0.05
                   and float(np.mean(_wz4p[2:4])) >= _sp_r_top + self_fk_r):
-                _sp_r = 0.0
+                _sp_r = 0.0; _sp_r_t0 = None
+            if _sp_r > 0 and _sp_r_t0 is not None and t - _sp_r_t0 > float(
+                    os.environ.get('S10_STAIR_SWING_TO', '1.5')):
+                _sp_r = 0.0; _sp_r_t0 = None
             step_lift[:] = [_sp_f, _sp_f, _sp_r, _sp_r]
             place_z[:] = [(_sp_f_top if _sp_f > 0 else 0.0),
                           (_sp_f_top if _sp_f > 0 else 0.0),
@@ -1301,9 +1323,9 @@ def main():
         if (os.environ.get('S10_VMC_MODE', 'wbc') == 'dual'):
             vmc = vmc_wbc if fol.mode == 'STAIR' else vmc_car
         if os.environ.get('S10_VMC_MODE', 'wbc') == 'dual2':
-            vmc = vmc_fp if fol.mode == 'STAIR' else vmc_car
+            vmc = vmc_fp if _stair_exec else vmc_car
         if os.environ.get('S10_VMC_MODE', 'wbc') == 'stairwbc':
-            vmc = vmc_stw if fol.mode == 'STAIR' else vmc_car
+            vmc = vmc_stw if _stair_exec else vmc_car
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         _tleg = float(np.abs(tau[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]]).max())
         _twh = float(np.abs(tau[[3, 7, 11, 15]]).max())
