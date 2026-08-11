@@ -1376,7 +1376,13 @@ class FootPlaceVMC:
             pz = float(_pz_all[leg])
             # 落脚目标：支撑腿 = 轮下地形+半径；抬升腿按 CPG 波形插值到
             # 台面高+半径+margin（v732 连续抬升轨迹，非二值跳变）
+            # v822: 位置基模式（S10_FP_POSMODE=1）——支撑腿目标下调静压
+            # 余量 S10_FP_PRESS（用户方案：位置控制下轮"硬顶"台面，接触力
+            # 自然够，不用力控下压）
+            _posmode_fp = float(os.environ.get('S10_FP_POSMODE', '0'))
             wz_ground = float(terrain_h[leg]) + self.fk.r
+            if _posmode_fp > 0:
+                wz_ground -= float(os.environ.get('S10_FP_PRESS', '0.005'))
             # v736: 楼梯区不整体抬身——关节空间举轮（q1+1.55）已把轮抬到
             # 髋附近，z_des 抬身会让 body 顶高 roll 失稳（v769 实测）。
             # 支撑腿 wz 用轮下地形+半径（贴地），抬升腿走关节目标不走 wz。
@@ -1422,8 +1428,14 @@ class FootPlaceVMC:
             # v736: 抬升腿真正卸载——PD 增益降到 1/10（kp 220→22），
             # 轮近乎自由摆动（避免硬顶地面→反力顶起全身→四轮离地，
             # v725-728 耦合结论）。支撑腿承担全部载荷。
-            _kp_leg = self.kp * (0.10 if sl > 0.1 else 1.0)
-            _kd_leg = self.kd * (0.3 if sl > 0.1 else 1.0)
+            # v822: 位置基模式全增益（位置控制需要高增益 PD 拉满；原
+            # 1/10 卸载是力控思路，位置控制下抬升腿也要硬位置跟踪）
+            if _posmode_fp > 0:
+                _kp_leg = self.kp
+                _kd_leg = self.kd
+            else:
+                _kp_leg = self.kp * (0.10 if sl > 0.1 else 1.0)
+                _kd_leg = self.kd * (0.3 if sl > 0.1 else 1.0)
             if os.environ.get('S10_FP_DEBUG', '0') == '1' and leg == 0:
                 print('[FP] t=%.2f sl=%.2f pz=%.3f wz_tgt=%.3f wz_act=%.3f '
                       'body_z=%.3f q1t=%.2f q2t=%.2f q1=%.2f q2=%.2f'
@@ -1446,9 +1458,15 @@ class FootPlaceVMC:
             if sl > 0.5:
                 v_ref *= 0.35
             t_yaw = -6.0 * _om_body * _side
-            tau[WHEEL_Q_IDX[leg]] = (
-                -(self.wheel_k * (v_ref - v_wheel))
-                - self.wheel_d * wq + t_yaw)
+            # v822: 位置基模式——抬升腿轮矩=0（前轮离地期间驱动力全给后轮，
+            # 用户方案改进4）；支撑腿开环轮速 PID（位置控制下腿不顶 body，
+            # 轮矩可开到 T_max，不用 μN 钳制）
+            if _posmode_fp > 0 and sl > 0.5:
+                tau[WHEEL_Q_IDX[leg]] = 0.0
+            else:
+                tau[WHEEL_Q_IDX[leg]] = (
+                    -(self.wheel_k * (v_ref - v_wheel))
+                    - self.wheel_d * wq + t_yaw)
         tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
         tau[WHEEL_Q_IDX] = np.clip(tau[WHEEL_Q_IDX], -13.5, 13.5)
         return tau

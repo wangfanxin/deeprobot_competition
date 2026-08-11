@@ -307,6 +307,9 @@ def main():
             return (8.0 - hit) if hit > 0 else 0.0
 
     next_idx = START_WP if 'START_WP' in dir() else 0
+    # v822: 布尔几何相位状态（用户方案：位置基全身控制，硬切换非 sin²）
+    _sp_f = 0.0; _sp_r = 0.0
+    _sp_f_top = 0.0; _sp_r_top = 0.0
     wp_times = {}
     t_start = None
     traj = []
@@ -559,6 +562,48 @@ def main():
                     _dsp_min = _dsp
             _stair_pose = float(np.clip(
                 (_dsp_min + 0.05) / 0.10, 0.0, 1.0))
+        # v822: 布尔几何相位（用户方案）——S10_STAIR_POSMODE=1 时楼梯段
+        # 用硬切换状态机（前/后轴 |到棱|<0.05m 切位置抬升，过棱且轮落台面
+        # 释放），替代 sin² CPG 连续窗。位置目标由 stair_world 台面顶给出。
+        _posmode_st = float(os.environ.get('S10_STAIR_POSMODE', '0'))
+        if _posmode_st > 0.0 and _in_stairzone_now and stair_world:
+            _fwd_p = np.array([d.xmat[1][0], d.xmat[1][3]])
+            _fn_p = float(np.hypot(_fwd_p[0], _fwd_p[1])) + 1e-9
+            _fx_p, _fy_p = _fwd_p[0] / _fn_p, _fwd_p[1] / _fn_p
+            _fax_p = body_pos[:2] + np.array([_fx_p * 0.228, _fy_p * 0.228])
+            _rax_p = body_pos[:2] - np.array([_fx_p * 0.228, _fy_p * 0.228])
+            _df_p = 1e9; _dr_p = 1e9; _tf_p = 0.0; _tr_p = 0.0
+            for (_rp, _tng, _sr, _dhv, _top) in stair_world:
+                # 只对高 riser（>轮半径 0.085）触发抬升，小台阶纯滚
+                if _dhv <= 0.085:
+                    continue
+                _dd_f = float(np.dot(_fax_p - _rp, _tng))
+                _dd_r = float(np.dot(_rax_p - _rp, _tng))
+                if abs(_dd_f) < abs(_df_p):
+                    _df_p = _dd_f; _tf_p = float(_top)
+                if abs(_dd_r) < abs(_dr_p):
+                    _dr_p = _dd_r; _tr_p = float(_top)
+            _wz4p = np.asarray([d.xpos[WHEEL_BODY[i], 2] for i in range(4)])
+            # 前轴相位机：|d|<0.05 抬；过棱且前轮落台面顶+r 释放
+            if _sp_f <= 0.0:
+                if abs(_df_p) < 0.05:
+                    _sp_f = 1.0; _sp_f_top = _tf_p
+            elif (_df_p < -0.05
+                  and float(np.mean(_wz4p[0:2])) >= _sp_f_top + self_fk_r):
+                _sp_f = 0.0
+            # 后轴相位机：前轴不在抬升时 |d|<0.05 才抬（防同抬）
+            if _sp_r <= 0.0:
+                if abs(_dr_p) < 0.05 and _sp_f <= 0.0:
+                    _sp_r = 1.0; _sp_r_top = _tr_p
+            elif (_dr_p < -0.05
+                  and float(np.mean(_wz4p[2:4])) >= _sp_r_top + self_fk_r):
+                _sp_r = 0.0
+            step_lift[:] = [_sp_f, _sp_f, _sp_r, _sp_r]
+            place_z[:] = [(_sp_f_top if _sp_f > 0 else 0.0),
+                          (_sp_f_top if _sp_f > 0 else 0.0),
+                          (_sp_r_top if _sp_r > 0 else 0.0),
+                          (_sp_r_top if _sp_r > 0 else 0.0)]
+            stair_lift_flag = max(_sp_f, _sp_r)
         # v264: 连续前瞻抬轮（无门控）——按"轴前 0.35m 地形高 - 轴下地形高"
         # 连续抬放（比例 clamp 0.15m）。纯几何连续量，替代 hop 冲量/横脊
         # 步态等离散触发（用户原则：除 cruise/stair 切换外无门控）。
@@ -982,6 +1027,7 @@ def main():
                                  and fol.stair_zone[next_idx - 1])
                 if (_in_stairzone
                         and float(os.environ.get('S10_STAIR_CPG', '0')) > 0
+                        and float(os.environ.get('S10_STAIR_POSMODE', '0')) <= 0
                         and stair_world):
                     _swing = float(os.environ.get(
                         'S10_STAIR_CPG_SWING', '0.15'))
