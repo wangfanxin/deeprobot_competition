@@ -154,7 +154,18 @@ class BodyMPPI:
         so = self.sigma_om0 * self.sigma_scale
         # v270: 采样中心 = v_ref + 曲率前馈 κ·v（赛用摩托恒定转向率），
         # 约束仍在 _rollout 摩擦锥内；默认用参考航向变化率兜底。
-        guide_vx = float(np.clip(v_ref, 0.0, self.vx_max))
+        # v832: Tube-MPPI 航向误差限速（连续量，无门控）——狗当前航向与
+        # 参考路径航向偏差大时（过弯 yaw 滞后），vx 参考线性压降，先转完
+        # 再加速。替代 v825 从导航删除的 err 门控压速（用户架构：动力学
+        # 约束归 MPPI）。S10_MPPI_HERR_GATE=1.2 rad 内线性降，下限
+        # S10_MPPI_HERR_MIN=0.3。
+        _hg = float(_os.environ.get('S10_MPPI_HERR_GATE', '1.2'))
+        _hm = float(_os.environ.get('S10_MPPI_HERR_MIN', '0.3'))
+        _h_err = float(_wrap(s0[2] - float(ref[0, 2])))
+        _hf = float(np.clip(1.0 - abs(_h_err) / max(_hg, 1e-3),
+                            _hm, 1.0))
+        v_ref_eff = float(np.clip(v_ref, 0.0, self.vx_max)) * _hf
+        guide_vx = v_ref_eff
         if guide_om is None:
             guide_om = 0.0
             if ref.shape[0] >= 3:
@@ -175,7 +186,7 @@ class BodyMPPI:
         # 中强制执行（软实现：超限样本经摩擦锥/输出钳制吸收）。
         u_seq[0] = prev_u
         s = self._rollout(s0, u_seq, prev_u)
-        cost = self._cost(s, u_seq, prev_u, ref, v_ref,
+        cost = self._cost(s, u_seq, prev_u, ref, v_ref_eff,
                           guide=[guide_vx, guide_om])
         cmin = float(cost.min())
         w = np.exp(-(cost - cmin) / max(self.lam, 1e-6))
