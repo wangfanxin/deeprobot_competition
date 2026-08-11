@@ -1097,8 +1097,12 @@ class CarVMC:
                 _relz4 = float(np.clip(_dwh[2], -0.34, 0.0))
                 _q1_tgt, _q2_tgt = self._ik(_relf4, _relz4, q1, q2)
             # v221i: 车身抬升（过脊用）——0.05 只到 0.68(差 5mm)，改 0.08
+            # v876: stair 副本——body_lift 只作用于**抬升腿**(sl>0.3)，
+            # 原全腿生效会让后腿同伸→翘头轮式(pitch -1.4 实测)；前轮额外
+            # 伸膝 0.08 补足清 riser 棱边的最后几毫米
             _bl = float(cmd.get("body_lift", 0.0))
-            _q2_tgt += _bl * 0.08
+            if _bl > 0.0 and sl > 0.3:
+                _q2_tgt += _bl * 0.08
             t_hipy += (self.kp_leg * (_q1_tgt - q1)
                        - self.kd_leg * float(qvel[6 + LEG_QV_LEG[b + 1]]))
             t_knee += (self.kp_leg * (_q2_tgt - q2)

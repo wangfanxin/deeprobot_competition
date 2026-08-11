@@ -482,9 +482,19 @@ def main():
                          getattr(fol, '_last_tgt', [0, 0, 0])[1],
                          getattr(fol, '_s_cur', 0.0), vyaw,
                          getattr(fol, '_last_cte', 0.0)), flush=True)
-            # v871: STAIR 区无 MPPI（终版：纯导航），或 S10_VMC_USE_NAV=1
+            # v871/v874: STAIR 爬升窗内无 MPPI（终版：纯导航），接近段保留
+            # MPPI 纠偏（v828 靠 MPPI 保持走廊线）；S10_VMC_USE_NAV=1 全局关
+            _mppi_off = False
+            try:
+                if fol.mode == 'STAIR' and stair_world:
+                    (_rp0, _tng0, _sr0, _dh0, _top0) = stair_world[0]
+                    _d_f0 = float(np.dot(pos2 - _rp0, _tng0))
+                    _mppi_off = abs(_d_f0) < float(os.environ.get(
+                        'S10_STAIR_MPPI_OFF_D', '2.0'))
+            except Exception:
+                _mppi_off = False
             if (os.environ.get('S10_VMC_USE_NAV', '0') == '1'
-                    or fol.mode == 'STAIR'):
+                    or _mppi_off):
                 vx_c, om_c = vx, vyaw   # 直接导航指令（无 MPPI 随机性）
             else:
                 # v270: MPPI 采样中心加曲率前馈 κ·v_ref（导航放开、MPPI
@@ -639,8 +649,10 @@ def main():
             try:
                 (_rp0, _tng0, _sr0, _dh0, _top0) = stair_world[0]
                 _d_first = float(np.dot(body_pos[:2] - _rp0, _tng0))
-                _stair_exec = _d_first < float(os.environ.get(
-                    'S10_STAIR_EXEC_D', '1.0'))
+                # v874: abs()——原 _d_first<D 在 riser 前恒成立（负数），
+                # 解耦从未生效；改为前后 0.5m 内才切位置基执行器
+                _stair_exec = abs(_d_first) < float(os.environ.get(
+                    'S10_STAIR_EXEC_D', '0.5'))
             except Exception:
                 _stair_exec = True
         # v789: 恢复 v752 USC 关键姿态插值因子——前轴到最近棱距离连续量：
@@ -681,9 +693,12 @@ def main():
                 if abs(_dd_r) < abs(_dr_p):
                     _dr_p = _dd_r; _tr_p = float(_top)
             _wz4p = np.asarray([d.xpos[WHEEL_BODY[i], 2] for i in range(4)])
-            # 前轴相位机：|d|<0.05 抬；过棱且前轮落台面顶+r 释放
+            # v875: 前轴相位机——触发提前到 d<0.15（轮半径 0.081+余量），
+            # 原 |d|<0.05 时轮已贴 riser 立面卡死（0.081>0.05 死区实测）；
+            # 过棱且前轮落台面顶+r 释放
+            _sw_d = float(os.environ.get('S10_STAIR_SWING_D', '0.15'))
             if _sp_f <= 0.0:
-                if abs(_df_p) < 0.05:
+                if -_sw_d < _df_p < 0.05:
                     _sp_f = 1.0; _sp_f_top = _tf_p
                     _sp_f_t0 = t
             elif (_df_p < -0.05
@@ -693,9 +708,9 @@ def main():
             if _sp_f > 0 and _sp_f_t0 is not None and t - _sp_f_t0 > float(
                     os.environ.get('S10_STAIR_SWING_TO', '1.5')):
                 _sp_f = 0.0; _sp_f_t0 = None
-            # 后轴相位机：前轴不在抬升时 |d|<0.05 才抬（防同抬）
+            # 后轴相位机：前轴不在抬升时 d<0.15 才抬（防同抬）
             if _sp_r <= 0.0:
-                if abs(_dr_p) < 0.05 and _sp_f <= 0.0:
+                if -_sw_d < _dr_p < 0.05 and _sp_f <= 0.0:
                     _sp_r = 1.0; _sp_r_top = _tr_p
                     _sp_r_t0 = t
             elif (_dr_p < -0.05

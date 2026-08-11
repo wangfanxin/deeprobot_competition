@@ -67,8 +67,9 @@ class StairWBC(FootPlaceVMC):
         _wz_f = float(np.mean([wheel_xyz[i, 2] for i in (0, 1)]))
         _wz_r = float(np.mean([wheel_xyz[i, 2] for i in (2, 3)]))
         r = self.fk.r
+        _swd = float(os.environ.get("S10_STAIR_SWING_D", "0.15"))
         if self._sp_f <= 0.0:
-            if abs(_df) < 0.05:
+            if -_swd < _df < 0.05:
                 self._sp_f = 1.0
                 self._sp_f_top = _tf
                 self._rel_f_t = None
@@ -82,7 +83,7 @@ class StairWBC(FootPlaceVMC):
             else:
                 self._rel_f_t = None
         if self._sp_r <= 0.0:
-            if abs(_dr) < 0.05 and self._sp_f <= 0.0:
+            if -_swd < _dr < 0.05 and self._sp_f <= 0.0:
                 self._sp_r = 1.0
                 self._sp_r_top = _tr
                 self._rel_r_t = None

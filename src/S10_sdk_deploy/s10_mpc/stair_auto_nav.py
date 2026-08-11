@@ -491,9 +491,14 @@ class AutoNavFollower:
         # 航点（默认 0.8m，保证 0.5m 判点）或已越过时才瞄准航点本身；
         # 其余时间沿平滑路径前视点瞄准——路径在航点处转向，前视点越过
         # 航点后即提前给出转向指令，避免弯道处 err 突跳触发龟速。
-        if (self.mode == "STAIR"
-                or (d_wp < float(os.environ.get("S10_AUTO_WP_AIM", "2.5"))
-                    and os.environ.get("S10_AUTO_WP_AIM_ON", "1") == "1")):
+        # v873: STAIR 段沿走廊路径走（瞄 wp 会把狗拉到走廊西缘外，
+        # x≈-15.7 撞墙卡死实测）；距航点 < S10_STAIR_WP_AIM（默认 3m）
+        # 才瞄 wp7 保证 0.3m 判点——最后 3m 已在平台顶，不受走廊偏移影响
+        _aim_wp = (d_wp < float(os.environ.get("S10_AUTO_WP_AIM", "2.5"))
+                   and os.environ.get("S10_AUTO_WP_AIM_ON", "1") == "1")
+        if self.mode == "STAIR":
+            _aim_wp = d_wp < float(os.environ.get("S10_STAIR_WP_AIM", "3.0"))
+        if _aim_wp:
             target = wp_next
         else:
             # v267: 已越过航点（passed）或未接近 → 一律瞄**路径前视点**
