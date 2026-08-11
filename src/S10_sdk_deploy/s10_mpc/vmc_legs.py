@@ -227,6 +227,13 @@ class VMCController:
                else (_zkp9 if _zm9 > 0.0 else self.kp_z)
                * (z_des - body["pos"][2]))
             - self.kd_z * float(qvel[2])])
+        # v785: 抬轮反作用补偿（楼梯区）——前轮抬升把 body 顶起、后轮
+        # 悬空无牵引实测；按平均抬轮幅度给 body 加下压力（支撑腿执行），
+        # 后轮保持贴地推力。S10_VMC_WBC_Z_LCOMP 默认 0 关闭。
+        _zlc = float(os.environ.get("S10_VMC_WBC_Z_LCOMP", "0.0"))
+        if _zm9 > 0.0 and _zlc > 0.0:
+            F_des_w[2] -= _zlc * float(np.mean(
+                np.asarray(cmd.get("step_lift", np.zeros(4)))))
         # v218k: 驱动 25% 由腿分担（轮为主），全轮在坡上推力不足
         _dsh = float(os.environ.get("S10_VMC_DRIVE_SHARE", "0.25"))
         fwd = body["R"] @ np.array([1.0, 0.0, 0.0])
