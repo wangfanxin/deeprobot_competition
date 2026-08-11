@@ -241,51 +241,6 @@ class AutoNavFollower:
         t = (dist - self.cum_len[k]) / max(self.seg_len[k], 1e-6)
         return self.wp[k] + t * (self.wp[k + 1] - self.wp[k])
 
-    @staticmethod
-    def _common_tangent(c1, r1, c2, r2, s1, s2, ref_dir):
-        """??????C1 ??????=??????=????
-        ?? (P1, P2, t_dir) ? None???????
-        ref_dir: ??????? wp ??????????
-        """
-        import numpy as _np
-        d = c2 - c1
-        dist = float(_np.linalg.norm(d))
-        if dist < 1e-9:
-            return None
-        same = (s1 * s2) > 0
-        base = r2 - r1 if same else r2 + r1   # ?? r2-r1??? r2+r1???????
-        # ? (P2-P1) ?????? (c2-c1)?n1 = r1-r2???? -(r1+r2)???
-        # ???P2-P1 = d + r2*n2 - r1*n1??? n2=n1 -> d?n1 = r1-r2?
-        # ?? n2=-n1 -> d?n1 = -(r1+r2)?
-        need = r1 - r2 if same else -(r1 + r2)
-        if abs(abs(need) - dist) > 1e-6 and dist < abs(need):
-            return None
-        ang_d = float(_np.arctan2(d[1], d[0]))
-        # n1 ? d ?? beta?d?n1 = need -> cos(beta) = need/dist
-        cosb = float(_np.clip(need / max(dist, 1e-9), -1.0, 1.0))
-        beta = float(_np.arccos(cosb))
-        best = None
-        best_L = 1e18
-        for sb in (1.0, -1.0):
-            th = ang_d + sb * beta
-            n1 = _np.array([_np.cos(th), _np.sin(th)])
-            n2 = n1 if same else -n1
-            P1 = c1 + r1 * n1
-            P2 = c2 + r2 * n2
-            tdir = P2 - P1
-            L = float(_np.linalg.norm(tdir))
-            if L < 1e-6:
-                continue
-            # pick NEAR-side tangent (short straight across between arcs),
-            # not the long outside wrap; require it roughly follows ref_dir
-            tdir_u = tdir / L
-            if float(tdir_u[0] * ref_dir[0] + tdir_u[1] * ref_dir[1]) < 0.0:
-                continue
-            if L < best_L:
-                best_L = L
-                best = (P1.copy(), P2.copy(), tdir_u.copy())
-        return best
-
     def _biarc_path(self, xy):
         """v850: 每 wp 一段圆弧（wp 精确在弧上，硬指标）+ 弧间切线链连接。
 
@@ -355,133 +310,6 @@ class AutoNavFollower:
             out.append(xy[-1].copy())
         return _np.asarray(out, dtype=_np.float64)
 
-    def _spline_all_path(self, xy):
-        """v873: ALL waypoints through one cubic spline (endpoint tangents =
-        first/last segment dirs). Test full-spline smoothness vs mixed.
-        """
-        import numpy as _np
-        from scipy.interpolate import CubicSpline
-        n = len(xy)
-        if n < 3:
-            return _np.asarray(xy, dtype=_np.float64)
-        t_in = xy[1] - xy[0]
-        t_out = xy[-1] - xy[-2]
-        n_in = float(_np.linalg.norm(t_in))
-        n_out = float(_np.linalg.norm(t_out))
-        t_in = t_in / n_in if n_in > 1e-9 else _np.array([1.0, 0.0])
-        t_out = t_out / n_out if n_out > 1e-9 else _np.array([1.0, 0.0])
-        t = _np.concatenate([[0.0], _np.cumsum(
-            _np.linalg.norm(_np.diff(xy, axis=0), axis=1))])
-        csx = CubicSpline(t, xy[:, 0],
-                          bc_type=((1, float(t_in[0])), (1, float(t_out[0]))))
-        csy = CubicSpline(t, xy[:, 1],
-                          bc_type=((1, float(t_in[1])), (1, float(t_out[1]))))
-        ts = _np.linspace(0.0, float(t[-1]), max(int(float(t[-1]) / 0.08), 30))
-        return _np.column_stack([csx(ts), csy(ts)])
-
-    def _spline_mixed_path(self, xy):
-        """v871: continuous-turn regions (adjacent wp dist < S10_CONN_SPLINE_DIST)
-        use cubic spline (C2, larger radius, removes biarc kink spikes R~0.7m);
-        long straights stay straight. All waypoints pass through (skeleton
-        polyline + spline replaces short-segment regions). Endpoint tangents =
-        adjacent straight directions (C1).
-        """
-        import numpy as _np
-        from scipy.interpolate import CubicSpline
-        n = len(xy)
-        bs = float(os.environ.get('S10_CONN_SPLINE_DIST', '8.0'))
-        seg_len = _np.linalg.norm(_np.diff(xy, axis=0), axis=1)
-        # v874: region = consecutive TURN waypoints (|turn|>S10_SPLINE_TURN_DEG,
-        # gap < S10_SPLINE_GAP), regardless of segment length. Keeps long
-        # straights (wp0-1) straight; splines cover turn chains (wp1-4, wp11-13).
-        _td = float(os.environ.get('S10_SPLINE_TURN_DEG', '15.0'))
-        _gap = float(os.environ.get('S10_SPLINE_GAP', '15.0'))
-        turns = _np.zeros(n, dtype=bool)
-        for k in range(1, n - 1):
-            u1 = xy[k] - xy[k - 1]
-            u2 = xy[k + 1] - xy[k]
-            dth = abs(float(_np.arctan2(
-                u1[0] * u2[1] - u1[1] * u2[0],
-                u1[0] * u2[0] + u1[1] * u2[1])))
-            if dth > _np.radians(_td):
-                turns[k] = True
-        regions = []
-        cur = None
-        for i in range(n - 1):
-            if (turns[i] or turns[i + 1]) and seg_len[i] < _gap:
-                if cur is None:
-                    cur = [i, i + 1]
-                else:
-                    cur[1] = i + 1
-            else:
-                if cur is not None:
-                    regions.append(cur)
-                    cur = None
-        if cur is not None:
-            regions.append(cur)
-        merged = []
-        for r in regions:
-            if merged and r[0] <= merged[-1][1]:
-                merged[-1][1] = max(merged[-1][1], r[1])
-            else:
-                merged.append(list(r))
-        # skeleton: polyline through all waypoints
-        segs_out = []   # list of ('line', end_idx, from_idx) or ('spline', a, b)
-        prev_i = 0
-        for r in merged:
-            a, b = r[0], r[1]
-            if a > prev_i:
-                segs_out.append(('line', a, prev_i))
-            segs_out.append(('spline', a, b))
-            prev_i = b
-        if prev_i < n - 1:
-            segs_out.append(('line', n - 1, prev_i))
-        out = [xy[0].copy()]
-        for sg in segs_out:
-            if sg[0] == 'line':
-                # biarc for the straight block: keeps isolated-corner arcs
-                # (e.g. wp1 90deg with long neighbors), C1 arcs + tangent lines.
-                _, end_i, from_i = sg
-                if end_i - from_i >= 2:
-                    _sub = self._biarc_path(xy[from_i:end_i + 1])
-                    if _sub is not None and len(_sub) > 1:
-                        for _pt in _sub[1:]:
-                            out.append(_pt.copy())
-                    else:
-                        for _ii in range(from_i + 1, end_i + 1):
-                            out.append(xy[_ii].copy())
-                else:
-                    out.append(xy[end_i].copy())
-            else:
-                _, a, b = sg
-                pts_r = xy[a:b + 1]
-                if a > 0:
-                    t_in = xy[a] - xy[a - 1]
-                else:
-                    t_in = xy[a + 1] - xy[a]
-                if b < n - 1:
-                    t_out = xy[b + 1] - xy[b]
-                else:
-                    t_out = xy[b] - xy[b - 1]
-                n_in = float(_np.linalg.norm(t_in))
-                n_out = float(_np.linalg.norm(t_out))
-                t_in = t_in / n_in if n_in > 1e-9 else _np.array([1.0, 0.0])
-                t_out = t_out / n_out if n_out > 1e-9 else _np.array([1.0, 0.0])
-                t = _np.concatenate([[0.0], _np.cumsum(
-                    _np.linalg.norm(_np.diff(pts_r, axis=0), axis=1))])
-                csx = CubicSpline(
-                    t, pts_r[:, 0],
-                    bc_type=((1, float(t_in[0])), (1, float(t_out[0]))))
-                csy = CubicSpline(
-                    t, pts_r[:, 1],
-                    bc_type=((1, float(t_in[1])), (1, float(t_out[1]))))
-                ts = _np.linspace(0.0, float(t[-1]),
-                                  max(int(float(t[-1]) / 0.08), 20))
-                for kk in range(1, len(ts)):
-                    out.append(_np.array(
-                        [float(csx(ts[kk])), float(csy(ts[kk]))]))
-        return _np.asarray(out, dtype=_np.float64)
-
     def _build_smooth_path(self):
         """v836+: 唯一路径规划 = biarc（全弧双圆弧样条）——航点精确在圆弧上、
         全程 C1 相切、段中可由外公切线直线化。其他路径规划方法已删除
@@ -491,13 +319,7 @@ class AutoNavFollower:
         n = len(wp)
         res = self.path_res
         xy = self._stair_corridor_xy(wp[:, :2])
-        _pm = os.environ.get('S10_PATH_MODE', 'biarc')
-        if _pm == 'spline':
-            raw = self._spline_mixed_path(xy)
-        elif _pm == 'spline_all':
-            raw = self._spline_all_path(xy)
-        else:
-            raw = self._biarc_path(xy)
+        raw = self._biarc_path(xy)
         # v133: navigation smooth path also gets the diagonal bump so that
         # pursuit/yaw-FF and MPC r_path use the SAME path (v132 r1 drifted
         # back onto the ridge partly because the two layers diverged).
