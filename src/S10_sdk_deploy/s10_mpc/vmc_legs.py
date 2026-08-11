@@ -241,11 +241,17 @@ class VMCController:
         ax = (self._vx_f - body["vx"]) / self.tau_v
         T_roll_b = (self.kp_roll * (self._roll_f - body["roll"])
                     - self.kd_roll * roll_rate)
+        # v770: 楼梯区（z_min>0）关闭加速俯冲前馈（加速时 -ff·m·ax 把
+        # body 压成低头，与爬楼抬头姿态相反实测）+ 姿态力矩上限放开
+        # （巡航 25Nm 被抬轮反作用饱和，pitch 无法抬头实测）。
+        _pff9 = 0.0 if _zm9 > 0.0 else self.pitch_ff
         T_pitch_b = (self.kp_pitch * (pitch_tar - body["pitch"])
                      - self.kd_pitch * pitch_rate
-                     - self.pitch_ff * self.m * ax * 0.20)
+                     - _pff9 * self.m * ax * 0.20)
         # v218h: 力矩钳制在支撑多边形可行域内（后轮无法上拉，|T|≤mg·lever/2）
         _tmax = float(os.environ.get("S10_VMC_TMAX", "25.0"))
+        if _zm9 > 0.0:
+            _tmax = float(os.environ.get("S10_VMC_STAIR_TMAX", "80.0"))
         T_roll_b = float(np.clip(T_roll_b, -_tmax, _tmax))
         T_pitch_b = float(np.clip(T_pitch_b, -_tmax, _tmax))
         # v218j: yaw 力矩入 wrench（经腿侧向力执行，轮差速辅助）
