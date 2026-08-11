@@ -256,10 +256,10 @@ def main():
 
     # 站起
     t = 0.0
-    while t < 2.0:
+    while t < 0.5:
         q = d.qpos[7:23].reshape(-1, 1)
         dq = d.qvel[6:22].reshape(-1, 1)
-        tau = (80.0 * (STAND_TARGET.reshape(-1, 1) - q) - 2.0 * dq).flatten()
+        tau = (80.0 * (STAND_TARGET.reshape(-1, 1) - q) - 8.0 * dq).flatten()
         tau[WHEEL_Q_IDX] = -0.3 * dq[WHEEL_Q_IDX].flatten()
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
@@ -643,6 +643,11 @@ def main():
                         # 不是可爬台阶——抬轮无用且会翻车，跳过
                         continue
                     _dd = float(np.dot(_ax - _rp, _tng))
+                    # v861: ????????????????0 ?????
+                    _dn2 = float(np.hypot(_ax[0] - _rp[0], _ax[1] - _rp[1]))
+                    _dlat = float(np.sqrt(max(_dn2 * _dn2 - _dd * _dd, 0.0)))
+                    if _dlat > 1.5:
+                        _dd = 1e9
                     if -0.3 <= _dd <= 0.8 and _dd < _dmin_r:
                         _dmin_r = _dd
                 if _dmin_r < 0.8:
