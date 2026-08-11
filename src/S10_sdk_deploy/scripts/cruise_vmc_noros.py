@@ -457,22 +457,23 @@ def main():
                 pass
         elif _iszn9:
             try:
-                terr = np.asarray(wheel_xyz[:, 2], dtype=np.float64) - 0.081
+                # v755: 显式轮心 z 参考（文献:轮轨迹显式化）——stair_wheel_ref
+                # 由 riser 表解析生成（棱前 RAMP_A ramp 平滑抬到台面顶+r），
+                # 替代"轮位-半径"自证地面（悬空轮跟随轮位不被纠正死锁实测）。
+                # 轮心目标 = terr + r = stair_wheel_ref，支撑腿沿参考轨迹抬升。
+                # v755d: 左右轮参考对称化——yaw≠1.57 时左/右轮 y 不同→ramp
+                # 相位差→单侧过抬 roll 侧翻实测（wz 0.78/0.95）；楼梯走廊
+                # 横向平坦，用轴心 y 生成参考，左右一致。
+                _wy_sym = np.array(
+                    [float(np.mean(wheel_xyz[0:2, 1]))] * 2
+                    + [float(np.mean(wheel_xyz[2:4, 1]))] * 2)
+                terr = np.asarray(fol.stair_wheel_ref(
+                    _wy_sym), dtype=np.float64) - 0.081
             except Exception:
                 pass
-        if _iszn9 and stair_world and not _fp_active:
-            _fwd9 = np.array([d.xmat[1][0], d.xmat[1][3]])
-            _fn9 = float(np.hypot(_fwd9[0], _fwd9[1])) + 1e-9
-            _fx9, _fy9 = _fwd9[0] / _fn9, _fwd9[1] / _fn9
-            _fax9 = body_pos[:2] + np.array([_fx9 * 0.228, _fy9 * 0.228])
-            _rax9 = body_pos[:2] - np.array([_fx9 * 0.228, _fy9 * 0.228])
-            for (_rp, _tng, _sr, _dhv, _top) in stair_world:
-                _df9 = float(np.dot(_fax9 - _rp, _tng))
-                _dr9 = float(np.dot(_rax9 - _rp, _tng))
-                if -0.30 <= _df9 <= 0.15:
-                    terr[0:2] = np.maximum(terr[0:2], _top + 0.02)
-                if -0.30 <= _dr9 <= 0.15:
-                    terr[2:4] = np.maximum(terr[2:4], _top + 0.02)
+        # v755b: 旧覆盖（棱前 0.30m 把 terr 抬到台面顶+0.02）删除——提前抬
+        # 高把前轮卸载 fn=0、轮矩失效死锁实测；轮心 z 参考由 stair_wheel_ref
+        # 的 ramp（棱前 0.14m 起）显式生成，棱处达台面顶+r，不再需要覆盖。
         s_cur = float(getattr(fol, '_s_cur', 0.0))
         # v292: 台阶窗 vx 连续插值到 STAIR_WIN_VX（默认 1.8，不归零）——
         # 窗内只换腿控制（几何相位）与轮力矩模式，vx 参考保持连续
@@ -967,8 +968,41 @@ def main():
                         # 侧翻实测）。台面高由 terr 覆盖+身体随轮自然升起。
                         _rl_cpg *= (1.0 - _fl_cpg) ** 2
                         place_z[:] = [_fl_top, _fl_top, _rl_top, _rl_top]
+                        # v755e: 抬轮上限随台阶高（0.125m 台阶需轮心≥台面+r
+                        # =0.747；0.55 微抬只够首级 0.063m，二级以上卡棱实测）
+                        _lcap9 = float(os.environ.get(
+                            "S10_STAIR_LIFT_CAP", "0.75"))
+                        _fl_cpg = min(_fl_cpg, _lcap9)
+                        _rl_cpg = min(_rl_cpg, _lcap9)
                         step_lift[:] = [_fl_cpg, _fl_cpg, _rl_cpg, _rl_cpg]
                         stair_lift_flag = 1.0
+                        # v755: 踩实释放（接触反馈调制相位，Kimura/ETH 腿效用
+                        # 同源）——前轮物理上台面（wz 达 place_z+r）且前轴已过
+                        # 棱边后，CPG 投影滞后仍给抬轮→屏蔽前轮承重→单点支撑
+                        # 死锁实测；轮高到位即连续释放抬升，无离散门控。
+                        # v757: 踩实释放参考=刚越过的棱（df>0 最近）的台面高——
+                        # 旧版用"最近棱"=下一级（riser2），前轮落 stair1 后不
+                        # 释放悬空卡死实测；落地后阻抗压实恢复 fn/推力。
+                        # 下一棱 <0.10m 前停止释放，让下一级抬升正常起量。
+                        _fdf8 = 1e9; _fdf8_pos = 1e9
+                        _ftop_past = 0.0; _fd_next = 1e9
+                        for (_rp2, _tng2, _sr2, _dhv2, _top2) in stair_world:
+                            _d2 = float(np.dot(_fax8 - _rp2, _tng2))
+                            if abs(_d2) < abs(_fdf8):
+                                _fdf8 = _d2
+                            if 0.0 < _d2 < _fdf8_pos:
+                                _fdf8_pos = _d2
+                                _ftop_past = float(_top2)
+                            if _d2 < 0.0 and -_d2 < _fd_next:
+                                _fd_next = -_d2
+                        if (_ftop_past > 0.0 and _fdf8_pos < 0.40
+                                and _fd_next > 0.10):
+                            _pzr = _ftop_past + 0.081 - 0.03
+                            _fl_rel = float(np.clip(
+                                (float(np.mean(_wzc[0:2])) - _pzr) / 0.04,
+                                0.0, 1.0))
+                            if _fl_rel > 0.0:
+                                step_lift[0:2] *= (1.0 - _fl_rel)
                         if os.environ.get('S10_STAIR_DEBUG', '0') == '1':
                             print('[CPG2] t=%.1f y=%.2f fl=%.2f rl=%.2f '
                                   'pzF=%.3f pzR=%.3f' % (
@@ -998,6 +1032,12 @@ def main():
                 print('[TERR] t=%.1f y=%.2f terr=%s ray0=%.3f'
                       % (t, body_pos[1], np.round(terr, 3), _rr0),
                       flush=True)
+            # v756: NO_LIFT 最终清零——CPG 分支在其后覆盖 step_lift，
+            # 纯滚动（USC/Go2-W 路线）需在楼梯抬放逻辑末尾强制归零。
+            if (float(os.environ.get('S10_VMC_STAIR_NO_LIFT', '0')) > 0
+                    and _in_stairzone_now):
+                step_lift[:] = 0.0
+                stair_lift_flag = 1.0
             # v732: 楼梯区 body z 目标 = 轮下台面均值 + 站立高（随楼梯逐级升）
             _zd = 0.0
             if _in_stairzone_now:
@@ -1011,7 +1051,10 @@ def main():
             _ridge_d = 99.0
             try:
                 _rs_arr = getattr(fol, 'ridge_s', [])
-                if _rs_arr:
+                # v755b: 楼梯区跳过横脊钳制——台阶 riser 也落在 ridge 表里，
+                # μN·r 把轮矩压到 1.7Nm 无推力卡死实测；stair 技能内轮矩
+                # 保持上限 13.5Nm（用户原则:轮力矩越大越好）。
+                if _rs_arr and not _in_stairzone_now:
                     _rd = [abs(s_cur - _r) for _r in _rs_arr]
                     _ridge_d = float(min(_rd))
             except Exception:

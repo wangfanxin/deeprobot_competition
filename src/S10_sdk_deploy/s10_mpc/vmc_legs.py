@@ -216,11 +216,16 @@ class VMCController:
         # v605: 楼梯区（z_min>0）**取消全局 z 抬升**——只留重力+阻尼，车高
         # 由逐轮落脚点阻抗决定（前轮=台面高、后轮=地面高，姿态自然形成），
         # 后轮保载荷不失牵引（此前 kp_z 抬车身→后轮 wt=1.7Nm 空转实测）。
+        # v755e: 可选恢复楼梯区 z 位置控制（S10_VMC_WBC_Z_KP>0）——抬腿的
+        # 反作用力把 body 顶起→后轮悬空无推力死锁实测；z 控制按住 body
+        # 让抬升作用在轮上而非车身上（默认 0 保持 v605 行为）。
+        _zkp9 = float(os.environ.get("S10_VMC_WBC_Z_KP", "0.0"))
         F_des_w = np.array([
             0.0, 0.0,
             self.m * self.g
-            + (0.0 if _zm9 > 0.0
-               else self.kp_z * (z_des - body["pos"][2]))
+            + (0.0 if _zm9 > 0.0 and _zkp9 <= 0.0
+               else (_zkp9 if _zm9 > 0.0 else self.kp_z)
+               * (z_des - body["pos"][2]))
             - self.kd_z * float(qvel[2])])
         # v218k: 驱动 25% 由腿分担（轮为主），全轮在坡上推力不足
         _dsh = float(os.environ.get("S10_VMC_DRIVE_SHARE", "0.25"))
