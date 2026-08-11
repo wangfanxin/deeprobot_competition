@@ -967,6 +967,13 @@ class CarVMC:
             _yv_sc = float(np.clip(abs(_vx_b) / _yvg, 0.0, 1.0))
             _yk *= (0.15 + 0.85 * _yv_sc)
 
+        # v886: 车身实际前向速度（打滑感知用，世界系投影到机体系）
+        _bq3 = qpos[3:7]
+        _f2b = np.array([
+            1.0 - 2.0 * (_bq3[2] ** 2 + _bq3[3] ** 2),
+            2.0 * (_bq3[1] * _bq3[2] + _bq3[0] * _bq3[3]), 0.0])
+        _vx_bod = float(np.dot(qvel[0:3], _f2b))
+
         tau = np.zeros(16, dtype=np.float64)
         step_lift = np.asarray(cmd.get("step_lift", np.zeros(4)))
         hop = cmd.get("hop")
@@ -1160,6 +1167,11 @@ class CarVMC:
                      + side * _om_ref2 * _ysc * self._ground_f
                      * getattr(self, "_yv_scale", 1.0)
                      * self.track_half)
+            # v886: 打滑感知——该轮轮速超车身实际速度过多时，驱动参考向
+            # 车身速度连续收敛（减少空转，恢复抓地；差速保留）。
+            _slip = abs(v_wheel) - abs(_vx_bod)
+            if _slip > 0.5:
+                v_ref -= 0.8 * (_slip - 0.5)
             # v241/v242: yaw 摩擦前馈（RobuROC6 库仑摩擦补偿）——差速转向需
             # 先克服侧向滑移阻力才有 yaw 运动，纯误差反馈有死区滞后；按指令
             # 方向给基础差速力矩。**默认 0**：v241 线性 FF 在导航指令突变时
