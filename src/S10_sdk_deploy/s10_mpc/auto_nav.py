@@ -790,6 +790,17 @@ class AutoNavFollower:
         _err_vx = float(os.environ.get("S10_AUTO_ERR_VLIM_VX", "1.5"))
         if abs(err) > _err_gate:
             _ef = float(np.clip((abs(err) - _err_gate) / 0.8, 0.0, 1.0))
+            # v758: 出弯加速——仅当已越过当前航点（弯已出，s_cur 过 wp 弧长
+            # 0.6m 内线性起效）且 yaw 朝目标快速收敛时，按收敛强度削弱压速。
+            # v758b: 弯中提速会破坏走线致整段变慢（wp0→6 33.0s vs 31.2s
+            # 实测），恢复必须以"过航点=出弯"为前提，连续量非门控。
+            _passed_wp = float(np.clip(
+                (self._s_cur - self.path_wp_s[next_idx]) / 0.6 + 0.5,
+                0.0, 1.0))
+            _conv = float(np.clip(
+                np.sign(err) * yaw_rate / float(os.environ.get(
+                    "S10_AUTO_ERR_CONV_RATE", "1.0")), 0.0, 1.0))
+            _ef *= (1.0 - 0.7 * _conv * _passed_wp)
             v_lim = min(v_lim, _err_vx + (v_lim - _err_vx) * (1.0 - _ef))
         v_lim = min(v_lim, self.max_speed * elev_factor)
         if (d_wp < float(os.environ.get("S10_AUTO_ARRIVE_DIST", "1.2"))
