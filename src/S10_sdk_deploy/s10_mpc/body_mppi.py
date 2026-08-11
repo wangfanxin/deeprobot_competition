@@ -211,7 +211,14 @@ class BodyMPPI:
             self._out_prev[0] - self.a_max * self.dt,
             self._out_prev[0] + self.a_max * self.dt))
         _vx_out = float(np.clip(_vx_out, 0.0, _vcap))
-        u_out = np.array([_vx_out,
-                          np.clip(u_new[1], -_om_out, _om_out)])
+        _om_c = float(np.clip(u_new[1], -_om_out, _om_out))
+        # v889: om 输出加速度限幅——过点瞬间 0→1.8 跳变引发角动量过冲
+        # （wp3→4 实测过转 3 倍侧滑）。默认 6.0 rad/s²。
+        _om_slew = 6.0 * self.dt
+        _om_c = float(np.clip(
+            _om_c,
+            self._out_prev[1] - _om_slew,
+            self._out_prev[1] + _om_slew))
+        u_out = np.array([_vx_out, _om_c])
         self._out_prev = u_out
         return float(u_out[0]), float(u_out[1])
