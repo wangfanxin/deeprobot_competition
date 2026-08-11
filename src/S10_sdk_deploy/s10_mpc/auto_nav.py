@@ -569,6 +569,16 @@ class AutoNavFollower:
             "S10_AUTO_LOOKAHEAD_STAIR"
             if self.mode == "STAIR" else "S10_AUTO_LOOKAHEAD",
             str(self.lookahead)))
+        # v796: 墙区前视收紧（位置直判，同限速）——wp11→12 绕墙时 3.5m
+        # 前视让机器人抄近道切墙东端（走南侧捷径），墙角 120° 急转打转
+        # 侧翻实测；墙区前视收到 2.0m 贴绕行线走北侧。
+        if (float(os.environ.get("S10_WALL_DETOUR_AMP", "0.0")) > 0.0
+                and float(os.environ.get("S10_WALL_VX", "0.0")) > 0.0):
+            _wc, _wh = -6.0, 2.5
+            if (_wc - _wh <= robot_xy[0] <= _wc + _wh
+                    and 40.5 <= robot_xy[1] <= 43.5):
+                _lk = min(_lk, float(os.environ.get(
+                    "S10_WALL_LOOKAHEAD", "2.0")))
         _yg = float(os.environ.get(
             "S10_AUTO_YAW_GAIN_STAIR"
             if self.mode == "STAIR" else "S10_AUTO_YAW_GAIN",
