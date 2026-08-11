@@ -555,6 +555,119 @@ class AutoNavFollower:
             out.append(xy[-1].copy())
         return _np.asarray(out, dtype=_np.float64)
 
+    def _biarc_path(self, xy):
+        """v833: 全弧双圆弧样条（biarc）——整条路径全由圆弧组成：
+        - 每个航点都在圆弧上（航点=apex，切线=转角平分线方向）；
+        - 相邻圆弧相接点相切，航点处前后弧共享切线 → 全程 C1 连续；
+        - 每段双圆弧中，接近下一航点的弧（arc B）目标弧长
+          S10_BIARC_TURNIN（默认 5m）——提前入弯、半径大；
+        - 段长不足 2×TURNIN 时目标弧长对分（L/2）；
+        - 求解参数 γ（接点切线角）：弧长目标用一维扫描。
+        数学：圆弧弦方向 = 两端切线方向均值；LA·e^{i(a0+γ)/2}
+        + LB·e^{i(γ+a1)/2} = D 线性解 LA/LB，半径=弦/(2sin(θ/2))。
+        """
+        import numpy as _np
+        n = len(xy)
+        turn_in = float(os.environ.get("S10_BIARC_TURNIN", "5.0"))
+        # 1) 段方向 + 航点切线（内部=转角平分线，端点=段方向）
+        segs = []
+        for i in range(n - 1):
+            d = xy[i + 1] - xy[i]
+            L = float(_np.linalg.norm(d))
+            if L < 1e-9:
+                return None
+            segs.append((d / L, L))
+        T = []
+        _iy = float(os.environ.get("S10_INIT_YAW", "1.5708"))
+        for i in range(n):
+            if i == 0:
+                T.append(_np.array([_np.cos(_iy), _np.sin(_iy)]))
+            elif i == n - 1:
+                T.append(segs[-1][0])
+            else:
+                sv = segs[i - 1][0] + segs[i][0]
+                ns = float(_np.linalg.norm(sv))
+                T.append(sv / ns if ns > 1e-9 else segs[i][0])
+        # 2) 每段求解 biarc
+        out = [xy[0].copy()]
+        for i in range(n - 1):
+            P0 = xy[i]; P1 = xy[i + 1]
+            L = segs[i][1]
+            a0 = float(_np.arctan2(T[i][1], T[i][0]))
+            a1 = float(_np.arctan2(T[i + 1][1], T[i + 1][0]))
+            # a1 折算到 a0 的短弧侧
+            dlt = (a1 - a0 + _np.pi) % (2.0 * _np.pi) - _np.pi
+            a1 = a0 + dlt
+            sB_tgt = min(turn_in, L / 2.0)
+            D = P1 - P0
+            best = None
+            # v833b: 全角度扫描 γ（允许 S 弯——弦方向不在两端切线
+            # 锥内时，γ 需落在区间外，两弧反向转）
+            n_g = 720
+            for k in range(n_g + 1):
+                gamma = a0 - _np.pi + 2.0 * _np.pi * k / n_g
+                thA0 = abs(gamma - a0)
+                thB0 = abs(a1 - gamma)
+                if thA0 < 1e-4 or thB0 < 1e-4:
+                    continue
+                if thA0 >= _np.pi - 1e-3 or thB0 >= _np.pi - 1e-3:
+                    continue
+                da = (a0 + gamma) / 2.0
+                db = (gamma + a1) / 2.0
+                M = _np.array([[_np.cos(da), _np.cos(db)],
+                               [_np.sin(da), _np.sin(db)]])
+                det = float(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0])
+                if abs(det) < 1e-9:
+                    continue
+                sol = _np.linalg.solve(M, D)
+                LA = float(sol[0]); LB = float(sol[1])
+                if LA <= 1e-6 or LB <= 1e-6:
+                    continue
+                thA = abs(gamma - a0)
+                thB = abs(a1 - gamma)
+                RA = LA / (2.0 * _np.sin(thA / 2.0))
+                RB = LB / (2.0 * _np.sin(thB / 2.0))
+                if RA <= 1e-6 or RB <= 1e-6:
+                    continue
+                sB = RB * thB
+                score = abs(sB - sB_tgt)
+                if best is None or score < best[0]:
+                    best = (score, gamma, LA, LB, RA, RB)
+            if best is None:
+                out.append(P1.copy())
+                continue
+            _, gamma, LA, LB, RA, RB = best
+            da = (a0 + gamma) / 2.0
+            db = (gamma + a1) / 2.0
+            J = P0 + LA * _np.array([_np.cos(da), _np.sin(da)])
+            # 采样 arc A（P0→J，转向 a0→γ）
+            signA = 1.0 if gamma > a0 else -1.0
+            nA = _np.array([-signA * _np.sin(a0), signA * _np.cos(a0)])
+            cA = P0 + RA * nA
+            ang0 = _np.arctan2(P0[1] - cA[1], P0[0] - cA[0])
+            angJ = _np.arctan2(J[1] - cA[1], J[0] - cA[0])
+            swA = (angJ - ang0 + _np.pi) % (2.0 * _np.pi) - _np.pi
+            if swA * signA < 0:
+                swA = -swA
+            nA_pts = max(int(abs(swA) * RA / 0.08), 4)
+            for kk in range(1, nA_pts + 1):
+                ang = ang0 + swA * kk / nA_pts
+                out.append(cA + RA * _np.array([_np.cos(ang), _np.sin(ang)]))
+            # 采样 arc B（J→P1，转向 γ→a1）
+            signB = 1.0 if a1 > gamma else -1.0
+            nB = _np.array([-signB * _np.sin(gamma), signB * _np.cos(gamma)])
+            cB = J + RB * nB
+            ang0 = _np.arctan2(J[1] - cB[1], J[0] - cB[0])
+            ang1 = _np.arctan2(P1[1] - cB[1], P1[0] - cB[0])
+            swB = (ang1 - ang0 + _np.pi) % (2.0 * _np.pi) - _np.pi
+            if swB * signB < 0:
+                swB = -swB
+            nB_pts = max(int(abs(swB) * RB / 0.08), 4)
+            for kk in range(1, nB_pts + 1):
+                ang = ang0 + swB * kk / nB_pts
+                out.append(cB + RB * _np.array([_np.cos(ang), _np.sin(ang)]))
+        return _np.asarray(out, dtype=_np.float64)
+
     def _build_smooth_path(self):
         """Catmull-Rom 样条过航点 → 均匀弧长采样 + 数值曲率/速度剖面。
 
@@ -569,14 +682,16 @@ class AutoNavFollower:
         res = self.path_res
         n_per = int(os.environ.get("S10_GLOBAL_NPER_SEG", "24"))
         xy = self._stair_corridor_xy(wp[:, :2])
-        # v831: 弯道模式 S10_CORNER_MODE: bezier(过航点,默认)/fillet(圆弧切弯,v830)/spline(旧样条)
-        _cmode = os.environ.get("S10_CORNER_MODE", "bezier")
-        if _cmode == "fillet":
+        # v833: 弯道模式 S10_CORNER_MODE: biarc(全弧双圆弧,默认)/bezier(过航点)/fillet(v830圆弧)/spline(旧)
+        _cmode = os.environ.get("S10_CORNER_MODE", "biarc")
+        if _cmode == "bezier":
+            raw = self._bezier_corner_path(xy)
+        elif _cmode == "fillet":
             raw = self._fillet_corner_path(xy)
         elif _cmode == "spline":
             raw = self._catmull_rom_path(xy, n_per)
         else:
-            raw = self._bezier_corner_path(xy)
+            raw = self._biarc_path(xy)
 
         # 赛车线圆弧切弯（2026-08-07，用户"参考 MPPI 赛车/摩托"）：
         # 对每个转角>阈值的航点，把前后各 cut_len 内的样条替换为与
