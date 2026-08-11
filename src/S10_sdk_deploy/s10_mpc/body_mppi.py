@@ -28,7 +28,7 @@ class BodyMPPI:
                  lam=0.35, sigma_vx=0.45, sigma_om=0.55,
                  w_dist=2.0, w_v=0.80, w_h=0.0, w_s=0.05,
                  ada_alpha=0.35, ada_min=0.5, ada_max=2.0,
-                 seed=0):
+                 seed=0, a_max=2.5):
         # v427: 精简参数集（Tube-MPPI 灵感落地的前提：调参面越小，
         # 执行层跟踪管越可信）。只保留启动脚本实际调用的旋钮：
         #   S10_MPPI_MU      —— 摩擦锥 μ（标定 μ_eff≈0.36）
@@ -58,6 +58,12 @@ class BodyMPPI:
         self.tau_v, self.tau_w = tau_v, tau_w
         self.mu, self.g = mu, g
         self.vx_max, self.omega_max = vx_max, omega_max
+        # v826: 纵向加速度硬约束（S10_MPPI_A_MAX，默认 2.5 m/s² =
+        # CarVMC 能力标定 0→5m/s≈2s）。起步/出弯不允许 MPPI 直接给出
+        # vref 阶跃指令（起步轮打滑→差速正反馈自旋侧翻实测，
+        # run_v825final VMAX=6）。rollout 与输出同时钳制——规划模型
+        # 与真实执行能力一致，AutoNavFollower 保持纯 xy 无动力学约束。
+        self.a_max = float(_os.environ.get('S10_MPPI_A_MAX', a_max))
         self.lam = lam
         self.sigma_vx0, self.sigma_om0 = sigma_vx, sigma_om
         self.w_dist, self.w_v, self.w_h, self.w_s = w_dist, w_v, w_h, w_s
@@ -87,6 +93,10 @@ class BodyMPPI:
             om_lim = np.minimum(om_lim, self.omega_lim_fn(vx_now))
             om_c = np.clip(om_c, -om_lim, om_lim)
             vx_c = np.clip(vx_c, 0.0, self.vx_max)
+            # v826: 加速度硬约束（能力表派生，S10_MPPI_A_MAX）
+            vx_c = np.clip(vx_c,
+                           vx_now - self.a_max * dt,
+                           vx_now + self.a_max * dt)
             yaw = s[:, h, 2]
             s[:, h + 1, 2] = yaw + om_c * dt
             s[:, h + 1, 0] = s[:, h, 0] + (vx_now * np.cos(yaw)
@@ -180,6 +190,11 @@ class BodyMPPI:
         # 系统性超速 0.2-0.3 m/s（坡顶 3.5 vs vlim 3.23 过脊离地自旋实测）。
         _vcap = min(self.vx_max, guide_vx)
         _om_out = float(np.minimum(self.omega_max, self.omega_lim_fn(s0[3])))
-        u_out = np.array([np.clip(u_new[0], 0.0, _vcap),
+        # v826: 输出加速度钳制——第一拍指令不得超出当前速度 ±a_max·dt
+        # （起步 0→6 阶跃直接交给 CarVMC 会打滑自旋侧翻）
+        _vx_out = float(np.clip(
+            u_new[0], s0[3] - self.a_max * self.dt,
+            s0[3] + self.a_max * self.dt))
+        u_out = np.array([np.clip(_vx_out, 0.0, _vcap),
                           np.clip(u_new[1], -_om_out, _om_out)])
         return float(u_out[0]), float(u_out[1])
