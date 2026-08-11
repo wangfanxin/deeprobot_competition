@@ -269,7 +269,12 @@ class VMCController:
             # v746: 抬轮腿（sl>0.3）从 wrench 求解中屏蔽——支撑腿承担全部
             # 载荷。pinv 后乘 (1-sl) 会破坏解使总支撑不足、身体塌陷悬空
             # （WBC fn=0 卡死实测）。屏蔽后支撑腿力自然加大，抬轮腿=0。
-            if float(_sl_all[leg]) > 0.3:
+            # v767: 楼梯区（z_min>0）可保留抬轮腿进 wrench（S10_VMC_WBC_
+            # KEEP_LIFT=1）——屏蔽后 pitch/z 控制对前腿失去权威，body 被
+            # 抬轮反作用顶成低头悬空实测（pitch -0.3）；保留后姿态可控。
+            if (float(_sl_all[leg]) > 0.3
+                    and not (_zm9 > 0.0 and float(os.environ.get(
+                        "S10_VMC_WBC_KEEP_LIFT", "0")) > 0)):
                 continue
             _support_legs.append(leg)
             A6[0:3, leg * 3:leg * 3 + 3] = -np.eye(3)
@@ -314,13 +319,25 @@ class VMCController:
             _hop = cmd.get("hop")
             if _hop is not None:
                 fw[2] += float(_hop[leg])
-            pz_des = float(terrain_h[leg]) + self.fk.r
+            # v764: 楼梯区单侧阻抗目标下调下压余量——mujoco 接触间隙 3-8mm，
+            # 轮高到位但 fn=0 无牵引实测；下压压实台面恢复接触
+            _press9 = (float(os.environ.get("S10_VMC_WBC_PRESS", "0.006"))
+                       if _zm9 > 0.0 else 0.0)
+            pz_des = float(terrain_h[leg]) + self.fk.r - _press9
             # v602: 抬轮时地形阻抗**不随 sl 衰减**（(1-zk*sl)）——楼梯落脚点
             # 把前轮地形置为台面高，阻抗把轮拉到 pz_des=台面+r，轮直接
             # 落上台面（原 (1-sl) 在 sl=1 时清零，抬轮只剩姿态 PD、够不到）
-            fw[2] += (1.0 - _zk * _sl) * (
-                self.kp_h * (pz_des - p[2])
-                - self.kd_h * float(wheel_vel[leg, 2]))
+            # v763: 楼梯区（z_min>0）垂直阻抗改**单侧**（只下压不吸抬）——
+            # 双侧弹簧在 ramp 目标高于轮位时把前轮"吸"离台面悬空 fn=0 卡死
+            # 实测；下压保持贴地牵引，抬升由 CPG 抬轮负责（USC 贴面滚上）。
+            _imp_w = (1.0 - _zk * _sl)
+            _dz_h = pz_des - p[2]
+            if _zm9 > 0.0 and _dz_h > 0.0:
+                fw[2] += _imp_w * (-self.kd_h * float(wheel_vel[leg, 2]))
+            else:
+                fw[2] += _imp_w * (
+                    self.kp_h * _dz_h
+                    - self.kd_h * float(wheel_vel[leg, 2]))
             f_body = body["R"].T @ fw
             f_sag = np.array([f_body[0], -f_body[2]])       # [x, z_down]
             t_hipy, t_knee = J.T @ f_sag
