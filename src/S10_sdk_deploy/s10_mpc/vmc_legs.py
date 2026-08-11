@@ -1083,12 +1083,9 @@ class CarVMC:
                 self._omega_lp = _om_b
             _om_hf = _om_b - self._omega_lp
             self._omega_lp += (_om_b - self._omega_lp) * min(1.0, dt / 0.05)
-            # v249/v251: yaw 超速保护——|ω| 超 a_lat 安全包线
-            # （S10_AUTO_LAT_MAX/v）时：差速参考**反向**（按安全转速反向给
-            # 速度指令，硬刹）+ 阻尼+8。
+            # v855: om_safe 反向硬刹恢复——实测删除后 wp1→2 yaw 失控翻车，
+            # 该刹是转弯自旋的安全网（用户确认后再软化/删除）
             _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
-            # v283: 保护上限 = min(a_lat/v, 绝对 ω 上限 2.0)——低速自旋
-            # （ω 2.2, v 0.4）时 a_lat 很小但自旋本身失稳，需绝对上限
             _om_safe = min(
                 _latmax / max(abs(self._vx_f), 0.5),
                 float(os.environ.get("S10_VMC_OM_ABS_MAX", "2.0")))
@@ -1116,20 +1113,9 @@ class CarVMC:
                     2.0 * (_bq[1] * _bq[2] + _bq[0] * _bq[3]), 0.0])
                 _vx_b = float(np.dot(qvel[0:3], _f2))
                 self._yv_scale = float(np.clip(abs(_vx_b) / _yvg, 0.0, 1.0))
-            # v428: Tube-MPPI 灵感（RSS18 Williams et al.）——MPPI 规划
-            # 标称轨迹，低层跟踪器保证实际轨迹在"管"内：管内不干预（让差速
-            # 前馈自然执行），只有偏差超管才拉回。对应 yaw 通道：
-            # |ω_act-ω_cmd| ≤ TUBE 时不加滑模反馈、不触发 om_safe 反向刹车
-            # （转弯 cmd1.4/act1.6 的轻微过速不再反向硬刹 → 消除 wp4→5
-            # 过冲振荡翻车）；超管才用 tanh 饱和拉回。默认 0.0 = 原行为。
-            # v429: 刹车管（独立旋钮）——om_safe 反向硬刹只在实际 ω 偏差
-            # 超过 S10_CAR_YAW_BRAKE_TUBE 时才触发（弯道 cmd1.8/act2.6 的
-            # 合理过速不再瞬间反向差速 → 消除振荡翻车）；S10_CAR_YAW_TUBE
-            # 单独控制滑模反馈死区。默认 0 = 原行为。
-            _tube = float(os.environ.get("S10_CAR_YAW_TUBE", "0.0"))
-            _btube = float(os.environ.get("S10_CAR_YAW_BRAKE_TUBE", "0.0"))
+            # v855: 反向硬刹恢复（转弯自旋安全网，实测必需）
             _err_y = self._om_f - body["omega"]
-            if abs(_om_b) > _om_safe and abs(_err_y) > _btube:
+            if abs(_om_b) > _om_safe:
                 _om_ref = -float(np.clip(_om_b, -_om_safe, _om_safe))
                 _kd_eff = _kd_yaw + 8.0
             # v252: 差速参考用**即时指令**（导航已 slew 0.8/s，够平滑）——
@@ -1173,17 +1159,9 @@ class CarVMC:
             # 下限 0.5 保留基本航向保持——0.15 时起步 yaw 漂 57° 转不回）
             _k_sm *= (0.5 + 0.5 * float(getattr(self, "_yv_scale", 1.0)))
             _phi = float(os.environ.get("S10_CAR_YAW_PHI", "0.5"))
-            # v436: 滑模误差改用 body 系 yaw 率（S10_CAR_YAW_OM_BODY 默认
-            # 0=原世界系 qvel[5]）。v237 注释即指出世界系被地形俯仰/横滚
-            # 污染——脊上 θ̇ 会混进 qvel[5]，滑模误判 yaw 误差→脊期需要
-            # 冻结兜底；body 系 ωz≈ψ̇·cosθ 隔离俯仰，脊上不误动。
-            if float(os.environ.get("S10_CAR_YAW_OM_BODY", "0")) > 0:
-                _err_y = self._om_f - body["omega_body"]
-            # v428: 管误差 = 超出 |误差|≤TUBE 的部分（死区），管内误差=0
+            # v854: 删除 OM_BODY 模式开关与 TUBE 死区（用户：无离散门控）——
+            # 滑模误差固定用世界系 yaw 率，误差直接进 tanh
             _err_t = _err_y
-            if _tube > 0.0:
-                _err_t = float(np.sign(_err_y)) * max(
-                    abs(_err_y) - _tube, 0.0)
             _ff_sign = 0.0
             if abs(self._om_f) > 0.05:
                 _ff_sign = float(np.sign(self._om_f)) * min(
