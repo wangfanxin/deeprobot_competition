@@ -77,14 +77,10 @@ def main():
         # v775: 起始高度用航点地形+站立高（原硬编码 1.2 在高架平台
         # terr=1.166 处压腿不稳，起步即侧翻）
         _sz0 = float(wp[START_WP][2]) + 0.21
-        # v808: 起始位置沿路径来向反推 1m（原 y-1m 对非南北航段错误——
-        # wp16 从西侧接近，放南侧导致 180° 掉头打转卡死实测）
-        _prev = wp[START_WP - 1] if START_WP > 0 else wp[START_WP]
-        _dx0 = float(wp[START_WP][0] - _prev[0])
-        _dy0 = float(wp[START_WP][1] - _prev[1])
-        _dn0 = float(np.hypot(_dx0, _dy0)) + 1e-9
-        d.qpos[0:3] = [float(wp[START_WP][0] - _dx0 / _dn0),
-                       float(wp[START_WP][1] - _dy0 / _dn0), _sz0]
+        # v808(回退): 沿路径放置会让 wp8 起点变差(回归 wp8→9 慢 2s)——
+        # 保留 y-1m 原行为，wp16 的 180° 掉头是测试装置伪影(真实赛道从
+        # wp15 西侧接近，无掉头)
+        d.qpos[0:3] = [wp[START_WP][0], wp[START_WP][1] - 1.0, _sz0]
         if START_WP + 1 < len(wp):
             _dy = wp[START_WP + 1][1] - wp[START_WP][1]
             _dx = wp[START_WP + 1][0] - wp[START_WP][0]
