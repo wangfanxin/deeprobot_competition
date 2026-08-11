@@ -27,10 +27,14 @@ STOP_AT = int(os.environ.get('S10_STOP_AT_WP', '0'))
 XML = os.environ.get('S10_XML',
     f'{PKG}/S10_description/s10_mjcf/mjcf/S10_track.xml')
 
-STAND_TARGET = np.array([-0.05, -1.16, 2.30, 0.0,
-                          0.05, -1.16, 2.30, 0.0,
-                         -0.05,  1.16, -2.30, 0.0,
-                          0.05,  1.16, -2.30, 0.0], dtype=np.float64)
+# v862: ????=CarVMC ???????knee 1.90/hipy 1.10?S10_CAR_SQUAT=1??
+# ????(??2.30)->???(??1.90)?????0.5s ??? body ???
+# ???????????/??????? body 0.31->0.75 ? 2s?????
+# ???????wp0->1 ?? 5.0s??
+STAND_TARGET = np.array([-0.05, -1.10, 1.90, 0.0,
+                          0.05, -1.10, 1.90, 0.0,
+                         -0.05,  1.10, -1.90, 0.0,
+                          0.05,  1.10, -1.90, 0.0], dtype=np.float64)
 
 
 def main():
