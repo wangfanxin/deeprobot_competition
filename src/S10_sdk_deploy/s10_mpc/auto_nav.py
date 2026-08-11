@@ -1,4 +1,11 @@
-"""模式 A：已知地图自动导航（纯追踪 + 坡度/弯道限速）。
+"""模式 A：已知地图自动导航（纯追踪 + 弯道限速）。
+
+v829 架构铁律（用户指令）：AutoNavFollower 只做 xy 路径规划——
+输入仅有航点 xy 坐标与起点 xy 坐标；禁止任何 z/高程/地形先验
+（坡度限速、台阶/楼梯区限速等一律删除）。地形响应由感知层
+（lidar 高程图）与 stair 技能接管。类内保留的 stair_zone/
+stair_* 几何表属于 stair 技能地图数据（非路径规划），最终须
+迁移为由高程图感知提供。
 
 输入：全局航点路径（track_overlay 的 track_waypoint_*，已知地图）。
 输出：每控制周期生成 (vx, vyaw) 指令，交给 dial-mpc set_cmd 执行。
@@ -203,22 +210,14 @@ class AutoNavFollower:
                 v_curve = np.sqrt(self.lat_accel_max * R)
             else:
                 v_curve = self.max_speed
-            # 坡度：前向航段
-            if i < n - 1:
-                dz = wp[i + 1, 2] - wp[i, 2]
-                grade = dz / max(self.seg_len[i], 1e-3)
-                # 平地段用满速；坡度越大减速越多，下限 climb_max_speed
-                v_grade = self.max_speed / (1.0 + self.grade_scale * abs(grade))
-                v_grade = max(v_grade, self.climb_max_speed)
-            else:
-                v_grade = self.max_speed
+            # v829: 删除坡度限速（z 先验作弊，用户指令——路径规划只用 xy）
             if (i < n - 1
                     and wp[i + 1, 2] - wp[i, 2] > 0.08):
                 self.step_zone[i] = True     # 本航段终点是台阶/陡升
             if (i < n - 1
                     and wp[i + 1, 2] - wp[i, 2] > 0.25):
                 self.stair_zone[i] = True    # 连续楼梯（多级台阶）
-            self.speed_limit[i] = min(self.max_speed, v_curve, v_grade)
+            self.speed_limit[i] = min(self.max_speed, v_curve)
 
     def _path_point_at(self, dist):
         """沿**平滑路径**取距起点 dist 处的点（线性插值，弧长参数化）。"""
@@ -503,18 +502,9 @@ class AutoNavFollower:
                 else:
                     vlim[k] = min(vlim[k], _vl9)
         # v825: 删除 S 弯抑制（用户指令；交 MPPI）
-        # 台阶/楼梯段限速映射到路径弧长（按航点区间）
-        for i in range(n - 1):
-            if not (self.step_zone[i] or self.stair_zone[i]):
-                continue
-            if i == 0:
-                continue   # wp0→1 起步缓坡（z 升 0.475）不是台阶
-            s0 = self.cum_len[i]
-            s1 = self.cum_len[i + 1]
-            v_zone = (self.stair_vx if self.stair_zone[i] else self.step_vx)
-            _zm = float(os.environ.get("S10_ZONE_MARGIN", "1.0"))
-            mask = (cum >= s0 - _zm) & (cum <= s1 + _zm)
-            vlim[mask] = np.minimum(vlim[mask], v_zone)
+        # v829: 删除台阶/楼梯区限速（z 先验作弊，用户指令）——路径规划
+        # 只用 xy；台阶减速由 stair 技能（感知高程图）接管。速度剖面只
+        # 剩曲率几何限速。
         # v825: 删除墙区限速（用户指令）
         self.path_vlim = vlim
         self.path_total = float(cum[-1])
@@ -621,12 +611,8 @@ class AutoNavFollower:
         self._last_err = err
         self._last_dwp = d_wp
         self._last_tgt = target
-        # 高架/坡顶段限制速度与转向：离地越高，侧翻风险越大（窄轮距）
-        z_ahead = float(robot_z if robot_z is not None else 0.0)
-        for j in range(self.speed_window):
-            if next_idx + j < len(self.wp):
-                z_ahead = max(z_ahead, float(self.wp[next_idx + j, 2]))
-        # v825: 删除高架限速（用户指令）
+        # v825/v829: 删除高架限速与 z 前视（z 先验作弊，用户指令——
+        # 路径规划只用 xy 航点+起点）
         vyaw_max_eff = _vm
         # 弯道 yaw 前馈（2026-08-07 赛用摩托/MPPI 参考）：按前视点路径
         # 曲率给出恒定转向率 v/R，err 只做修正——弯道内不靠纯反馈追线，
@@ -744,20 +730,8 @@ class AutoNavFollower:
         # v825: 删除航点转角制动（用户指令；交 MPPI）
         # v825: 删除 err 门控/出弯加速/到达制动/高架限速（用户指令，
         # 速度由曲率剖面+MPPI 决定）
-        # 台阶区限速（航点 z 兜底，已知地图，无感知滞后）：目标航段是陡升
-        # 且机器人已越过前一航点（或接近该航点）→ 限速 step_vx。
-        # 解决 §3.7 翻车机制：3.1 m/s 撞 0.125m riser → 前轮爬升翘头后仰翻。
-        # 当前航段 = (next_idx-1 → next_idx)；step_zone 在该段终点是陡升时置位
-        # 链 52：连续楼梯段（stair_zone，z 升 >0.25）用 stair_vx（可快），
-        # 单级横脊仍用 step_vx（保守，防高速撞脊侧翻）。
-        if (next_idx >= 2 and next_idx - 1 < len(self.step_zone)
-                and self.step_zone[next_idx - 1] and d_wp < self.step_dist):
-            # wp0→1 起步缓坡（z 升 0.475）不是台阶：next_idx>=2 才判台阶限速
-            if (next_idx - 1 < len(self.stair_zone)
-                    and self.stair_zone[next_idx - 1]):
-                v_lim = min(v_lim, self.stair_vx)
-            else:
-                v_lim = min(v_lim, self.step_vx)
+        # v829: 删除台阶/楼梯区限速（z 先验作弊，用户指令；减速由
+        # stair 技能感知接管）
         # v825: 删除横脊动量提升/墙区位置直判限速（用户指令；交 MPPI）
         # 速度限幅：避免转向后瞬间 0→4 m/s 的侧向冲击（侧翻风险）
         dv = self.max_accel * (_dt_nav)   # 每拍增量按真实更新周期缩放（v442）
