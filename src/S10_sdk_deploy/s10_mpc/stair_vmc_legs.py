@@ -1521,6 +1521,11 @@ class FootPlaceVMC:
                 _bpd = float(os.environ.get('S10_FP_BODY_PD', '0.05'))
                 wz += _front * (_bp_err * 0.3 * _bk
                                 - _bpd * pitch_rate)
+            # v881: 抬升腿最终目标上限——roll/pitch/body 闭环修正会把 wz
+            # 泵高（1.16 实测≈楼梯顶），强制 ≤ place_z+r+margin+0.005
+            # （place_z 由 StairWBC 贴面爬升给，≈台面顶）
+            if sl > 0.5 and pz > 0.01:
+                wz = min(wz, pz + self.fk.r + _margin + 0.005)
             _dw = np.array([wheel_xyz[leg, 0] - hip_w[0],
                            wheel_xyz[leg, 1] - hip_w[1],
                            wz - hip_w[2]])

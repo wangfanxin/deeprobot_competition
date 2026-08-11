@@ -190,19 +190,23 @@ class StairWBC(FootPlaceVMC):
             for _leg in range(4):
                 if step_lift[_leg] <= 0.02:
                     continue
-                # 找该轮前方最近高 riser
+                # v880: 轴均值距离——左右轮同相抬升（yaw 偏 4° 时逐轮 d 差
+                # 0.025m → 单侧先抬 → roll 冲击实测）
+                _ax_idx = (0, 1) if _leg in (0, 1) else (2, 3)
+                _ax_xy = np.mean([wheel_xyz[_i, :2] for _i in _ax_idx], axis=0)
+                # 找该轴前方最近高 riser
                 _best_d = 1e9; _best = None
                 for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
                     if _dhv <= 0.085:
                         continue
-                    _dd = float(np.dot(wheel_xyz[_leg, :2] - _rp, _tng))
+                    _dd = float(np.dot(_ax_xy - _rp, _tng))
                     if -0.20 < _dd < 0.05 and abs(_dd) < abs(_best_d):
                         _best_d = _dd; _best = (_rp, _tng, _dhv, _top)
                 if _best is None:
                     continue
                 (_rp, _tng, _dhv, _top) = _best
                 _z_bot = float(_top - _dhv)
-                _d_w = float(np.dot(wheel_xyz[_leg, :2] - _rp, _tng))
+                _d_w = float(np.dot(_ax_xy - _rp, _tng))
                 if -_r <= _d_w <= 0.0:
                     _t = float(np.clip((_d_w + _r) / max(_r, 1e-6), 0.0, 1.0))
                     _ss = _t * _t * (3.0 - 2.0 * _t)

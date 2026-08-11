@@ -593,7 +593,14 @@ def main():
         # FootPlace（IK 放轮）：保持台面表覆盖（它把轮直接放台面上）。
         if _iszn9 and _fp_active:
             try:
-                terr = np.asarray(fol.stair_terrain(wheel_xyz[:, 1]),
+                # v880: 地形轴均值对称——狗 yaw 偏 4° 时左右轮世界 y 差
+                # 0.025m，逐轮查表会让左轮在台阶上/右轮在台阶下 → 腿目标
+                # 不对称 → roll/yaw 冲击（进梯被打偏实测）。楼梯横向平坦，
+                # 用轴均值 y 生成左右一致的参考（同 v755d WBC 分支）。
+                _wy_sym2 = np.array(
+                    [float(np.mean(wheel_xyz[0:2, 1]))] * 2
+                    + [float(np.mean(wheel_xyz[2:4, 1]))] * 2)
+                terr = np.asarray(fol.stair_terrain(_wy_sym2),
                                   dtype=np.float64)
             except Exception:
                 pass
