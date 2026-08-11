@@ -74,7 +74,10 @@ def main():
     # 用于验证其余赛段 wp7→33；0=正常从 wp0 起跑）
     START_WP = int(os.environ.get('S10_START_WP', '0'))
     if START_WP > 0 and START_WP < len(wp):
-        d.qpos[0:3] = [wp[START_WP][0], wp[START_WP][1] - 1.0, 1.2]
+        # v775: 起始高度用航点地形+站立高（原硬编码 1.2 在高架平台
+        # terr=1.166 处压腿不稳，起步即侧翻）
+        _sz0 = float(wp[START_WP][2]) + 0.21
+        d.qpos[0:3] = [wp[START_WP][0], wp[START_WP][1] - 1.0, _sz0]
         if START_WP + 1 < len(wp):
             _dy = wp[START_WP + 1][1] - wp[START_WP][1]
             _dx = wp[START_WP + 1][0] - wp[START_WP][0]

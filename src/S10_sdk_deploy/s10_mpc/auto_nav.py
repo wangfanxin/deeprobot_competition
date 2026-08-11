@@ -776,8 +776,9 @@ class AutoNavFollower:
                                    _wp2[0] - wp_next[0]))
             _da = abs(float(np.arctan2(np.sin(_a2 - _a1),
                                        np.cos(_a2 - _a1))))
-            if _da > 1.40 and d_wp < float(os.environ.get(
-                    "S10_AUTO_TURN_BRAKE_DIST", "3.0")):
+            if _da > float(os.environ.get(
+                    "S10_AUTO_TURN_BRAKE_ANG", "1.05")) and d_wp < float(
+                        os.environ.get("S10_AUTO_TURN_BRAKE_DIST", "3.0")):
                 v_lim = min(v_lim, float(os.environ.get(
                     "S10_AUTO_TURN_BRAKE_VX", "2.0")))
         # v340: 导航不做 err 分级限速——速度只由几何任务剖面决定。
