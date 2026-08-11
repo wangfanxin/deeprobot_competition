@@ -393,6 +393,16 @@ class VMCController:
                        - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b + 1]]))
             t_knee += (_kpp * (_q2_tgt - q2)
                        - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b + 2]]))
+            # v783: 楼梯区抬轮腿力矩限幅（力限抬轮）——pose PD 刚度高时
+            # 抬轮力(~880N) 超过后轮支撑力把 body 顶起全轮悬空卡死实测；
+            # 限幅到 S10_VMC_WBC_LIFT_TMAX(默认15Nm→~83N/腿) 让抬轮温和、
+            # 后轮压住 body，轮缓慢抬起（配合 STAIR_WIN_VX 降低给足时间）。
+            if (_zm9 > 0.0 and _sl > 0.3
+                    and float(os.environ.get(
+                        "S10_VMC_WBC_LIFT_TMAX", "0.0")) > 0.0):
+                _lt9 = float(os.environ.get("S10_VMC_WBC_LIFT_TMAX", "15.0"))
+                t_hipy = float(np.clip(t_hipy, -_lt9, _lt9))
+                t_knee = float(np.clip(t_knee, -_lt9, _lt9))
 
             # v218f: hipx 由 wrench 侧向力接管；S10_VMC_HIPX_TORQUE=1 叠加姿态反馈
             side = -1.0 if leg in (0, 2) else 1.0

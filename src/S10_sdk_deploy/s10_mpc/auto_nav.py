@@ -777,7 +777,7 @@ class AutoNavFollower:
             _da = abs(float(np.arctan2(np.sin(_a2 - _a1),
                                        np.cos(_a2 - _a1))))
             if _da > float(os.environ.get(
-                    "S10_AUTO_TURN_BRAKE_ANG", "1.05")) and d_wp < float(
+                    "S10_AUTO_TURN_BRAKE_ANG", "1.40")) and d_wp < float(
                         os.environ.get("S10_AUTO_TURN_BRAKE_DIST", "3.0")):
                 v_lim = min(v_lim, float(os.environ.get(
                     "S10_AUTO_TURN_BRAKE_VX", "2.0")))
