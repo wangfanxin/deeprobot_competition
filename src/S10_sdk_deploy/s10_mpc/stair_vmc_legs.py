@@ -1432,7 +1432,12 @@ class FootPlaceVMC:
                     _wz_all[_leg0] = min(
                         _pz0 + self.fk.r + _margin,
                         float(body["pos"][2]) + 0.25)
-            _bdes_z = float(np.mean(_wz_all)) + float(os.environ.get(
+            # v897: bdes_z 只用支撑腿目标算（前轮 SWING 时高抬升目标不再
+            # 把 body 拉高——台架实测 bz 0.92→后轮离地 0.98→yaw 自旋）
+            _wz_st = [_wz_all[i] for i in range(4) if _sl_all[i] <= 0.5]
+            if not _wz_st:
+                _wz_st = list(_wz_all)
+            _bdes_z = float(np.mean(_wz_st)) + float(os.environ.get(
                 'S10_FP_STAND_DROP', '0.26'))
             _wz_fm = float(np.mean(_wz_all[0:2]))
             _wz_rm = float(np.mean(_wz_all[2:4]))
