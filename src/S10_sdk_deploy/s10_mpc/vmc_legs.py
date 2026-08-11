@@ -1461,6 +1461,23 @@ class FootPlaceVMC:
                      - 6.0 * pitch_rate) * 0.0025,
                     -0.05, 0.05))
                 wz += _front * _pc
+            # v827: body 姿态闭环（用户架构核心）——期望 body z/pitch 由
+            # 4 轮目标解算（v823），误差修正轮目标把 body 拉向期望姿态。
+            # body 过高→轮目标上抬（腿缩短→body 下降）；pitch 误差→前/后
+            # 轮差分修正。连续量，S10_FP_BODY_K 可调。
+            if _posmode_fp > 0 and _bdes_z is not None:
+                _bk = float(os.environ.get('S10_FP_BODY_K', '0.4'))
+                _bz_err = float(_bdes_z - body["pos"][2])
+                # v827b: 符号修正——body 过高(err<0)时轮目标**上抬**（腿缩短
+                # →body 下降，轮贴地）；原 wz+=err 在 body 过高时下压→腿伸长
+                # →body 更高正反馈弹射实测
+                wz -= _bz_err * _bk
+                # v827c: body z 速率阻尼（S10_FP_BODY_KD）——上抬速度大时
+                # 轮目标反向压，防位置控制对地形跳变过冲弹射
+                _bkd = float(os.environ.get('S10_FP_BODY_KD', '0.06'))
+                wz += float(qvel[2]) * _bkd
+                _bp_err = float(_bdes_pitch - body["pitch"])
+                wz += _front * _bp_err * 0.3 * _bk
             _dw = np.array([wheel_xyz[leg, 0] - hip_w[0],
                            wheel_xyz[leg, 1] - hip_w[1],
                            wz - hip_w[2]])
@@ -1481,10 +1498,11 @@ class FootPlaceVMC:
             # v736: 抬升腿真正卸载——PD 增益降到 1/10（kp 220→22），
             # 轮近乎自由摆动（避免硬顶地面→反力顶起全身→四轮离地，
             # v725-728 耦合结论）。支撑腿承担全部载荷。
-            # v822: 位置基模式全增益（位置控制需要高增益 PD 拉满；原
-            # 1/10 卸载是力控思路，位置控制下抬升腿也要硬位置跟踪）
+            # v827: 位置基模式腿增益（S10_FP_KP_POS 可调，默认全增益；
+            # 全增益 220 在 body 过渡期暴力饱和翻转实测，可降至 120 平滑）
             if _posmode_fp > 0:
-                _kp_leg = self.kp
+                _kpp9 = float(os.environ.get('S10_FP_KP_POS', '0'))
+                _kp_leg = (float(_kpp9) if _kpp9 > 0 else self.kp)
                 _kd_leg = self.kd
             else:
                 _kp_leg = self.kp * (0.10 if sl > 0.1 else 1.0)
