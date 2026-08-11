@@ -585,7 +585,10 @@ def main():
         # （z_des 随地形中点升、pitch 用轴距坡度，前髋抬高跨棱、后轮
         # 仍贴地受力；raw 地面会导致 z 控制把轮子悬空、后轮失牵引）
         _iszn9 = (fol.mode == 'STAIR')
-        _fp_active = os.environ.get('S10_VMC_MODE', 'wbc') in ('place', 'dual2')
+        # v885: stairwbc 也走原始地形分支——此前用 WBC 分支的
+        # stair_wheel_ref（棱前 0.14m ramp 提前抬升→离地→yaw 对转实测）
+        _fp_active = os.environ.get('S10_VMC_MODE', 'wbc') in (
+            'place', 'dual2', 'stairwbc')
         # v746: lidar 高程图在楼梯区失真。但轮下地形与抬轮目标要分开——
         # WBC（力控）：轮下地形用运动学地面（轮心 z - 半径），支撑腿贴地
         # 承重，body 高度不被台面表顶起（z_des 过高→四轮悬空 fn=0 实测）；
@@ -593,15 +596,13 @@ def main():
         # FootPlace（IK 放轮）：保持台面表覆盖（它把轮直接放台面上）。
         if _iszn9 and _fp_active:
             try:
-                # v880: 地形轴均值对称——狗 yaw 偏 4° 时左右轮世界 y 差
-                # 0.025m，逐轮查表会让左轮在台阶上/右轮在台阶下 → 腿目标
-                # 不对称 → roll/yaw 冲击（进梯被打偏实测）。楼梯横向平坦，
-                # 用轴均值 y 生成左右一致的参考（同 v755d WBC 分支）。
-                _wy_sym2 = np.array(
-                    [float(np.mean(wheel_xyz[0:2, 1]))] * 2
-                    + [float(np.mean(wheel_xyz[2:4, 1]))] * 2)
-                terr = np.asarray(fol.stair_terrain(_wy_sym2),
-                                  dtype=np.float64)
+                # v884: 小台阶用轮下实际地形（原始 lidar/ray）——stair_terrain
+                # 是 y 阶跃，轮还没到就把腿目标抬到台面顶 → 狗提前离地失抓地
+                # → 差速对转 yaw 失控（实测）。0.061m 小台阶自然滚过；
+                # 0.125m 大台阶由 StairWBC 贴面爬升 place_z 显式抬升。
+                terr = np.array(
+                    [terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
+                     for i in range(4)], dtype=np.float64)
             except Exception:
                 pass
         elif _iszn9:
