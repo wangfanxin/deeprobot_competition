@@ -335,20 +335,9 @@ class AutoNavFollower:
         t = (s - cum[k]) / max(cum[k + 1] - cum[k], 1e-6)
         return raw[k] + t * (raw[k + 1] - raw[k])
 
-    def _build_smooth_path(self):
-        """Catmull-Rom 样条过航点 → 均匀弧长采样 + 数值曲率/速度剖面。
-
-        Catmull-Rom：三次 Hermite 插值，**严格经过每个航点**（判点 0.2m
-        半径保证），C1 连续平滑转弯；实现简单无几何 bug（替代圆弧/切角，
-        2026-08-06 圆弧两个几何 bug 导致绕圈/变长/外偏 0.5m 已弃用）。
-        速度剖面：数值曲率 κ=|dθ/ds| 平滑后 v=min(v_max, √(a_lat/κ))，
-        曲率 clamp（R_min=0.8m → v_min≈2.2m/s）防过冲造成过慢。
-        """
-        wp = self.wp
-        n = len(wp)
-        res = self.path_res
-        n_per = int(os.environ.get("S10_GLOBAL_NPER_SEG", "24"))
-        xy = self._stair_corridor_xy(wp[:, :2])
+    def _catmull_rom_path(self, xy, n_per):
+        """Catmull-Rom 样条（v830 后为回退路径，默认用圆弧圆角）。"""
+        n = len(xy)
         raw = [xy[0].copy()]
         # 切线因子（2026-08-08）：默认 0.5 = 标准 Catmull-Rom。增大到
         # 0.7~0.8 让弯道更平缓（wp 处半径 1.36→2.1~4.0m），vlim 自动
@@ -394,6 +383,121 @@ class AutoNavFollower:
                 raw.append(h00 * p1 + h10 * m1 + h01 * p2 + h11 * m2)
             raw.append(xy[i + 1].copy())
         raw = np.asarray(raw, dtype=np.float64)
+        return raw
+
+
+    def _fillet_corner_path(self, xy):
+        """v830: 贴线圆弧圆角——每个转角航点替换为半径 R 的相切圆弧。
+
+        圆弧半径 R 由 0.3m 判点约束取最大：弧线最接近航点的距离
+        δ = R·(1/sin(θ/2)−1)，取 δ=S10_CORNER_PASS_DIST（默认 0.28，
+        留 0.02m 判点余量）→ R = δ/(1/sin(θ/2)−1)。
+        切点距 d = R·cot(θ/2)，按段长 45% 限幅（S10_CORNER_FIT）；
+        相邻两弯切点重叠时等比收缩（S 弯）。
+        直线段保持精确直线（无 Catmull-Rom 弓形），90° 弯半径
+        0.32→~0.65m，弯速 v=√(8R) 1.6→2.3 m/s。返回密集折线。
+        """
+        import numpy as _np
+        n = len(xy)
+        min_turn = float(os.environ.get("S10_CORNER_MIN_TURN", "0.25"))
+        pass_d = float(os.environ.get("S10_CORNER_PASS_DIST", "0.28"))
+        r_max = float(os.environ.get("S10_CORNER_R_MAX", "4.0"))
+        fit = float(os.environ.get("S10_CORNER_FIT", "0.45"))
+        # 1) 每个转角航点的 (R, d)
+        params = []
+        for i in range(1, n - 1):
+            a = xy[i - 1]; b = xy[i]; c = xy[i + 1]
+            v1 = b - a; v2 = c - b
+            L1 = float(_np.linalg.norm(v1)); L2 = float(_np.linalg.norm(v2))
+            if L1 < 1e-6 or L2 < 1e-6:
+                continue
+            u1 = v1 / L1; u2 = v2 / L2
+            ct = float(_np.clip(_np.dot(u1, u2), -1.0, 1.0))
+            th = float(_np.arccos(ct))
+            if th < min_turn:
+                continue
+            # 弧线最接近航点距离 δ = R·(sec(θ/2)−1)（圆心在 u2−u1 方向）
+            inv = 1.0 / max(_np.cos(th / 2.0), 1e-6) - 1.0
+            R = min(pass_d / max(inv, 1e-6), r_max) if inv > 0 else r_max
+            d = float(R * max(_np.tan(th / 2.0), 1e-6))
+            d = min(d, L1 * fit, L2 * fit)
+            if d < 0.1:
+                continue
+            params.append(dict(i=i, th=th, R=R, d=d))
+        # 2) 相邻弯切点不重叠（等比收缩）
+        for k in range(len(params) - 1):
+            i1 = params[k]["i"]; i2 = params[k + 1]["i"]
+            if i2 == i1 + 1:
+                L = float(_np.linalg.norm(xy[i2] - xy[i1]))
+                ssum = params[k]["d"] + params[k + 1]["d"]
+                if ssum > L * 0.92 and ssum > 1e-6:
+                    sc = L * 0.92 / ssum
+                    params[k]["d"] *= sc
+                    params[k + 1]["d"] *= sc
+        # 3) 生成路径：直线 + 圆弧
+        out = [xy[0].copy()]
+        prev_pt = xy[0].copy()
+        pmap = {prm["i"]: prm for prm in params}
+        for i in range(1, n - 1):
+            prm = pmap.get(i)
+            if prm is None:
+                # 缓角航点（无圆角）：路径直穿航点本身，不得跳过
+                if _np.linalg.norm(xy[i] - prev_pt) > 1e-6:
+                    out.append(xy[i].copy())
+                prev_pt = xy[i].copy()
+                continue
+            th = prm["th"]; d = prm["d"]
+            b = xy[i]
+            u1 = xy[i] - xy[i - 1]; u1 = u1 / _np.linalg.norm(u1)
+            u2 = xy[i + 1] - xy[i]; u2 = u2 / _np.linalg.norm(u2)
+            p_in = b - u1 * d
+            p_out = b + u2 * d
+            if _np.linalg.norm(p_in - prev_pt) > 1e-6:
+                out.append(p_in.copy())
+            R_eff = d / max(_np.tan(th / 2.0), 1e-6)
+            if R_eff >= 0.05:
+                # 圆心方向 = normalize(u2−u1)（弯内侧），D = R/cos(θ/2)
+                n_bis = u2 - u1
+                nb = _np.linalg.norm(n_bis)
+                if nb > 1e-9:
+                    n_bis = n_bis / nb
+                    D = R_eff / max(_np.cos(th / 2.0), 1e-6)
+                    center = b + n_bis * D
+                    ang_in = _np.arctan2(
+                        p_in[1] - center[1], p_in[0] - center[0])
+                    ang_out = _np.arctan2(
+                        p_out[1] - center[1], p_out[0] - center[0])
+                    delta = (ang_out - ang_in + _np.pi) % (
+                        2.0 * _np.pi) - _np.pi
+                    n_arc = max(int(abs(delta) * R_eff / 0.08), 6)
+                    for kk in range(1, n_arc):
+                        ang = ang_in + delta * kk / n_arc
+                        out.append(center + R_eff * _np.array(
+                            [_np.cos(ang), _np.sin(ang)]))
+            prev_pt = p_out
+        if _np.linalg.norm(xy[-1] - prev_pt) > 1e-6:
+            out.append(xy[-1].copy())
+        return _np.asarray(out, dtype=_np.float64)
+
+    def _build_smooth_path(self):
+        """Catmull-Rom 样条过航点 → 均匀弧长采样 + 数值曲率/速度剖面。
+
+        Catmull-Rom：三次 Hermite 插值，**严格经过每个航点**（判点 0.2m
+        半径保证），C1 连续平滑转弯；实现简单无几何 bug（替代圆弧/切角，
+        2026-08-06 圆弧两个几何 bug 导致绕圈/变长/外偏 0.5m 已弃用）。
+        速度剖面：数值曲率 κ=|dθ/ds| 平滑后 v=min(v_max, √(a_lat/κ))，
+        曲率 clamp（R_min=0.8m → v_min≈2.2m/s）防过冲造成过慢。
+        """
+        wp = self.wp
+        n = len(wp)
+        res = self.path_res
+        n_per = int(os.environ.get("S10_GLOBAL_NPER_SEG", "24"))
+        xy = self._stair_corridor_xy(wp[:, :2])
+        # v830: 贴线圆弧圆角（默认开；S10_CORNER_FILLET=0 回退 Catmull-Rom）
+        if os.environ.get("S10_CORNER_FILLET", "1") != "0":
+            raw = self._fillet_corner_path(xy)
+        else:
+            raw = self._catmull_rom_path(xy, n_per)
 
         # 赛车线圆弧切弯（2026-08-07，用户"参考 MPPI 赛车/摩托"）：
         # 对每个转角>阈值的航点，把前后各 cut_len 内的样条替换为与
