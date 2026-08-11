@@ -338,7 +338,11 @@ class VMCController:
             # 实测；下压保持贴地牵引，抬升由 CPG 抬轮负责（USC 贴面滚上）。
             _imp_w = (1.0 - _zk * _sl)
             _dz_h = pz_des - p[2]
-            if _zm9 > 0.0 and _dz_h > 0.0:
+            # v774: S10_VMC_WBC_ONESIDED=0 恢复双侧（贴面爬升路线测试——
+            # 轮压棱面时有接触可借力，双侧拉高+面摩擦=爬升；无接触时
+            # 会被吸抬悬空，故默认仍单侧）。
+            if (float(os.environ.get("S10_VMC_WBC_ONESIDED", "1")) == "1"
+                    and _zm9 > 0.0 and _dz_h > 0.0):
                 fw[2] += _imp_w * (-self.kd_h * float(wheel_vel[leg, 2]))
             else:
                 fw[2] += _imp_w * (
@@ -377,9 +381,17 @@ class VMCController:
                 # 后腿 +1.16->+0.5(-0.66)，符号按腿分
                 _q1_tgt = self.pose_target[b + 1] - _sl * 0.66 * _qs
                 _q2_tgt = self.pose_target[b + 2] + _sl * 0.42
-            t_hipy += (self.kp_pose * (_q1_tgt - q1)
+            # v773: 楼梯区抬轮腿（sl>0.3）姿态 PD 软增益——满增益 kp=80 的
+            # 抬轮力(~880N) 超过后轮支撑力(~530N)，把 body 顶起全轮悬空
+            # 卡死实测；软增益让抬轮温和，后轮压住 body，轮缓慢抬起。
+            _kpp = self.kp_pose
+            if (_zm9 > 0.0 and _sl > 0.3
+                    and float(os.environ.get(
+                        "S10_VMC_WBC_SOFT_LIFT", "0.0")) > 0.0):
+                _kpp *= float(os.environ.get("S10_VMC_WBC_SOFT_LIFT", "0.35"))
+            t_hipy += (_kpp * (_q1_tgt - q1)
                        - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b + 1]]))
-            t_knee += (self.kp_pose * (_q2_tgt - q2)
+            t_knee += (_kpp * (_q2_tgt - q2)
                        - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b + 2]]))
 
             # v218f: hipx 由 wrench 侧向力接管；S10_VMC_HIPX_TORQUE=1 叠加姿态反馈
