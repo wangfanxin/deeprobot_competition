@@ -522,6 +522,28 @@ class AutoNavFollower:
                 or (d_wp < float(os.environ.get("S10_AUTO_WP_AIM", "2.5"))
                     and os.environ.get("S10_AUTO_WP_AIM_ON", "1") == "1")):
             target = wp_next
+            if self.mode != "STAIR":
+                # v886: 曲率连续混合——前视点权重随前方曲率增大（连续量，
+                # 非门控）：wp1 小弧少混合防过转，wp3 大弯满混合提前入弯，
+                # 消除过点 err 突跳。
+                _kfut = min(
+                    self._k_near + int(float(os.environ.get(
+                        "S10_AUTO_YAW_FF_DIST", "1.5")) / self.path_res),
+                    len(self.path_curv) - 1)
+                _kahead = float(self.path_curv[_kfut])
+                _lk_eff = float(np.clip(
+                    _lk * (1.0 + _kahead * float(os.environ.get(
+                        "S10_AUTO_LOOKAHEAD_CURVE_K", "2.0"))),
+                    _lk, float(os.environ.get(
+                        "S10_AUTO_LOOKAHEAD_MAX", "3.2"))))
+                _s_t2 = min(self._s_cur + _lk_eff, self.path_total)
+                if next_idx < len(self.path_wp_s):
+                    _s_t2 = min(
+                        _s_t2, float(self.path_wp_s[next_idx]) + 0.8)
+                _pp2 = self._path_point_at(_s_t2)
+                _w_p = float(np.clip((abs(_kahead) - 0.20) / 0.35, 0.0, 1.0))
+                target = ((1.0 - _w_p) * wp_next[:2]
+                          + _w_p * np.asarray(_pp2)[:2])
         else:
             # v267: 已越过航点（passed）或未接近 → 一律瞄**路径前视点**
             # ——修复"passed 后瞄身后当前航点→err 饱和振荡→漂西卡脊"
