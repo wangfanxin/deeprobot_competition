@@ -1099,11 +1099,12 @@ class AutoNavFollower:
                 if best is None or sc > best[0]:
                     best = (sc, T)
             return best[1] if best else None
-        # 4) 定点迭代：wp 为弧段角中点
+        # 4) 几步优化（用户：不追求完美，连续平滑即可）：
+        #    圆心绕 wp 小步旋转，使 (wp-c) 方向逼近弧段（Tin→Tout 短弧）中点；
+        #    每步 ≤0.2 rad，最多 20 步。连续性/相切由短弧+外公切线保证。
         Tin = _np.zeros((n, 2))
         Tout = _np.zeros((n, 2))
-        for it in range(300):
-            # 计算切点
+        for it in range(20):
             Tin[0] = xy[0].copy()
             for i in range(n - 1):
                 et = ext_tangent(cen[i], R[i], cen[i + 1], R[i + 1],
@@ -1112,31 +1113,25 @@ class AutoNavFollower:
                     Tout[i] = et[1]
                     Tin[i + 1] = et[2]
             Tout[-1] = xy[-1].copy()
-            # 阻尼坐标下降：wp 的角位置向弧段中点移动（每轮 0.5 步长）
             moved = 0.0
             for i in range(1, n - 1):
                 a_in = _np.arctan2(Tin[i, 1] - cen[i, 1], Tin[i, 0] - cen[i, 0])
                 a_out = _np.arctan2(Tout[i, 1] - cen[i, 1], Tout[i, 0] - cen[i, 0])
                 dlt = (a_out - a_in + _np.pi) % (2.0 * _np.pi) - _np.pi
-                a_wp = _np.arctan2(xy[i, 1] - cen[i, 1], xy[i, 0] - cen[i, 0])
-                d_wp = (a_wp - a_in + _np.pi) % (2.0 * _np.pi) - _np.pi
-                # 若 wp 不在 [a_in, a_out] 内，用短弧方向
-                if d_wp * dlt < 0:
-                    dlt = -dlt
-                    d_wp = (a_wp - a_in + _np.pi) % (2.0 * _np.pi) - _np.pi
                 if abs(dlt) < 1e-3:
                     continue
-                err = d_wp - dlt / 2.0
-                # 圆心绕 wp 旋转 err*0.5：c 的新方向角
+                a_mid = a_in + dlt / 2.0
+                a_wp = _np.arctan2(xy[i, 1] - cen[i, 1], xy[i, 0] - cen[i, 0])
+                err = (a_wp - a_mid + _np.pi) % (2.0 * _np.pi) - _np.pi
+                step = float(_np.clip(0.25 * err, -0.2, 0.2))
                 a_c = _np.arctan2(cen[i, 1] - xy[i, 1], cen[i, 0] - xy[i, 0])
-                a_c_new = a_c + 0.5 * err
                 new_c = xy[i] + R[i] * _np.array(
-                    [_np.cos(a_c_new), _np.sin(a_c_new)])
+                    [_np.cos(a_c + step), _np.sin(a_c + step)])
                 moved += float(_np.linalg.norm(new_c - cen[i]))
                 cen[i] = new_c
             if moved < 1e-4:
                 break
-        # 5) 重算切点并生成路径
+        # 5) 重算切点并生成路径（强制短弧，保证连续平滑）
         Tin[0] = xy[0].copy()
         for i in range(n - 1):
             et = ext_tangent(cen[i], R[i], cen[i + 1], R[i + 1],
@@ -1149,18 +1144,11 @@ class AutoNavFollower:
         out = [xy[0].copy()]
         prev = xy[0].copy()
         for i in range(n):
-            # 直线 prev→Tin[i]
             if _np.linalg.norm(Tin[i] - prev) > 1e-6:
                 out.append(Tin[i].copy())
-            # 弧 Tin→wp→Tout
             a_in = _np.arctan2(Tin[i, 1] - cen[i, 1], Tin[i, 0] - cen[i, 0])
             a_out = _np.arctan2(Tout[i, 1] - cen[i, 1], Tout[i, 0] - cen[i, 0])
             dlt = (a_out - a_in + _np.pi) % (2.0 * _np.pi) - _np.pi
-            # 方向：取含 wp 的弧
-            a_wp = _np.arctan2(xy[i, 1] - cen[i, 1], xy[i, 0] - cen[i, 0])
-            d_wp = (a_wp - a_in + _np.pi) % (2.0 * _np.pi) - _np.pi
-            if d_wp * dlt < 0:
-                dlt = -dlt
             npt = max(int(abs(dlt) * R[i] / 0.08), 6)
             for kk in range(1, npt + 1):
                 ang = a_in + dlt * kk / npt
