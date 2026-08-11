@@ -1113,6 +1113,17 @@ def main():
                     and _in_stairzone_now):
                 step_lift[:] = 0.0
                 stair_lift_flag = 1.0
+            # v813: 计算每轮爬升窗掩码（轮世界 y 与 riser y 距离）
+            _climb_mask = np.zeros(4)
+            if _in_stairzone_now and stair_world:
+                for _cl in range(4):
+                    _wy = float(wheel_xyz[_cl, 1])
+                    for (_rp, _tng, _sr, _dhv, _top) in stair_world:
+                        _dcl = float(np.dot(
+                            wheel_xyz[_cl, :2] - _rp, _tng))
+                        if -0.15 <= _dcl <= 0.05:
+                            _climb_mask[_cl] = 1.0
+                            break
             # v732: 楼梯区 body z 目标 = 轮下台面均值 + 站立高（随楼梯逐级升）
             _zd = 0.0
             if _in_stairzone_now:
@@ -1164,6 +1175,10 @@ def main():
                       lift_swing=_lsw,
                       stair_pose=_stair_pose,
                       z_des=_zd,
+                      # v813: 爬升窗掩码——每轮 y 在任一 riser 爬升窗
+                      # [y_r-0.15, y_r+0.05] 内=1（双侧沿面拉高）；台面=0
+                      # （单侧贴地抓地）
+                      climb_mask=_climb_mask,
                       place_z=place_z,
                       place_margin=float(os.environ.get(
                           'S10_STAIR_LIFT_MARGIN', '0.04')))

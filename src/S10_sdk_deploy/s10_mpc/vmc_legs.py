@@ -357,11 +357,16 @@ class VMCController:
             # 实测；下压保持贴地牵引，抬升由 CPG 抬轮负责（USC 贴面滚上）。
             _imp_w = (1.0 - _zk * _sl)
             _dz_h = pz_des - p[2]
-            # v774: S10_VMC_WBC_ONESIDED=0 恢复双侧（贴面爬升路线测试——
-            # 轮压棱面时有接触可借力，双侧拉高+面摩擦=爬升；无接触时
-            # 会被吸抬悬空，故默认仍单侧）。
-            if (float(os.environ.get("S10_VMC_WBC_ONESIDED", "1")) == "1"
-                    and _zm9 > 0.0 and _dz_h > 0.0):
+            # v813: 爬升窗双侧/台面单侧——轮在 riser 爬升窗内（climb_mask）
+            # 用双侧（沿面拉高+面摩擦=贴面爬升）；台面上单侧（只下压贴地
+            # 抓地，防吸抬悬空 fn=0 打滑）。默认 ONESIDED=1 时台面单侧、
+            # 爬升窗双侧（v790 双侧全开在台面吸抬、单侧全关拉不动面的
+            # 各自缺陷合并解决）。
+            _climb_l = np.asarray(cmd.get("climb_mask", np.zeros(4)))
+            _oneside_eff = (float(os.environ.get(
+                "S10_VMC_WBC_ONESIDED", "1")) == "1"
+                and float(_climb_l[leg]) < 0.5)
+            if _oneside_eff and _zm9 > 0.0 and _dz_h > 0.0:
                 fw[2] += _imp_w * (-self.kd_h * float(wheel_vel[leg, 2]))
             else:
                 fw[2] += _imp_w * (
