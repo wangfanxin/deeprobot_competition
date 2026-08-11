@@ -1161,6 +1161,23 @@ class AutoNavFollower:
         margin = float(os.environ.get("S10_STAIR_LIFT_MARGIN", "0.05"))
         y = np.asarray(y, dtype=np.float64)
         z = self.stair_terrain(y) + radius
+        # v790: 贴面爬升参考（S10_STAIR_REF_ARC=1）——轮心目标在棱前最后
+        # 轮半径 r 米内沿面线性爬升（0.081m 内升 h，轮贴垂直面滚上、腿随
+        # 目标伸长，USC/Go2-W 机制）；替代提前 0.14m ramp（过早抬升让轮
+        # 悬空失接触实测）。过棱后回台面+半径。
+        if os.environ.get("S10_STAIR_REF_ARC", "0") == "1":
+            radius = float(os.environ.get("S10_STAIR_R", "0.081"))
+            for k, (y_r, z_top) in enumerate(zip(rs, ts)):
+                z_bottom = (self.STAIR_GROUND if k == 0
+                            else float(ts[k - 1]))
+                h = z_top - z_bottom
+                if h <= radius:
+                    continue
+                d = y_r - y
+                mask = (d > 0.0) & (d <= radius)
+                z_climb = z_bottom + radius + h * (radius - d) / radius
+                z = np.where(mask, np.maximum(z, z_climb), z)
+            return z
         if os.environ.get("S10_STAIR_REF_STEP", "0") == "1":
             lead = float(os.environ.get("S10_STAIR_REF_LEAD", "0.20"))
             # v209: 只对高 riser（>S10_STAIR_REF_MINH，默认 0.09m）用满值——
