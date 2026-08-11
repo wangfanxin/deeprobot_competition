@@ -939,7 +939,7 @@ class AutoNavFollower:
             d_pt = (a_pt - a0p + _np.pi) % (2.0 * _np.pi) - _np.pi
             if sgn * d_pt < 0:
                 d_pt = -d_pt
-            return 1e-4 <= d_pt <= sw - 1e-4
+            return -0.3 <= d_pt <= sw + 0.3
 
         pieces = []
         for md in meta:
