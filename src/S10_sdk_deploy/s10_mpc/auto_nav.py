@@ -299,7 +299,34 @@ class AutoNavFollower:
             if abs(dlt) > _np.pi - 1e-3:
                 dlt = _np.sign(dlt) * (_np.pi - 1e-3)
             # 段间连接（切线链，不严格）：prev → S
+            # v876: inter-arc joint - straight if E->S already follows the
+            # shared tangent (no kink <5deg, keeps wp0-1 straight); else
+            # spline (C1) removes v850 kink (heading jump 15deg, vlim R~0.7).
+            # Arcs keep formula R.
             if _np.linalg.norm(S - prev) > 1e-6:
+                _dj = (S - prev) / float(_np.linalg.norm(S - prev))
+                _ut0 = segs[i - 1][0]
+                _angj = abs(float(_np.arctan2(
+                    _dj[0] * _ut0[1] - _dj[1] * _ut0[0],
+                    _dj[0] * _ut0[0] + _dj[1] * _ut0[1])))
+                if _angj < _np.radians(5.0):
+                    out.append(S.copy())
+                else:
+                    from scipy.interpolate import CubicSpline as _CS
+                    _ut = segs[i - 1][0]
+                    _len = float(_np.linalg.norm(S - prev))
+                    _csx = _CS(_np.array([0.0, _len]),
+                               _np.array([prev[0], S[0]]),
+                               bc_type=((1, float(_ut[0])), (1, float(_ut[0]))))
+                    _csy = _CS(_np.array([0.0, _len]),
+                               _np.array([prev[1], S[1]]),
+                               bc_type=((1, float(_ut[1])), (1, float(_ut[1]))))
+                    _nseg = max(int(_len / 0.08), 4)
+                    for _kk in range(1, _nseg + 1):
+                        _ss = _len * _kk / _nseg
+                        out.append(_np.array(
+                            [float(_csx(_ss)), float(_csy(_ss))]))
+            else:
                 out.append(S.copy())
             npt = max(int(abs(dlt) * r / 0.08), 6)
             for kk in range(1, npt + 1):
