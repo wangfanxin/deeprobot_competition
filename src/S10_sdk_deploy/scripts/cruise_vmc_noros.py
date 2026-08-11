@@ -130,6 +130,23 @@ def main():
                 fol.path_vlim[_lo:_hi], _rv)
         fol.ridge_s = [float(fol.path_cum[k]) for k in ridge_idx]
         print(f'[VMC] 预扫描横脊 {len(ridge_arcs)} 处', flush=True)
+        # v798: 下降沿限速（wp15→16 实测 0.35m 断崖 2m/s 前轮坠翻）——
+        # 上升沿已有 RIDGE_VX，下降沿（dh_s<-0.10）单独 S10_DROP_VX
+        # 提前 2.5m 压速，过崖 0.8m 恢复。
+        _dv = float(os.environ.get('S10_DROP_VX', '0.0'))
+        if _dv > 0.0:
+            # v798b: 下降沿用 1m 窗口累计下降（wp15→16 是渐变坡，单点
+            # dh<-0.1 检测不到；>0.15m/1m 视为危险下降）
+            _win1 = max(1, int(1.0 / fol.path_res))
+            _dh_win = hs[:len(hs) - _win1] - hs[_win1:]
+            _drop_idx = np.where((_dh_win > 0.15)
+                                 & (fol.path_cum[:len(_dh_win)] > skip_s))[0]
+            for _k in _drop_idx:
+                _lo = max(0, _k - int(2.5 / fol.path_res))
+                _hi = min(len(fol.path_vlim), _k + int(0.8 / fol.path_res))
+                fol.path_vlim[_lo:_hi] = np.minimum(
+                    fol.path_vlim[_lo:_hi], _dv)
+            print(f'[VMC] 预扫描下降沿 {len(_drop_idx)} 处 (DROP_VX={_dv})', flush=True)
     except Exception as e:
         print('[VMC] 横脊预扫描失败', e, flush=True)
     # v236: 台阶几何预扫描——wp6->7 楼梯区 riser 弧长表（已知地图，供
