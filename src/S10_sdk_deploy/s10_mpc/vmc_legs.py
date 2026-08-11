@@ -1189,8 +1189,12 @@ class CarVMC:
                 self._t_yaw_prev[leg] + _tslew * dt))
             self._t_yaw_prev[leg] = _ty
             t_yaw = _ty
-            t_wheel = (-(self.wheel_k * (v_ref - v_wheel))
-                       - self.wheel_d * wq + t_yaw)
+            # v865: vx wheel torque * ground_f - airborne wheels spin at full
+            # torque, touchdown yaw impact flips (wp1 om -4.63 measured).
+            _gf_w = float(getattr(self, "_ground_f", 1.0))
+            _gf_w = float(os.environ.get("S10_CAR_WHEEL_GF", str(_gf_w)))
+            t_wheel = ((-(self.wheel_k * (v_ref - v_wheel))
+                        - self.wheel_d * wq) * _gf_w + t_yaw)
             # v743: 直线全力/弯道按 err 收敛（提速）——旧版全程 μN·r≈3.4Nm
             # 直线加速到 vref=4 需 16Nm 被压死（各段实际≈vref 一半，实测
             # wp5→6 vlim3.0 实际1.34）。err 小（直线）给满轮矩，err 大
