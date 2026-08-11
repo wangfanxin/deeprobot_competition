@@ -479,6 +479,82 @@ class AutoNavFollower:
             out.append(xy[-1].copy())
         return _np.asarray(out, dtype=_np.float64)
 
+    def _bezier_corner_path(self, xy):
+        """v831: 三次贝塞尔过航点圆角——曲线精确穿过航点（t=0.5），
+        入口/出口与直线相切（C1），提前入弯距离 a=min(0.45·L, A_MAX)。
+
+        纯圆弧无法同时满足"过航点 + 与直线相切 + 大半径"（圆与直线相切
+        只交一点，而航点在直线上 → 相切圆弧过航点必须 R→0；v830 圆弧
+        只能离航点 R(sec(θ/2)−1)）。贝塞尔绕开：控制点 P1/P2 取
+        k=4/3·a，B(0.5) 恒等于航点；弯道半径由 a 决定（a 越大越圆）。
+        直线段保持精确直线。返回密集折线（后续统一弧长重采样）。
+        """
+        import numpy as _np
+        n = len(xy)
+        min_turn = float(os.environ.get("S10_CORNER_MIN_TURN", "0.25"))
+        a_max = float(os.environ.get("S10_CORNER_A_MAX", "4.0"))
+        fit = float(os.environ.get("S10_CORNER_FIT", "0.45"))
+        # 1) 每转角航点的入弯/出弯距离 a1/a2
+        params = []
+        for i in range(1, n - 1):
+            a = xy[i - 1]; b = xy[i]; c = xy[i + 1]
+            v1 = b - a; v2 = c - b
+            L1 = float(_np.linalg.norm(v1)); L2 = float(_np.linalg.norm(v2))
+            if L1 < 1e-6 or L2 < 1e-6:
+                continue
+            u1 = v1 / L1; u2 = v2 / L2
+            th = float(_np.arccos(_np.clip(_np.dot(u1, u2), -1.0, 1.0)))
+            if th < min_turn:
+                continue
+            a1 = min(L1 * fit, a_max)
+            a2 = min(L2 * fit, a_max)
+            if a1 < 0.1 or a2 < 0.1:
+                continue
+            params.append(dict(i=i, a1=a1, a2=a2, u1=u1, u2=u2))
+        # 2) 相邻弯不重叠（等比收缩）
+        for k in range(len(params) - 1):
+            i1 = params[k]["i"]; i2 = params[k + 1]["i"]
+            if i2 == i1 + 1:
+                L = float(_np.linalg.norm(xy[i2] - xy[i1]))
+                ssum = params[k]["a2"] + params[k + 1]["a1"]
+                if ssum > L * 0.92 and ssum > 1e-6:
+                    sc = L * 0.92 / ssum
+                    params[k]["a2"] *= sc
+                    params[k + 1]["a1"] *= sc
+        # 3) 构建：直线 → 贝塞尔（过航点）→ 直线
+        k1 = 4.0 / 3.0
+        out = [xy[0].copy()]
+        prev_pt = xy[0].copy()
+        pmap = {prm["i"]: prm for prm in params}
+        for i in range(1, n - 1):
+            prm = pmap.get(i)
+            if prm is None:
+                # 缓角航点：路径直穿
+                if _np.linalg.norm(xy[i] - prev_pt) > 1e-6:
+                    out.append(xy[i].copy())
+                prev_pt = xy[i].copy()
+                continue
+            b = xy[i]
+            P0 = b - prm["u1"] * prm["a1"]
+            P3 = b + prm["u2"] * prm["a2"]
+            P1 = P0 + prm["u1"] * (k1 * prm["a1"])
+            P2 = P3 - prm["u2"] * (k1 * prm["a2"])
+            if _np.linalg.norm(P0 - prev_pt) > 1e-6:
+                out.append(P0.copy())
+            est = 1.5 * (prm["a1"] + prm["a2"])
+            n_s = max(int(est / 0.08), 16)
+            for kk in range(1, n_s):
+                t = kk / n_s
+                mt = 1.0 - t
+                out.append(mt**3 * P0 + 3.0 * mt * mt * t * P1
+                           + 3.0 * mt * t * t * P2 + t**3 * P3)
+            # 精确落点：中间样本强制为航点（B(0.5)=b）
+            out[len(out) - n_s // 2] = b.copy()
+            prev_pt = P3
+        if _np.linalg.norm(xy[-1] - prev_pt) > 1e-6:
+            out.append(xy[-1].copy())
+        return _np.asarray(out, dtype=_np.float64)
+
     def _build_smooth_path(self):
         """Catmull-Rom 样条过航点 → 均匀弧长采样 + 数值曲率/速度剖面。
 
@@ -493,11 +569,14 @@ class AutoNavFollower:
         res = self.path_res
         n_per = int(os.environ.get("S10_GLOBAL_NPER_SEG", "24"))
         xy = self._stair_corridor_xy(wp[:, :2])
-        # v830: 贴线圆弧圆角（默认开；S10_CORNER_FILLET=0 回退 Catmull-Rom）
-        if os.environ.get("S10_CORNER_FILLET", "1") != "0":
+        # v831: 弯道模式 S10_CORNER_MODE: bezier(过航点,默认)/fillet(圆弧切弯,v830)/spline(旧样条)
+        _cmode = os.environ.get("S10_CORNER_MODE", "bezier")
+        if _cmode == "fillet":
             raw = self._fillet_corner_path(xy)
-        else:
+        elif _cmode == "spline":
             raw = self._catmull_rom_path(xy, n_per)
+        else:
+            raw = self._bezier_corner_path(xy)
 
         # 赛车线圆弧切弯（2026-08-07，用户"参考 MPPI 赛车/摩托"）：
         # 对每个转角>阈值的航点，把前后各 cut_len 内的样条替换为与
