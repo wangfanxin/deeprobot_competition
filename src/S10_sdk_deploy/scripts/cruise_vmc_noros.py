@@ -260,11 +260,26 @@ def main():
 
     # 站起
     t = 0.0
+    # v868: stand with CarVMC leg control - IK keeps wheels grounded,
+    # body reaches cruise height; fixed-joint PD left hipy forward (-0.07
+    # vs target -1.10) and body stuck at 0.24. Wheels locked (cmd vx=0).
+    t = 0.0
     while t < 0.5:
-        q = d.qpos[7:23].reshape(-1, 1)
-        dq = d.qvel[6:22].reshape(-1, 1)
-        tau = (80.0 * (STAND_TARGET.reshape(-1, 1) - q) - 8.0 * dq).flatten()
-        tau[WHEEL_Q_IDX] = -0.3 * dq[WHEEL_Q_IDX].flatten()
+        qpos_s = np.asarray(d.qpos, dtype=np.float64)
+        qvel_s = np.asarray(d.qvel, dtype=np.float64)
+        wheel_xyz_s = np.asarray([d.xpos[WHEEL_BODY[i]] for i in range(4)])
+        wheel_vel_s = np.asarray([d.cvel[WHEEL_BODY[i]][0:3] for i in range(4)])
+        terr_s = np.zeros(4)
+        for _li in range(4):
+            _g = np.array([-1], dtype=np.int32)
+            _dist = np.zeros(1); _nrm = np.zeros(3)
+            _hit = mujoco.mj_ray(
+                m, d, [wheel_xyz_s[_li, 0], wheel_xyz_s[_li, 1], 8.0],
+                [0, 0, -1], None, True, -1, _g, _nrm)
+            terr_s[_li] = (8.0 - _hit) if _hit > 0 else 0.0
+        cmd_s = dict(vx=0.0, omega=0.0, roll_tar=0.0, pitch_tar=0.0)
+        tau = vmc.compute_tau(qpos_s, qvel_s, wheel_xyz_s, wheel_vel_s,
+                              cmd_s, terr_s, DT)
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
         t += DT
@@ -1303,7 +1318,7 @@ def main():
             print(f'[VMC-T] t={t:.0f}s wp={next_idx} pos=({body_pos[0]:.1f},'
                   f'{body_pos[1]:.1f},{body_pos[2]:.2f}) yaw={yaw:.2f} vx_w={float(d.cvel[1][3]):.2f} '
                   f'roll={roll:.2f} cmd=({vx_c:.2f},{om_c:.2f}) '
-                  f'vref={v_ref:.2f} tau_max={np.abs(tau).max():.1f} '
+                  f'vref={v_ref:.2f} '
                   f'wz={np.round([d.xpos[WHEEL_BODY[i],2] for i in range(4)],2)} '
                   f'tauH={np.round(tau[[0,4,8,12]],0)} tauY={np.round(tau[[1,5,9,13]],0)} tauK={np.round(tau[[2,6,10,14]],0)} '
                   f'om={float(qvel[5]):.2f} tauW={np.round(tau[[3,7,11,15]],1)} '
