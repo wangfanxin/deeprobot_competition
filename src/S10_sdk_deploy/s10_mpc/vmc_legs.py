@@ -910,8 +910,11 @@ class CarVMC:
         if wheel_xyz is not None and terrain_h is not None:
             _lift_amt = float(np.mean(
                 wheel_xyz[:, 2] - (np.asarray(terrain_h) + self.fk.r)))
+            # v870: ground_f more sensitive (0.01m onset, 0.04m zero) - MU=0.8
+            # MPPI outputs bigger omega at startup; airborne 0.04m kept 60%
+            # differential and spun (om -4.16 flip). Cruise lift<0.01 unaffected.
             self._ground_f = float(np.clip(
-                1.0 - max(0.0, _lift_amt - 0.02) / 0.05, 0.0, 1.0))
+                1.0 - max(0.0, _lift_amt - 0.01) / 0.03, 0.0, 1.0))
         else:
             self._ground_f = 1.0
 
@@ -1147,8 +1150,15 @@ class CarVMC:
                 if _vr_abs < 2.5:
                     _om_ref2 = _om_ref * float(np.clip(
                         1.0 + _lowb * (2.5 - _vr_abs) / 2.5, 1.0, 4.0))
+            # v870: differential feedforward also scaled by _yv_scale (actual
+            # vx) - MU=0.8 MPPI outputs om 0.83 at startup vs 0.36's 0.22,
+            # unscaled FF spun (om -4.16 flip). Feedback already uses yv_scale.
+            # v870: differential FF scaled by _yv_scale (actual vx) - MU=0.8
+            # MPPI om 0.83 at startup spun (om -4.16). Use YAW_VX_GATE=2.0
+            # so corners (vx>=2) keep full differential, startup damped.
             v_ref = (self._vx_f
                      + side * _om_ref2 * _ysc * self._ground_f
+                     * getattr(self, "_yv_scale", 1.0)
                      * self.track_half)
             # v241/v242: yaw 摩擦前馈（RobuROC6 库仑摩擦补偿）——差速转向需
             # 先克服侧向滑移阻力才有 yaw 运动，纯误差反馈有死区滞后；按指令
