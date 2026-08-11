@@ -255,6 +255,8 @@ class AutoNavFollower:
         import numpy as _np
         n = len(xy)
         turn_in = float(os.environ.get("S10_BIARC_TURNIN", "5.0"))
+        # 用户 2026-08-11：最大转弯半径 3m（软约束，S10_CORNER_R_MAX）
+        r_cap = float(os.environ.get("S10_CORNER_R_MAX", "3.0"))
         # 1) 段方向 + 航点切线（内部=转角平分线，端点=段方向）
         segs = []
         for i in range(n - 1):
@@ -317,7 +319,8 @@ class AutoNavFollower:
                 if RA <= 1e-6 or RB <= 1e-6:
                     continue
                 sB = RB * thB
-                score = abs(sB - sB_tgt)
+                over = max(0.0, RA - r_cap) + max(0.0, RB - r_cap)
+                score = abs(sB - sB_tgt) + 4.0 * over
                 if best is None or score < best[0]:
                     best = (score, gamma, LA, LB, RA, RB)
             if best is None:
