@@ -535,6 +535,14 @@ class AutoNavFollower:
             _zm = float(os.environ.get("S10_ZONE_MARGIN", "1.0"))
             mask = (cum >= s0 - _zm) & (cum <= s1 + _zm)
             vlim[mask] = np.minimum(vlim[mask], v_zone)
+        # v794: 绕墙区限速（S10_WALL_VX，配合 S10_WALL_DETOUR_AMP）——
+        # wp11→12 绕墙后的急转 TURN_BRAKE 抓不到（转弯在墙区非航点角），
+        # 3.0m/s 转 yaw 振荡侧翻实测；墙区直接压速。
+        _wall_vx = float(os.environ.get("S10_WALL_VX", "0.0"))
+        if _wall_amp > 0.0 and _wall_vx > 0.0:
+            _mask = ((pts[:, 0] >= _wc - _wh) & (pts[:, 0] <= _wc + _wh)
+                     & (pts[:, 1] >= 40.5) & (pts[:, 1] <= 43.5))
+            vlim[_mask] = np.minimum(vlim[_mask], _wall_vx)
         self.path_vlim = vlim
         self.path_total = float(cum[-1])
         # 航点在平滑路径上的弧长（统一 pursuit 的 passed 判断标尺：
