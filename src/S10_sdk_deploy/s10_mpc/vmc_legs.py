@@ -513,14 +513,16 @@ class VMCController:
                 # v746: 直线全力/弯道收敛（同 CarVMC）——WBC 全程 μN·r
                 # 只有 1.7-3.4Nm，楼梯前推进力不足 fn 单轮卡死实测
                 _yerr = abs(float(cmd.get("yaw_err", 0.0)))
-                _w_f = float(np.clip(
-                    1.0 - _yerr / float(os.environ.get(
-                        "S10_VMC_WT_ERR_GATE", "0.4")), 0.0, 1.0))
-                _rd = float(cmd.get("ridge_dist", 99.0))
-                if _rd < float(os.environ.get(
-                        "S10_VMC_WT_RIDGE_D", "0.8")):
-                    _w_f = 0.0
-                _wt = float(np.clip(
+            # v869: wheel torque gain fused - err large -> friction cone;
+            # ridge near -> friction cone (continuous, S10_VMC_WT_RIDGE_D
+            # removed; ridge<0.5m fades to 0, restored by 0.8m).
+            _w_ge = float(np.clip(
+                1.0 - _yerr / float(os.environ.get(
+                    "S10_VMC_WT_ERR_GATE", "0.4")), 0.0, 1.0))
+            _rd = float(cmd.get("ridge_dist", 99.0))
+            _w_gr = float(np.clip((_rd - 0.5) / 0.3, 0.0, 1.0))
+            _w_f = _w_ge * _w_gr
+            _wt = float(np.clip(
                     _w_f * _wt_straight + (1.0 - _w_f) * _wt_curve,
                     -13.5, 13.5))
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -_wt, _wt))
@@ -918,8 +920,20 @@ class CarVMC:
         _asc = float(cmd.get("att_scale", 1.0))
         R = _asc * (self.kp_roll * (self._roll_f - body["roll"])
                     - self.kd_roll * roll_rate)
+        # v869: KD_PITCH split - base pitch damping + STARTUP anti-bounce
+        # (added when longitudinal accel large; global 35 made body stiff).
+        _kd_p_eff = self.kd_pitch
+        _bsp = float(os.environ.get("S10_CAR_KD_PITCH_STARTUP", "0.0"))
+        if _bsp > 0.0:
+            _bq = qpos[3:7]
+            _f2p = np.array([
+                1.0 - 2.0 * (_bq[2] ** 2 + _bq[3] ** 2),
+                2.0 * (_bq[1] * _bq[2] + _bq[0] * _bq[3]), 0.0])
+            _vx_bp = float(np.dot(qvel[0:3], _f2p))
+            _ax_b = abs(self._vx_f - _vx_bp) / 0.15  # CarVMC vx LP ~0.1s
+            _kd_p_eff += _bsp * float(np.clip(_ax_b / 5.0, 0.0, 1.0))
         P = _asc * (self.kp_pitch * (self._pitch_f - body["pitch"])
-                    - self.kd_pitch * pitch_rate)
+                    - _kd_p_eff * pitch_rate)
         _tmax = float(os.environ.get("S10_CAR_ATT_TMAX", "40.0"))
         # v748: 大 lean-in 压弯时 roll 分配在减载方向钳到
         # S10_CAR_ROLL_MAX_DL×mg/4（默认 0 = 跳过 = v746 恒等 ±_tmax；
@@ -1060,10 +1074,6 @@ class CarVMC:
             # 左转(om_f>0)时左腿 hipx 外展/右腿内收，产生 yaw 力矩
             # （用户"扭肩/胯转向"思路，突破轮差速 0.65rad/s 物理上限）
             _q0_tgt = self.pose_target[b] - 0.12 * self.roll_sign[leg] * self._roll_f
-            _hipx_yaw = float(os.environ.get("S10_CAR_HIPX_YAW", "0.0"))
-            if _hipx_yaw > 0.0:
-                _ys = -1.0 if leg in (0, 1) else 1.0   # 前腿/后腿
-                _q0_tgt += _hipx_yaw * _ys * self._om_f * self._ground_f
             t_hipx = (self.kp_leg * (_q0_tgt - q0)
                       - self.kd_leg * float(qvel[6 + LEG_QV_LEG[b]]))
 
@@ -1104,6 +1114,8 @@ class CarVMC:
             # **反馈**（_k_sm），差速前馈（_om_ref）保留航向保持能力。
             # 默认 0 = v746 恒等；提速测试建议 S10_CAR_YAW_VX_GATE=2.0
             # （vx<2.0 时滑模反馈线性降至 50%）。
+            # v869: gate uses ACTUAL body forward speed (qvel projection),
+            # NOT _vx_f (low-passed cmd, useless at startup). Both gates same.
             _yvg = float(os.environ.get("S10_CAR_YAW_VX_GATE", "0.0"))
             self._yv_scale = 1.0
             if _yvg > 0.0:
@@ -1142,18 +1154,17 @@ class CarVMC:
             # 先克服侧向滑移阻力才有 yaw 运动，纯误差反馈有死区滞后；按指令
             # 方向给基础差速力矩。**默认 0**：v241 线性 FF 在导航指令突变时
             # 过驱动（wp1→2 振荡侧翻实测）；启用时加 0.15s 低通防瞬翻。
-            _kff = float(os.environ.get("S10_CAR_YAW_FF", "0.0"))
+            # v869: S10_CAR_YAW_FF env removed but friction feedforward kept
+            # at fixed 1.0 (was enabled=1.0 in test script; deleting it broke
+            # yaw response: startup spin + wp3->4 line loss). Fixed value,
+            # no longer tunable. _vspd kept for slew speed scaling.
+            _kff = 1.0
             if not hasattr(self, "_om_ff_lp"):
                 self._om_ff_lp = 0.0
             self._om_ff_lp += (self._om_f - self._om_ff_lp) * min(1.0, dt / 0.15)
-            # v797: yaw FF 速度渐隐——低速满（巡航弯响应快），高速渐隐
-            # （高速 FF 滞后引发极限环，wp9→10 实测）；连续量无门控。
             _vspd = float(abs(getattr(self, "_vx_f", 0.0)))
             _kff *= float(np.clip(
                 1.0 - max(0.0, _vspd - 3.0) / 2.0, 0.0, 1.0))
-            # v289: 滑模式 yaw（RobuROC6）——饱和 tanh 误差项（小误差高增益
-            # 快收敛、大误差饱和不过冲，替代纯比例→消除低速极限环）+
-            # 库仑摩擦前馈（克服低速静摩擦）+ 高频阻尼。
             _k_sm = float(os.environ.get("S10_CAR_YAW_K_SM", "30.0"))
             # v750: 滑模 yaw 力矩随实际速度缩放（低速抑制正反馈自旋，
             # 下限 0.5 保留基本航向保持——0.15 时起步 yaw 漂 57° 转不回）
@@ -1201,9 +1212,8 @@ class CarVMC:
             # （弯道）收敛到摩擦锥 μN·r。
             _fz_load = max(F, 0.5 * self.m * self.g / 4.0)
             _mu_w = float(os.environ.get("S10_VMC_WHEEL_MU", "0.9"))
-            _ytm = float(os.environ.get("S10_VMC_YAW_TMAX", "0.0"))
-            _wt_curve = (_mu_w * _fz_load * self.fk.r
-                         + _ytm * min(abs(self._om_f) / 0.5, 1.0))
+            # v869: deleted S10_VMC_YAW_TMAX (default 0)
+            _wt_curve = _mu_w * _fz_load * self.fk.r
             _wt_straight = float(os.environ.get("S10_VMC_WHEEL_TMAX", "13.5"))
             # 门限用导航偏航误差 err（比 om_cmd 更本质）——S弯 om 交替快、
             # om 门限来不及切换实测翻车；err 大立即收敛。
