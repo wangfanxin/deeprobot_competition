@@ -101,7 +101,9 @@ def main():
         # 0.125m 单阶，排除首级小台阶与后轮爬小台阶干扰
         if float(os.environ.get('S10_STAIR_BENCH', '0')) > 0:
             # 出生在走廊 x=-14.5（wp6.x=-15.12 在 x=-15.0 柱子上）
-            d.qpos[0:3] = [-14.50, 38.00, 0.78]
+            # y=37.90：前轮在 step1 台面(y38.13)且离 riser2 立面 0.21m，
+            # 站起地形跟随不会顶到立面（y38.0 实测翘头 pitch-1.0）
+            d.qpos[0:3] = [-14.50, 37.90, 0.78]
             _iy = 1.5708
         elif _sbk <= 0.0:
             d.qpos[0:3] = [float(wp[START_WP][0]),
@@ -127,6 +129,17 @@ def main():
         vyaw_max=float(os.environ.get('S10_AUTO_VYAW_MAX', '3.5')),
         yaw_gain=float(os.environ.get('S10_AUTO_YAW_GAIN', '2.5')),
         lookahead=float(os.environ.get('S10_AUTO_LOOKAHEAD', '1.5')))
+    # v893: 台架出生在 y37.9(s≈5.5)，s_cur 默认 0 会让导航目标指向身后
+    # 狗掉头南跑——初始化 s_cur 到出生点最近路径弧长
+    if float(os.environ.get('S10_STAIR_BENCH', '0')) > 0:
+        try:
+            _sb_p = int(np.argmin(np.sum(
+                (fol.path_pts[:, :2] - d.qpos[0:2]) ** 2, axis=1)))
+            fol._s_cur = float(fol.path_cum[_sb_p])
+            fol._k_near = _sb_p
+            print('[VMC] BENCH s_cur 初始化到 %.2f' % fol._s_cur, flush=True)
+        except Exception as e:
+            print('[VMC] BENCH s_cur 初始化失败', e, flush=True)
 
     # v826e: ref_path 导出（S10_REF_DUMP 路径；S10_DUMP_ONLY=1 只出图
     # 不仿真——每次测试前先生成 ref_path 供用户审阅质量）
