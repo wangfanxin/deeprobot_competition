@@ -14,6 +14,7 @@ DBaS 自适应 σ：成本高时放大采样噪声，低时收敛。
 MPPI 摩擦锥 + 长视界，导航不再做动力学限速）；20Hz 调用（CPU）。
 """
 import numpy as np
+import os as _os
 from s10_mpc.vmc_legs import car_omega_limit
 
 
