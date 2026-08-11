@@ -433,18 +433,7 @@ class AutoNavFollower:
             _ys[:_h] = pts[:_h, 1]; _ys[-_h:] = pts[-_h:, 1]
             pts = np.column_stack([_xs, _ys, pts[:, 2]])
 
-        # v672: 已知障碍绕行——wp11→12 有 3.55m 高墙（x∈[-7,-5], y∈[42.1,42.3]），
-        # 路径直线擦墙翻车（v671）；墙区路径点向北平滑偏移 0.6m（raised cosine）
-        _wall_amp = float(os.environ.get("S10_WALL_DETOUR_AMP", "0.0"))
-        if _wall_amp > 0.0:
-            _wc, _wh = -6.0, 2.5
-            _mask = ((pts[:, 0] >= _wc - _wh) & (pts[:, 0] <= _wc + _wh)
-                     & (pts[:, 1] >= 40.5) & (pts[:, 1] <= 43.5))
-            for _i in np.where(_mask)[0]:
-                _w = float(np.cos(
-                    np.pi * (pts[_i, 0] - _wc) / (2.0 * _wh)) ** 2)
-                pts[_i, 1] += _wall_amp * _w
-
+        # v825: 删除墙绕行（用户指令：AutoNavFollower 只看 xy 平滑轨迹）
         # 弧长累积 + 数值曲率（|dθ/ds|，平滑 5 点）
         seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
         cum = np.concatenate([[0.0], np.cumsum(seg)])
@@ -513,16 +502,7 @@ class AutoNavFollower:
                     vlim[k:_end9] = np.minimum(vlim[k:_end9], _vl9)
                 else:
                     vlim[k] = min(vlim[k], _vl9)
-        _sw = int(float(os.environ.get("S10_CURVE_SWING_WINDOW", "4.0")) / res)
-        _swing_v = float(os.environ.get("S10_CURVE_SWING_VX", "1.8"))
-        for k in range(len(vlim)):
-            if abs(float(self.path_curv_signed[k])) <= 0.1:
-                continue
-            lo = max(0, k - _sw)
-            hi = min(len(vlim), k + _sw + 1)
-            if (float(np.max(self.path_curv_signed[lo:hi])) > 0.25
-                    and float(np.min(self.path_curv_signed[lo:hi])) < -0.25):
-                vlim[k] = min(vlim[k], _swing_v)
+        # v825: 删除 S 弯抑制（用户指令；交 MPPI）
         # 台阶/楼梯段限速映射到路径弧长（按航点区间）
         for i in range(n - 1):
             if not (self.step_zone[i] or self.stair_zone[i]):
@@ -535,25 +515,12 @@ class AutoNavFollower:
             _zm = float(os.environ.get("S10_ZONE_MARGIN", "1.0"))
             mask = (cum >= s0 - _zm) & (cum <= s1 + _zm)
             vlim[mask] = np.minimum(vlim[mask], v_zone)
-        # v794: 绕墙区限速（S10_WALL_VX，配合 S10_WALL_DETOUR_AMP）——
-        # wp11→12 绕墙后的急转 TURN_BRAKE 抓不到（转弯在墙区非航点角），
-        # 3.0m/s 转 yaw 振荡侧翻实测；墙区直接压速。
-        _wall_vx = float(os.environ.get("S10_WALL_VX", "0.0"))
-        if _wall_amp > 0.0 and _wall_vx > 0.0:
-            _mask = ((pts[:, 0] >= _wc - _wh) & (pts[:, 0] <= _wc + _wh)
-                     & (pts[:, 1] >= 40.5) & (pts[:, 1] <= 43.5))
-            vlim[_mask] = np.minimum(vlim[_mask], _wall_vx)
+        # v825: 删除墙区限速（用户指令）
         self.path_vlim = vlim
         self.path_total = float(cum[-1])
         # 航点在平滑路径上的弧长（统一 pursuit 的 passed 判断标尺：
         # 平滑弧长 ≠ 折线弧长，直接用折线 cum_len 会错位 10m+）
-        # v562: 固定起步限速（vmax 提高到 5-6 时起步门架+坡在 >4m/s 翻车
-        # 实测；起步段 wp0→1 恒限 min(vmax, S10_AUTO_START_VX 默认 4.0)）。
-        _sv = float(os.environ.get("S10_AUTO_START_VX", "4.0"))
-        if _sv > 0.0:
-            _s_end = float(self.cum_len[1])
-            vlim[cum <= _s_end] = np.minimum(
-                vlim[cum <= _s_end], _sv)
+        # v825: 删除起步限速（用户指令）
         self.path_wp_s = np.array([
             float(self.path_cum[np.argmin(np.sum(
                 (self.path_pts[:, :2] - self.wp[i, :2]) ** 2, axis=1))])
@@ -569,16 +536,7 @@ class AutoNavFollower:
             "S10_AUTO_LOOKAHEAD_STAIR"
             if self.mode == "STAIR" else "S10_AUTO_LOOKAHEAD",
             str(self.lookahead)))
-        # v796: 墙区前视收紧（位置直判，同限速）——wp11→12 绕墙时 3.5m
-        # 前视让机器人抄近道切墙东端（走南侧捷径），墙角 120° 急转打转
-        # 侧翻实测；墙区前视收到 2.0m 贴绕行线走北侧。
-        if (float(os.environ.get("S10_WALL_DETOUR_AMP", "0.0")) > 0.0
-                and float(os.environ.get("S10_WALL_VX", "0.0")) > 0.0):
-            _wc, _wh = -6.0, 2.5
-            if (_wc - _wh <= robot_xy[0] <= _wc + _wh
-                    and 40.5 <= robot_xy[1] <= 43.5):
-                _lk = min(_lk, float(os.environ.get(
-                    "S10_WALL_LOOKAHEAD", "2.0")))
+        # v825: 删除墙区前视收紧（用户指令）
         _yg = float(os.environ.get(
             "S10_AUTO_YAW_GAIN_STAIR"
             if self.mode == "STAIR" else "S10_AUTO_YAW_GAIN",
@@ -668,14 +626,8 @@ class AutoNavFollower:
         for j in range(self.speed_window):
             if next_idx + j < len(self.wp):
                 z_ahead = max(z_ahead, float(self.wp[next_idx + j, 2]))
-        # 高架限速系数（S10_AUTO_ELEV_K，默认 0.6）：z 越高限速越狠。
-        # 实测 z=3.75 平直高架段 elev_f=0.33 → 巡航 ~1.3 m/s，对竞速明显过慢
-        # （用户反馈"限速不合理"）；0.6 为保守默认，全圈验证后可调小。
-        # 原 1.5 把坡上速度压到 2.1 m/s，动量不足过 0.13m 台阶——
-        # 复现证明 4.5 m/s 可连续过台阶（台阶区由 step_zone 单独限速）。
-        elev_k = float(os.environ.get("S10_AUTO_ELEV_K", "0.6"))
-        elev_factor = 1.0 / (1.0 + elev_k * max(0.0, z_ahead - 0.4))
-        vyaw_max_eff = _vm * elev_factor
+        # v825: 删除高架限速（用户指令）
+        vyaw_max_eff = _vm
         # 弯道 yaw 前馈（2026-08-07 赛用摩托/MPPI 参考）：按前视点路径
         # 曲率给出恒定转向率 v/R，err 只做修正——弯道内不靠纯反馈追线，
         # 避免 err 突跳触发龟速。vx 在函数末尾才算出，用上一拍指令
@@ -789,50 +741,9 @@ class AutoNavFollower:
         _k_far = min(_k_near_v + int(_vll / self.path_res),
                      len(self.path_vlim) - 1)
         v_lim = float(np.min(self.path_vlim[_k_near_v:_k_far + 1]))
-        # v669: 急弯航点入弯减速——航点转角 >60° 且距航点 3m 内压速到 1.5
-        # （替代曲线延伸：延伸会扰动 wp0→5 速度剖面致 wp5→6 翻车 v656-667；
-        # 急弯航点 wp12 等单点 κ 尖峰在弯心释放加速翻车，需提前压速）
-        if next_idx < len(self.wp) - 1:
-            _a1 = float(np.arctan2(wp_next[1] - robot_xy[1],
-                                   wp_next[0] - robot_xy[0]))
-            _wp2 = self.wp[next_idx + 1]
-            _a2 = float(np.arctan2(_wp2[1] - wp_next[1],
-                                   _wp2[0] - wp_next[0]))
-            _da = abs(float(np.arctan2(np.sin(_a2 - _a1),
-                                       np.cos(_a2 - _a1))))
-            if _da > float(os.environ.get(
-                    "S10_AUTO_TURN_BRAKE_ANG", "1.40")) and d_wp < float(
-                        os.environ.get("S10_AUTO_TURN_BRAKE_DIST", "3.0")):
-                v_lim = min(v_lim, float(os.environ.get(
-                    "S10_AUTO_TURN_BRAKE_VX", "2.0")))
-        # v340: 导航不做 err 分级限速——速度只由几何任务剖面决定。
-        # v387（用户：先防错过航点打转，速度>1m/s 即可）：到达制动——
-        # 接近航点且偏航大时速度压到 1.2（差速转向轨道半径 r=v/om 缩小，
-        # 防过冲后绕航点打转）。连续量，温和版不拖慢正常航段。
-        # v743: err 门控压速——发卡弯后 vlim 窗口已过弯心但 yaw 未转完
-        # （wp4→5 err=2.83 实测冲弯侧翻）。err>0.5 起线性压到弯速。
-        _err_gate = float(os.environ.get("S10_AUTO_ERR_VLIM_GATE", "0.5"))
-        _err_vx = float(os.environ.get("S10_AUTO_ERR_VLIM_VX", "1.5"))
-        if abs(err) > _err_gate:
-            _ef = float(np.clip((abs(err) - _err_gate) / 0.8, 0.0, 1.0))
-            # v758: 出弯加速——仅当已越过当前航点（弯已出，s_cur 过 wp 弧长
-            # 0.6m 内线性起效）且 yaw 朝目标快速收敛时，按收敛强度削弱压速。
-            # v758b: 弯中提速会破坏走线致整段变慢（wp0→6 33.0s vs 31.2s
-            # 实测），恢复必须以"过航点=出弯"为前提，连续量非门控。
-            _passed_wp = float(np.clip(
-                (self._s_cur - self.path_wp_s[next_idx]) / 0.6 + 0.5,
-                0.0, 1.0))
-            _conv = float(np.clip(
-                np.sign(err) * yaw_rate / float(os.environ.get(
-                    "S10_AUTO_ERR_CONV_RATE", "1.0")), 0.0, 1.0))
-            _ef *= (1.0 - 0.7 * _conv * _passed_wp)
-            v_lim = min(v_lim, _err_vx + (v_lim - _err_vx) * (1.0 - _ef))
-        v_lim = min(v_lim, self.max_speed * elev_factor)
-        if (d_wp < float(os.environ.get("S10_AUTO_ARRIVE_DIST", "1.2"))
-                and abs(err) > float(os.environ.get(
-                    "S10_AUTO_ARRIVE_ERR", "0.8"))):
-            v_lim = min(v_lim, float(os.environ.get(
-                "S10_AUTO_ARRIVE_VX", "1.2")))
+        # v825: 删除航点转角制动（用户指令；交 MPPI）
+        # v825: 删除 err 门控/出弯加速/到达制动/高架限速（用户指令，
+        # 速度由曲率剖面+MPPI 决定）
         # 台阶区限速（航点 z 兜底，已知地图，无感知滞后）：目标航段是陡升
         # 且机器人已越过前一航点（或接近该航点）→ 限速 step_vx。
         # 解决 §3.7 翻车机制：3.1 m/s 撞 0.125m riser → 前轮爬升翘头后仰翻。
@@ -847,31 +758,7 @@ class AutoNavFollower:
                 v_lim = min(v_lim, self.stair_vx)
             else:
                 v_lim = min(v_lim, self.step_vx)
-        # v219h/v444: 横脊前加速窗口——0.125m 脊 > 轮半径(0.081)，低速轮子
-        # 无法滚上，需动量冲过（S10_RIDGE_MIN_VX>0 启用）。只对**平脊**
-        # （当前航段非 step_zone）生效——wp5→6 是 0.125m 缓升台阶区，需
-        # 慢速爬（step_vx），动量提升会让它 2.5m/s 撞面卡死（v443 实测
-        # 卡在 y=28.2 前轮抬升 17s）。
-        _rmin = float(os.environ.get("S10_RIDGE_MIN_VX", "0.0"))
-        _in_step = (next_idx >= 2 and next_idx - 1 < len(self.step_zone)
-                    and bool(self.step_zone[next_idx - 1]))
-        if _rmin > 0.0 and not _in_step:
-            for _rs in getattr(self, "ridge_s", []):
-                _ds = _rs - self._s_cur
-                if 0.0 <= _ds <= float(os.environ.get(
-                        "S10_RIDGE_MIN_DIST", "1.5")):
-                    v_lim = max(v_lim, _rmin)
-                    break
-        # v795: 墙区位置直判限速（放在最后生效，不被 RIDGE_MIN_VX 动量提升
-        # 覆盖——wp11→12 机器人抄近道绕墙东端时 s_cur 投影失效、ridge 提升
-        # max(vlim,3.0) 把墙区 1.5 顶掉实测）；按真实位置判墙区。
-        if (float(os.environ.get("S10_WALL_DETOUR_AMP", "0.0")) > 0.0):
-            _wvx = float(os.environ.get("S10_WALL_VX", "0.0"))
-            if _wvx > 0.0:
-                _wc, _wh = -6.0, 2.5
-                if (_wc - _wh <= robot_xy[0] <= _wc + _wh
-                        and 40.5 <= robot_xy[1] <= 43.5):
-                    v_lim = min(v_lim, _wvx)
+        # v825: 删除横脊动量提升/墙区位置直判限速（用户指令；交 MPPI）
         # 速度限幅：避免转向后瞬间 0→4 m/s 的侧向冲击（侧翻风险）
         dv = self.max_accel * (_dt_nav)   # 每拍增量按真实更新周期缩放（v442）
         vx = float(np.clip(v_lim,
@@ -887,7 +774,7 @@ class AutoNavFollower:
                 print(f"[NAVDBG] next={next_idx} vx={vx:.2f} vlim={v_lim:.2f} "
                       f"err={err:.2f} d_wp={d_wp:.2f} mode={self.mode} "
                       f"cte={getattr(self,'_last_cte',0.0):.2f} "
-                      f"ff={yaw_ff:.2f} elev={elev_factor:.2f}", flush=True)
+                      f"ff={yaw_ff:.2f}", flush=True)
         return vx, vyaw
 
     def speed_limit_at(self, idx):
