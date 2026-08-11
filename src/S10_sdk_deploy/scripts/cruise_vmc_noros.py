@@ -324,6 +324,8 @@ def main():
     _mp_tot = 0.0
     _mp_max = 0.0
     _last_freq_t = -1e9
+    # 主循环仿真起点（站起阶段 t=0→2 不计入）
+    _freq_sim0 = t
     while t < MAX_SIM:
         qpos = np.asarray(d.qpos, dtype=np.float64)
         qvel = np.asarray(d.qvel, dtype=np.float64)
@@ -1254,11 +1256,13 @@ def main():
             _last_freq_t = t
             _wnow = time.perf_counter()
             _wel = _wnow - _freq_t0
+            _tsim = t - _freq_sim0
             print('[FREQ] t=%.1fs | ref_path: %d次 %.1fHz avg=%.2fms max=%.2fms | '
-                  'MPPI: %d次 avg=%.2fms max=%.2fms | 控制环 %.0fHz %.2fms/step'
-                  % (t, _rp_cnt, _rp_cnt / max(t, 1e-9),
+                  'MPPI: %d次 %.1fHz avg=%.2fms max=%.2fms | 控制环 %.0fHz %.2fms/step'
+                  % (t, _rp_cnt, _rp_cnt / max(_tsim, 1e-9),
                      1e3 * _rp_tot / max(_rp_cnt, 1), 1e3 * _rp_max,
-                     _mp_cnt, 1e3 * _mp_tot / max(_mp_cnt, 1), 1e3 * _mp_max,
+                     _mp_cnt, _mp_cnt / max(_tsim, 1e-9),
+                     1e3 * _mp_tot / max(_mp_cnt, 1), 1e3 * _mp_max,
                      _ctrl_cnt / max(_wel, 1e-9), 1e3 * _wel / max(_ctrl_cnt, 1)),
                 flush=True)
         # v782: 密集轨迹记录（S10_TRAJ_DENSE=1 时每个控制周期 5ms 记录，
