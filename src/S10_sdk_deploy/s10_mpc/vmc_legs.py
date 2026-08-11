@@ -388,6 +388,15 @@ class VMCController:
                 # 后腿 +1.16->+0.5(-0.66)，符号按腿分
                 _q1_tgt = self.pose_target[b + 1] - _sl * 0.66 * _qs
                 _q2_tgt = self.pose_target[b + 2] + _sl * 0.42
+            # v789: v752 USC 关键姿态——前轴近棱时前腿膝伸直(z_down 增)+
+            # 后腿膝屈(z_down 减)，几何 body 前倾让前轮接触台面。
+            _sp3 = float(cmd.get("stair_pose", 0.0))
+            if _sp3 > 0.0 and float(cmd.get("z_min", 0.0)) > 0.0:
+                _spamp = float(os.environ.get("S10_VMC_STAIR_POSE", "1.0"))
+                if _qs < 0.0:
+                    _q2_tgt += _sp3 * -0.45 * _spamp
+                else:
+                    _q2_tgt += _sp3 * -0.22 * _spamp
             # v773: 楼梯区抬轮腿（sl>0.3）姿态 PD 软增益——满增益 kp=80 的
             # 抬轮力(~880N) 超过后轮支撑力(~530N)，把 body 顶起全轮悬空
             # 卡死实测；软增益让抬轮温和，后轮压住 body，轮缓慢抬起。

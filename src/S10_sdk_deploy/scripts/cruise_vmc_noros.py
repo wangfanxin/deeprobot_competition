@@ -506,6 +506,22 @@ def main():
         # 巡航横脊抬轮/后轮跟抬/地形 bump 全部禁用（防前后轴双抬+塌身）。
         _in_stairzone_now = (next_idx >= 2 and next_idx - 1 < len(fol.stair_zone)
                              and bool(fol.stair_zone[next_idx - 1]))
+        # v789: 恢复 v752 USC 关键姿态插值因子——前轴到最近棱距离连续量：
+        # 棱前 0.05m 起、过棱 0.05m 满。驱动前腿伸长+后腿收缩（几何前倾），
+        # 前轮贴台面接触（当年卡"接触但不推进"，轮矩钳制已 v755b 解锁）。
+        _stair_pose = 0.0
+        if _in_stairzone_now and stair_world:
+            _fwdsp = np.array([d.xmat[1][0], d.xmat[1][3]])
+            _fnsp = float(np.hypot(_fwdsp[0], _fwdsp[1])) + 1e-9
+            _fxsp, _fysp = _fwdsp[0] / _fnsp, _fwdsp[1] / _fnsp
+            _axsp = body_pos[:2] + np.array([_fxsp * 0.228, _fysp * 0.228])
+            _dsp_min = 1e9
+            for (_rp, _tng, _sr, _dhv, _top) in stair_world:
+                _dsp = float(np.dot(_axsp - _rp, _tng))
+                if abs(_dsp) < abs(_dsp_min):
+                    _dsp_min = _dsp
+            _stair_pose = float(np.clip(
+                (_dsp_min + 0.05) / 0.10, 0.0, 1.0))
         # v264: 连续前瞻抬轮（无门控）——按"轴前 0.35m 地形高 - 轴下地形高"
         # 连续抬放（比例 clamp 0.15m）。纯几何连续量，替代 hop 冲量/横脊
         # 步态等离散触发（用户原则：除 cruise/stair 切换外无门控）。
@@ -810,12 +826,17 @@ def main():
             # 反向——车身**抬头**匹配台阶坡度，抬升前髋让抬轮过 0.13m 棱
             # （低头会把前髋压低，前轮差 1cm 卡棱实测）。
             if _in_stairzone_now:
-                # v765: 楼梯 pitch 常开（不再以 step_lift 门控）——NO_LIFT
-                # 纯滚动时 step_lift=0 会掉回巡航坡公式；几何抬头匹配台阶
-                # 坡度保前轮压面/后轮贴地推，上限 0.30。
+                # v789: 楼梯 pitch 可切换——默认 1=抬头（v765，前轮压面/
+                # 后轮贴地推）；2=低头（v752，配 stair_pose 前腿伸长，前轮
+                # 贴台面、后轮地面推，当年实测前轮接触台面）。
                 _pfr = float(np.mean(terr[0:2])); _prr = float(np.mean(terr[2:4]))
-                pitch_tar = float(np.clip(
-                    np.arctan2(_pfr - _prr, 0.456), 0.10, 0.30))
+                if float(os.environ.get("S10_STAIR_PITCH_MODE", "1")) == "2":
+                    pitch_tar = float(np.clip(
+                        np.arctan2(_prr - _pfr, 0.456) + _stair_pose * 0.08,
+                        -0.30, 0.08))
+                else:
+                    pitch_tar = float(np.clip(
+                        np.arctan2(_pfr - _prr, 0.456), 0.10, 0.30))
             else:
                 pitch_tar = float(np.clip(
                     np.arctan2(h_a - h_b, 1.2), -0.35, 0.35))
@@ -1097,6 +1118,7 @@ def main():
                                         and float(np.max(step_lift)) > 0.3)
                                 else 0.0),
                       lift_swing=_lsw,
+                      stair_pose=_stair_pose,
                       z_des=_zd,
                       place_z=place_z,
                       place_margin=float(os.environ.get(
