@@ -424,7 +424,7 @@ class AutoNavFollower:
         # 限速（v=sqrt(a/κ)）。阈值 S10_CURVE_VLIM_K 默认 0.2、横向加速度
         # S10_CURVE_VLIM_A 默认 8.0（wp1 κ0.5 → 4.0m/s）。
         _cvk = float(os.environ.get("S10_CURVE_VLIM_K", "0.2"))
-        _cva = float(os.environ.get("S10_CURVE_VLIM_A", "4.5"))
+        _cva = float(os.environ.get("S10_CURVE_VLIM_A", "4.3"))
         _cext = float(os.environ.get("S10_CURVE_EXTEND", "0.0"))
         for k in range(len(vlim)):
             _kk = abs(float(self.path_curv_signed[k]))
