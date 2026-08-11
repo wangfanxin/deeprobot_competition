@@ -1002,6 +1002,174 @@ class AutoNavFollower:
             out.extend(pc[start:].tolist())
         return _np.asarray(out, dtype=_np.float64)
 
+    def _wp_arc_path(self, xy):
+        """v838: 用户思路（2026-08-11）——每个 wp 一个最大转弯圆。
+
+        - 半径 R_i = min(5, min(相邻两段长)/2)（端点取单侧一半）：圆大小
+          受相邻段长约束，保证相邻圆弧不重叠、公切线（直线）存在。
+        - 圆心 c_i 分布在以 wp[i] 为圆心、半径 R_i 的圆上（自由角 α_i）。
+        - 连接：相邻两圆用**外公切线（直线）**相连；起点 wp0/终点 wpn-1
+          用点到圆切线连接。路径：当前点 → wp_next → 后续 wp（航点全部
+          在圆弧上）。
+        - 圆心 α_i 用定点迭代确定：令 wp[i] 为弧段（T_in→T_out）的角
+          中点，即 (wp[i]-c_i) 方向 = 弧段角平分方向。
+        """
+        import numpy as _np
+        n = len(xy)
+        if n < 3:
+            return _np.asarray(xy, dtype=_np.float64)
+        r_cap = float(os.environ.get("S10_CORNER_R_MAX", "5.0"))
+        # 1) 段长与半径
+        segs = []
+        for i in range(n - 1):
+            d = xy[i + 1] - xy[i]
+            L = float(_np.linalg.norm(d))
+            if L < 1e-9:
+                return None
+            segs.append((d / L, L))
+        R = _np.zeros(n)
+        for i in range(n):
+            if i == 0:
+                R[i] = min(r_cap, segs[0][1] / 2.0)
+            elif i == n - 1:
+                R[i] = min(r_cap, segs[-1][1] / 2.0)
+            else:
+                R[i] = min(r_cap, min(segs[i - 1][1], segs[i][1]) / 2.0)
+        # 2) 圆心初始化：wp + R*rot(转角平分线, s*90)
+        cen = _np.zeros((n, 2))
+        for i in range(n):
+            if i == 0:
+                u0 = segs[0][0]
+                cen[i] = xy[i] + R[i] * _np.array([-u0[1], u0[0]])
+            elif i == n - 1:
+                uL = segs[-1][0]
+                cen[i] = xy[i] + R[i] * _np.array([-uL[1], uL[0]])
+            else:
+                u1, u2 = segs[i - 1][0], segs[i][0]
+                cr = float(u1[0] * u2[1] - u1[1] * u2[0])
+                s = 1.0 if cr >= 0 else -1.0
+                b = u1 + u2
+                b = b / _np.linalg.norm(b)
+                cen[i] = xy[i] + R[i] * _np.array([-s * b[1], s * b[0]])
+        # 3) 外公切线 / 点到圆切线
+        def ext_tangent(c1, r1, c2, r2, travel):
+            d = c2 - c1
+            dist = float(_np.linalg.norm(d))
+            if dist < 1e-9:
+                return []
+            u = d / dist
+            v = _np.array([-u[1], u[0]])
+            cos_t = (r1 - r2) / dist
+            if abs(cos_t) > 1.0:
+                return []
+            sin_t = float(_np.sqrt(max(1.0 - cos_t * cos_t, 0.0)))
+            sols = []
+            for sgn in (1.0, -1.0):
+                nv = cos_t * u + sgn * sin_t * v
+                T1 = c1 + r1 * nv
+                T2 = c2 + r2 * nv
+                td = T2 - T1
+                if float(_np.linalg.norm(td)) < 1e-6:
+                    continue
+                sols.append((T1, T2, td / _np.linalg.norm(td)))
+            best = None
+            for T1, T2, td in sols:
+                sc = float(_np.dot(td, travel))
+                if best is None or sc > best[0]:
+                    best = (sc, T1, T2)
+            return best
+        def point_tangent(P, c, r, travel):
+            d = P - c
+            dist = float(_np.linalg.norm(d))
+            if dist <= r:
+                return None
+            dh = d / dist
+            ang = float(_np.arccos(r / dist))
+            best = None
+            for sgn in (1.0, -1.0):
+                tdir = _np.array([
+                    _np.cos(ang) * dh[0] - sgn * _np.sin(ang) * dh[1],
+                    _np.cos(ang) * dh[1] + sgn * _np.sin(ang) * dh[0]])
+                T = c + r * tdir
+                td = T - P
+                ln = float(_np.linalg.norm(td))
+                if ln < 1e-6:
+                    continue
+                sc = float(_np.dot(td / ln, travel))
+                if best is None or sc > best[0]:
+                    best = (sc, T)
+            return best[1] if best else None
+        # 4) 定点迭代：wp 为弧段角中点
+        Tin = _np.zeros((n, 2))
+        Tout = _np.zeros((n, 2))
+        for it in range(300):
+            # 计算切点
+            Tin[0] = xy[0].copy()
+            for i in range(n - 1):
+                et = ext_tangent(cen[i], R[i], cen[i + 1], R[i + 1],
+                                 xy[i + 1] - xy[i])
+                if et is not None:
+                    Tout[i] = et[1]
+                    Tin[i + 1] = et[2]
+            Tout[-1] = xy[-1].copy()
+            # 阻尼坐标下降：wp 的角位置向弧段中点移动（每轮 0.5 步长）
+            moved = 0.0
+            for i in range(1, n - 1):
+                a_in = _np.arctan2(Tin[i, 1] - cen[i, 1], Tin[i, 0] - cen[i, 0])
+                a_out = _np.arctan2(Tout[i, 1] - cen[i, 1], Tout[i, 0] - cen[i, 0])
+                dlt = (a_out - a_in + _np.pi) % (2.0 * _np.pi) - _np.pi
+                a_wp = _np.arctan2(xy[i, 1] - cen[i, 1], xy[i, 0] - cen[i, 0])
+                d_wp = (a_wp - a_in + _np.pi) % (2.0 * _np.pi) - _np.pi
+                # 若 wp 不在 [a_in, a_out] 内，用短弧方向
+                if d_wp * dlt < 0:
+                    dlt = -dlt
+                    d_wp = (a_wp - a_in + _np.pi) % (2.0 * _np.pi) - _np.pi
+                if abs(dlt) < 1e-3:
+                    continue
+                err = d_wp - dlt / 2.0
+                # 圆心绕 wp 旋转 err*0.5：c 的新方向角
+                a_c = _np.arctan2(cen[i, 1] - xy[i, 1], cen[i, 0] - xy[i, 0])
+                a_c_new = a_c + 0.5 * err
+                new_c = xy[i] + R[i] * _np.array(
+                    [_np.cos(a_c_new), _np.sin(a_c_new)])
+                moved += float(_np.linalg.norm(new_c - cen[i]))
+                cen[i] = new_c
+            if moved < 1e-4:
+                break
+        # 5) 重算切点并生成路径
+        Tin[0] = xy[0].copy()
+        for i in range(n - 1):
+            et = ext_tangent(cen[i], R[i], cen[i + 1], R[i + 1],
+                             xy[i + 1] - xy[i])
+            if et is None:
+                return None
+            Tout[i] = et[1]
+            Tin[i + 1] = et[2]
+        Tout[-1] = xy[-1].copy()
+        out = [xy[0].copy()]
+        prev = xy[0].copy()
+        for i in range(n):
+            # 直线 prev→Tin[i]
+            if _np.linalg.norm(Tin[i] - prev) > 1e-6:
+                out.append(Tin[i].copy())
+            # 弧 Tin→wp→Tout
+            a_in = _np.arctan2(Tin[i, 1] - cen[i, 1], Tin[i, 0] - cen[i, 0])
+            a_out = _np.arctan2(Tout[i, 1] - cen[i, 1], Tout[i, 0] - cen[i, 0])
+            dlt = (a_out - a_in + _np.pi) % (2.0 * _np.pi) - _np.pi
+            # 方向：取含 wp 的弧
+            a_wp = _np.arctan2(xy[i, 1] - cen[i, 1], xy[i, 0] - cen[i, 0])
+            d_wp = (a_wp - a_in + _np.pi) % (2.0 * _np.pi) - _np.pi
+            if d_wp * dlt < 0:
+                dlt = -dlt
+            npt = max(int(abs(dlt) * R[i] / 0.08), 6)
+            for kk in range(1, npt + 1):
+                ang = a_in + dlt * kk / npt
+                out.append(cen[i] + R[i] * _np.array([_np.cos(ang), _np.sin(ang)]))
+            prev = Tout[i]
+        if _np.linalg.norm(xy[-1] - prev) > 1e-6:
+            out.append(xy[-1].copy())
+        return _np.asarray(out, dtype=_np.float64)
+
     def _build_smooth_path(self):
         """Catmull-Rom 样条过航点 → 均匀弧长采样 + 数值曲率/速度剖面。
 
@@ -1021,7 +1189,9 @@ class AutoNavFollower:
         # 剩余区域直线保速度；bezier/biarc/spline 为备选
         _cmode = os.environ.get("S10_CORNER_MODE", "biarc")
         # v835: 默认 arcstraight=直线+过弯大圆弧(弧严格过航点,外公切线连接)
-        if _cmode == "arcstraight":
+        if _cmode == "wp_arc":
+            raw = self._wp_arc_path(xy)
+        elif _cmode == "arcstraight":
             raw = self._arc_straight_path(xy)
         elif _cmode == "bezier":
             raw = self._bezier_corner_path(xy)
