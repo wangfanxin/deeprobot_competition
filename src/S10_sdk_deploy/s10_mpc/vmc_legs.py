@@ -203,15 +203,8 @@ class VMCController:
         # 随前轮落脚点地形升高、把后轮悬空失牵引（wt=1.7Nm 空转实测）；
         # 前髋高度由 pitch（轴距坡度）+ 前轮落脚点地形负责。
         _zm9 = float(cmd.get("z_min", 0.0))
-        # v751: 楼梯区 z_des 用**前轮地形主导**（S10_VMC_WBC_Z_MAX=1）——
-        # 原 v598 min(terr) 保后轮牵引但 body 太低→前轮在台面时前腿被迫
-        # 全屈(0.06m)无力承重→前轮悬空死锁实测。max(terr) 让 body 随前轮
-        # 台面升高，前腿伸展承重+后腿伸长贴地，body 自然前倾(USC 姿态)。
-        _zmax9 = float(os.environ.get("S10_VMC_WBC_Z_MAX", "0"))
-        _zt9 = (float(np.max(terrain_h)) if _zmax9 > 0.0
-                else float(np.min(terrain_h))) if _zm9 > 0.0 else float(
-                    np.mean(terrain_h))
-        z_des = _zt9 + float(os.environ.get(
+        z_des = float((np.min(terrain_h) if _zm9 > 0.0
+                       else np.mean(terrain_h))) + float(os.environ.get(
             "S10_VMC_Z_DES_OFFSET", "0.205"))
         # v502: 抬轮时身体同步抬高（S10_VMC_WBC_LIFT_BODY）——楼梯抬轮姿态
         # 只抬轮不抬身，车身塌 0.6m 拖地卡死（v500 实测）。z_des 随平均
@@ -220,21 +213,14 @@ class VMCController:
         if _lb > 0.0:
             z_des += _lb * float(np.mean(
                 np.asarray(cmd.get("step_lift", np.zeros(4)))))
-        # v605: 楼梯区（z_min>0）全局 z 抬升强度可调——原完全取消导致
-        # body 不随台阶升高、前轮伸长时后轮翘起悬空（fn 单点卡死实测）。
-        # S10_VMC_WBC_Z_KP>0 时恢复温和抬升（z_des=最低地形+offset，body
-        # 随台阶逐级升高，4 轮保持接触）。
-        _zwk = float(os.environ.get("S10_VMC_WBC_Z_KP", "0.0"))
-        if _zm9 > 0.0 and _zwk > 0.0:
-            _z_eff = z_des - body["pos"][2]
-            _z_eff = float(np.clip(_z_eff, -0.08, 0.12))
-            _z_force = _zwk * _z_eff
-        else:
-            _z_force = (0.0 if _zm9 > 0.0
-                        else self.kp_z * (z_des - body["pos"][2]))
+        # v605: 楼梯区（z_min>0）**取消全局 z 抬升**——只留重力+阻尼，车高
+        # 由逐轮落脚点阻抗决定（前轮=台面高、后轮=地面高，姿态自然形成），
+        # 后轮保载荷不失牵引（此前 kp_z 抬车身→后轮 wt=1.7Nm 空转实测）。
         F_des_w = np.array([
             0.0, 0.0,
-            self.m * self.g + _z_force
+            self.m * self.g
+            + (0.0 if _zm9 > 0.0
+               else self.kp_z * (z_des - body["pos"][2]))
             - self.kd_z * float(qvel[2])])
         # v218k: 驱动 25% 由腿分担（轮为主），全轮在坡上推力不足
         _dsh = float(os.environ.get("S10_VMC_DRIVE_SHARE", "0.25"))
@@ -284,31 +270,11 @@ class VMCController:
             A6[0:3, leg * 3:leg * 3 + 3] = -np.eye(3)
             A6[3:6, leg * 3:leg * 3 + 3] = -S
         try:
-            # v754: stair_pose 激活时禁用全局 wrench（历史建议"逐轮独立
-            # 腿长位置控制"）——wrench 力控与 stair_pose 位置目标打架，
-            # 反复导致前/后轮悬空卡死（80+ 组实验）；位置 PD + 地形阻抗
-            # 单独控制 4 腿，轮子驱动推进。
-            if (float(cmd.get("stair_pose", 0.0)) > 0.0
-                    and float(cmd.get("z_min", 0.0)) > 0.0
-                    and float(os.environ.get("S10_VMC_WBC_NOWRENCH", "0")) > 0):
-                f_legs = np.zeros(12)
-            else:
-                f_legs = np.linalg.pinv(A6) @ W
+            f_legs = np.linalg.pinv(A6) @ W
             # 抬轮腿力归零（未参与求解）
             for leg in range(4):
                 if leg not in _support_legs:
                     f_legs[leg * 3:leg * 3 + 3] = 0.0
-            # v750: WBC 支撑腿垂直力保底（默认 0 关=v746 恒等）——楼梯区
-            # 前轮上台面后 T_pitch/Fx 会把后轮（支撑腿）减载到悬空
-            # （fn=[-16,-20,0,0] 无推卡死实测）；保底覆盖后轮载荷防悬空。
-            if _zm9 > 0.0:
-                _zmin = float(os.environ.get("S10_VMC_WBC_Z_MIN", "0.0"))
-                if _zmin > 0.0:
-                    _base_w = self.m * self.g / 4.0
-                    for _l2 in range(4):
-                        if float(_sl_all[_l2]) <= 0.3:
-                            f_legs[_l2 * 3 + 2] = max(
-                                f_legs[_l2 * 3 + 2], _zmin * _base_w)
             _qpm = os.environ.get("S10_VMC_QP", "0")
             if _qpm == "1":
                 f_legs = self._solve_wbc_qp(A6, W, f_legs)
@@ -326,17 +292,6 @@ class VMCController:
             J = self.fk.jac(q1, q2)
             # WBC 腿力（世界系）+ 地形阻抗（垂直跟随，横脊预抬经 terrain_h）
             fw = f_legs[leg * 3:leg * 3 + 3].copy()
-            if (float(os.environ.get('S10_WBC_FW_DEBUG', '0')) > 0
-                    and float(cmd.get('z_min', 0.0)) > 0.0
-                    and leg == 0):
-                self._fwdbg_n = getattr(self, '_fwdbg_n', 0) + 1
-                if self._fwdbg_n % 100 == 1:
-                    print('[FWDBG] leg=%d fw=%s wz=%.3f terr=%.3f '
-                          'pitch=%.2f f_legs=%s'
-                          % (leg, np.round(fw, 1),
-                             float(wheel_xyz[leg, 2]),
-                             float(terrain_h[leg]), body['pitch'],
-                             np.round(f_legs, 1)), flush=True)
             p = wheel_xyz[leg]
             # v220k: 单步跨越——迈步腿完全卸载（wrench 支撑力+地形阻抗都清零，
             # 否则 J^T 支撑力矩抵消 knee 位置 PD，轮抬不起来）
@@ -354,11 +309,7 @@ class VMCController:
             _hop = cmd.get("hop")
             if _hop is not None:
                 fw[2] += float(_hop[leg])
-            # v750: WBC 压轮（S10_VMC_WBC_PRESS，默认 0）——楼梯区前轮距
-            # 台面 0.003m 悬空不接触→body 后倾死锁实测；压 0.008m 让轮
-            # 贴台面（mujoco 接触间隙），与 CarVMC wheel_press 同理。
-            pz_des = float(terrain_h[leg]) + self.fk.r - float(
-                os.environ.get("S10_VMC_WBC_PRESS", "0.0"))
+            pz_des = float(terrain_h[leg]) + self.fk.r
             # v602: 抬轮时地形阻抗**不随 sl 衰减**（(1-zk*sl)）——楼梯落脚点
             # 把前轮地形置为台面高，阻抗把轮拉到 pz_des=台面+r，轮直接
             # 落上台面（原 (1-sl) 在 sl=1 时清零，抬轮只剩姿态 PD、够不到）
@@ -398,20 +349,6 @@ class VMCController:
                 # 后腿 +1.16->+0.5(-0.66)，符号按腿分
                 _q1_tgt = self.pose_target[b + 1] - _sl * 0.66 * _qs
                 _q2_tgt = self.pose_target[b + 2] + _sl * 0.42
-                # v752: USC 关键姿态——前轴近棱时前腿伸长(膝直)+后腿
-                # 收缩(膝屈)，几何 body 前倾让前轮接触台面（三执行层
-                # 卡死根因：body 后倾→前轮悬空）。幅度 S10_VMC_STAIR_POSE。
-                _sp3 = float(cmd.get("stair_pose", 0.0))
-                if _sp3 > 0.0 and float(cmd.get("z_min", 0.0)) > 0.0:
-                    _spamp = float(os.environ.get(
-                        "S10_VMC_STAIR_POSE", "1.0"))
-                    if _qs < 0.0:   # 前腿：膝屈(z_down 减)——前轮在台面(高)
-                        # 腿应收短保 body 水平 4 轮接触（伸太长 body 低头
-                        # 后轮翘起悬空无推实测）；q2 2.30→2.55 → z_down 0.12
-                        _q2_tgt += _sp3 * 0.25 * _spamp
-                    else:           # 后腿：膝伸直(z_down 增)——后轮地面(低)
-                        # 腿伸长贴地；q2 -2.30→-2.08 → z_down 0.18
-                        _q2_tgt += _sp3 * -0.22 * _spamp
             t_hipy += (self.kp_pose * (_q1_tgt - q1)
                        - self.kd_pose * float(qvel[6 + LEG_QV_LEG[b + 1]]))
             t_knee += (self.kp_pose * (_q2_tgt - q2)
