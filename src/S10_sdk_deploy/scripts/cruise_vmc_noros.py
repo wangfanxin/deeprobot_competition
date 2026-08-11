@@ -1002,7 +1002,7 @@ def main():
                                 _ftop_past = float(_top2)
                             if _d2 < 0.0 and -_d2 < _fd_next:
                                 _fd_next = -_d2
-                        if (_ftop_past > 0.0 and _fdf8_pos < 0.40
+                        if (_ftop_past > 0.0 and _fdf8_pos < 0.80
                                 and _fd_next > 0.20):
                             _pzr = _ftop_past + 0.081 - 0.03
                             _fl_rel = float(np.clip(
