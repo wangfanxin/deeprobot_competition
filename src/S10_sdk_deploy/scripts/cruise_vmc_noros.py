@@ -77,10 +77,16 @@ def main():
         # v775: 起始高度用航点地形+站立高（原硬编码 1.2 在高架平台
         # terr=1.166 处压腿不稳，起步即侧翻）
         _sz0 = float(wp[START_WP][2]) + 0.21
-        # v808(回退): 沿路径放置会让 wp8 起点变差(回归 wp8→9 慢 2s)——
-        # 保留 y-1m 原行为，wp16 的 180° 掉头是测试装置伪影(真实赛道从
-        # wp15 西侧接近，无掉头)
-        d.qpos[0:3] = [wp[START_WP][0], wp[START_WP][1] - 1.0, _sz0]
+        # v818: 起始回退距离可调（S10_START_BACK，默认 1.0=原 y-1m 行为；
+        # 设 0 从航点本身起跑跳过该点到达验证后续段——wp16 从西侧接近，
+        # y-1m 放南侧导致 180° 掉头伪影实测）
+        _sbk = float(os.environ.get('S10_START_BACK', '1.0'))
+        if _sbk <= 0.0:
+            d.qpos[0:3] = [float(wp[START_WP][0]),
+                           float(wp[START_WP][1]), _sz0]
+        else:
+            d.qpos[0:3] = [float(wp[START_WP][0]),
+                           float(wp[START_WP][1]) - _sbk, _sz0]
         if START_WP + 1 < len(wp):
             _dy = wp[START_WP + 1][1] - wp[START_WP][1]
             _dx = wp[START_WP + 1][0] - wp[START_WP][0]
@@ -1124,6 +1130,14 @@ def main():
                         if -0.15 <= _dcl <= 0.05:
                             _climb_mask[_cl] = 1.0
                             break
+            # v817: 楼梯区 WBC z_des 偏移蹲低（S10_VMC_Z_DES_OFFSET 动态覆盖）
+            # ——body 蹲低让后轮压实得牵引（前轮抬升时后轮悬空 fn 弱无推力
+            # 死锁实测；WBC 每拍读该 env，CarVMC 不读故此前 DROP_SQUAT 无效）
+            _sqt = float(os.environ.get('S10_STAIR_SQUAT', '0.0'))
+            if _in_stairzone_now and _sqt > 0.0:
+                os.environ['S10_VMC_Z_DES_OFFSET'] = str(0.205 - _sqt)
+            elif _sqt > 0.0:
+                os.environ['S10_VMC_Z_DES_OFFSET'] = '0.205'
             # v732: 楼梯区 body z 目标 = 轮下台面均值 + 站立高（随楼梯逐级升）
             _zd = 0.0
             if _in_stairzone_now:

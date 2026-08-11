@@ -650,6 +650,12 @@ class AutoNavFollower:
                     _lk, float(os.environ.get(
                         "S10_AUTO_LOOKAHEAD_MAX", "3.2"))))
                 s_target = min(self._s_cur + _lk_eff, self.path_total)
+                # v819: pursuit 目标不跨段（封顶到下一航点+0.8m）——wp16→17
+                # 段长 2.5m < 前视 3.5m，目标越段看到 wp17→18 东向弯导致
+                # 提前东转绕 wp17 打转翻车实测；段内跟线保 0.3m 判点。
+                if next_idx < len(self.path_wp_s):
+                    s_target = min(
+                        s_target, float(self.path_wp_s[next_idx]) + 0.8)
                 target = self._path_point_at(s_target)
         err = np.arctan2(target[1] - robot_xy[1],
                          target[0] - robot_xy[0]) - yaw
