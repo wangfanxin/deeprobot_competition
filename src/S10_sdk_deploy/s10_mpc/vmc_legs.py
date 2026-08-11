@@ -247,7 +247,7 @@ class VMCController:
             F_des_w[2] -= _zlc * float(np.mean(
                 np.asarray(cmd.get("step_lift", np.zeros(4)))))
         # v218k: 驱动 25% 由腿分担（轮为主），全轮在坡上推力不足
-        _dsh = float(os.environ.get("S10_VMC_DRIVE_SHARE", "0.25"))
+        _dsh = float(os.environ.get("S10_VMC_DRIVE_SHARE", "0.0"))
         fwd = body["R"] @ np.array([1.0, 0.0, 0.0])
         F_des_w += fwd * (_dsh * self.m
                           * (self._vx_f - body["vx"]) / self.tau_v)
@@ -440,7 +440,7 @@ class VMCController:
             # v218f: hipx 由 wrench 侧向力接管；S10_VMC_HIPX_TORQUE=1 叠加姿态反馈
             side = -1.0 if leg in (0, 2) else 1.0
             wd_side = side   # v218j: 左转(ω>0)需左轮慢右轮快
-            if os.environ.get("S10_VMC_HIPX_TORQUE", "1") == "1":
+            if os.environ.get("S10_VMC_HIPX_TORQUE", "0") == "1":
                 t_hipx += side * (self.kp_roll * (self._roll_f - body["roll"])
                                   - self.kd_roll * roll_rate)
 

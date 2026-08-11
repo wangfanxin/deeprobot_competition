@@ -802,7 +802,7 @@ def main():
         _body_lift = 0.0
         # v221g: 物理检测——前轮前方 0.5m 真实地形高差>0.07 才抬身
         # （s_cur 投影推进快于物理位置，弯道出口误触发侧翻实测）
-        if os.environ.get('S10_VMC_BODY_LIFT', '1') == '1':
+        if os.environ.get('S10_VMC_BODY_LIFT', '0') == '1':
             _fwd3 = np.array([d.xmat[1][0], d.xmat[1][3]])
             _fl = float(np.hypot(_fwd3[0], _fwd3[1])) + 1e-9
             _fx3, _fy3 = _fwd3[0] / _fl, _fwd3[1] / _fl
@@ -811,7 +811,7 @@ def main():
             _h0 = terrain_at(body_pos[0], body_pos[1])
             if _hf - _h0 > 0.07:
                 _body_lift = 1.0
-        _lift = float(os.environ.get('S10_VMC_RIDGE_LIFT', '0.12'))
+        _lift = float(os.environ.get('S10_VMC_RIDGE_LIFT', '0.0'))
         _lift_act = 0.0
         if not _in_stairzone_now:
             for (sr, dhv) in ridge_arcs:
@@ -980,7 +980,7 @@ def main():
                     _ha = terrain_at(_w0[0] + _fx * 0.80,
                                      _w0[1] + _fy * 0.80)
                     if _ha - _h0 > 0.08:
-                        hop[_wi] = float(os.environ.get('S10_VMC_HOP_F', '180.0'))
+                        hop[_wi] = float(os.environ.get('S10_VMC_HOP_F', '0.0'))
             # v449: 软抬轮技能划分——台阶/陡升段（step_zone/stair_zone，
             # 永久升面需保牵引爬升）用 S10_VMC_LIFT_F_SCALE_STEP；巡航平脊
             # 段（z 不升，动量冲过）用默认 1.0 硬抬轮。地形属性=技能切换。
