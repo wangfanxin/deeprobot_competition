@@ -314,6 +314,16 @@ def main():
     _over_run = 0.0
     _over_worst = 0.0
     _over_total = 0.0
+    # v839: ref_path 生成频率实测
+    _freq_t0 = time.perf_counter()
+    _ctrl_cnt = 0
+    _rp_cnt = 0
+    _rp_tot = 0.0
+    _rp_max = 0.0
+    _mp_cnt = 0
+    _mp_tot = 0.0
+    _mp_max = 0.0
+    _last_freq_t = -1e9
     while t < MAX_SIM:
         qpos = np.asarray(d.qpos, dtype=np.float64)
         qvel = np.asarray(d.qvel, dtype=np.float64)
@@ -339,6 +349,7 @@ def main():
             'S10_NAV_HZ', '2')))))
         if int(t * 200) % _nav_period == 0 and (
                 dbg == 0 or t - last_log >= 0.05):
+            _rp_t0 = time.perf_counter()
             pos2 = body_pos[:2]
             # v462: 双模式判定（此前从未调用——STAIR 技能从不激活，wp6→7
             # 楼梯全程用巡航参数）
@@ -375,6 +386,10 @@ def main():
             _ref = np.array(_ref) if len(_ref) else np.array([[pos2[0], pos2[1], yaw]])
             st = np.array([pos2[0], pos2[1], yaw,
                            float(d.cvel[1][3]), float(d.cvel[1][4]), float(qvel[5])])
+            _rp_dt = time.perf_counter() - _rp_t0
+            _rp_cnt += 1
+            _rp_tot += _rp_dt
+            _rp_max = max(_rp_max, _rp_dt)
             if os.environ.get('S10_NAV_DEBUG', '0') == '1' and next_idx <= 6:
                 print('[NAV] t=%.1f pos=(%.2f,%.2f) yaw=%.2f err=%.2f '
                       'tgt=(%.2f,%.2f) s_cur=%.2f vyaw=%.2f cte=%.2f'
@@ -393,8 +408,13 @@ def main():
                 # ——纯路径跟踪会切内弯错过航点（wp1 最近 0.6m 实测）；导航的
                 # 瞄航点逻辑保证 0.3m 判点，MPPI 负责平滑 + 摩擦锥约束兜底。
                 _g_om = float(vyaw) if vyaw is not None else 0.0
+                _mp_t0 = time.perf_counter()
                 vx_c, om_c = mppi.plan(
                     st, _ref, v_ref, prev_u, guide_om=_g_om)
+                _mp_dt = time.perf_counter() - _mp_t0
+                _mp_cnt += 1
+                _mp_tot += _mp_dt
+                _mp_max = max(_mp_max, _mp_dt)
                 if (os.environ.get('S10_NAV_DEBUG', '0') == '1'
                         and next_idx <= 6):
                     print('[MPPI] g_om=%.2f out=(%.2f,%.2f) vref=%.2f'
@@ -1229,6 +1249,18 @@ def main():
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
         t += DT
+        _ctrl_cnt += 1
+        if t - _last_freq_t >= 2.0:
+            _last_freq_t = t
+            _wnow = time.perf_counter()
+            _wel = _wnow - _freq_t0
+            print('[FREQ] t=%.1fs | ref_path: %d次 %.1fHz avg=%.2fms max=%.2fms | '
+                  'MPPI: %d次 avg=%.2fms max=%.2fms | 控制环 %.0fHz %.2fms/step'
+                  % (t, _rp_cnt, _rp_cnt / max(t, 1e-9),
+                     1e3 * _rp_tot / max(_rp_cnt, 1), 1e3 * _rp_max,
+                     _mp_cnt, 1e3 * _mp_tot / max(_mp_cnt, 1), 1e3 * _mp_max,
+                     _ctrl_cnt / max(_wel, 1e-9), 1e3 * _wel / max(_ctrl_cnt, 1)),
+                flush=True)
         # v782: 密集轨迹记录（S10_TRAJ_DENSE=1 时每个控制周期 5ms 记录，
         # 供速度着色轨迹图；默认关保持原行为）
         if os.environ.get('S10_TRAJ_DENSE', '0') == '1':
