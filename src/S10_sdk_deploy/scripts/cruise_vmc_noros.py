@@ -146,9 +146,20 @@ def main():
                 _hi = min(len(fol.path_vlim), _k + int(0.8 / fol.path_res))
                 fol.path_vlim[_lo:_hi] = np.minimum(
                     fol.path_vlim[_lo:_hi], _dv)
-            print(f'[VMC] 预扫描下降沿 {len(_drop_idx)} 处 (DROP_VX={_dv})', flush=True)
+            # v801: 大下降(>0.25m/1m)记录世界坐标供位置直判减速
+            drop_world = []
+            _last_dw = -9.0
+            for _k in _drop_idx:
+                if _dh_win[_k] > 0.25 and fol.path_cum[_k] - _last_dw > 1.0:
+                    _ptw = pts[_k, :2]
+                    _thw = float(fol.path_heading[_k])
+                    drop_world.append((_ptw, np.array(
+                        [np.cos(_thw), np.sin(_thw)])))
+                    _last_dw = float(fol.path_cum[_k])
+            print(f'[VMC] 预扫描下降沿 {len(_drop_idx)} 处/大下降 {len(drop_world)} 个 (DROP_VX={_dv})', flush=True)
     except Exception as e:
         print('[VMC] 横脊预扫描失败', e, flush=True)
+        drop_world = []
     # v236: 台阶几何预扫描——wp6->7 楼梯区 riser 弧长表（已知地图，供
     # 相位步态）。wp5->6 台阶间距 2m 与相位窗不匹配（v447 卡第一级），
     # 仍由连续抬轮处理。
@@ -834,6 +845,19 @@ def main():
             if _d6 < 0.15:
                 _soft = float(os.environ.get("S10_RIDGE_SOFT_VX", "2.5"))
                 vx_c = min(vx_c, _soft + max(vx_c - _soft, 0.0) * _d6 / 0.15)
+        # v801: 下降沿位置直判减速（不依赖 s_cur——断崖前 s_cur 超前导致
+        # vlim 恢复实测；wp15→16 0.377m 断崖 2m/s 坠翻）。到下降点前
+        # 2.0m 线性压到 DROP_VX，过点 0.5m 恢复。
+        _dv2 = float(os.environ.get('S10_DROP_VX', '0.0'))
+        if _dv2 > 0.0 and drop_world:
+            for (_dpw, _tgw) in drop_world:
+                _ddw = float(np.dot(body_pos[:2] - _dpw, _tgw))
+                if -2.0 <= _ddw <= 2.0:
+                    # v801b: 过点后 2.0m 仍慢速（wp15→16 下降后紧跟 21° 上坡，
+                    # 过点即恢复会在爬坡时翻车实测）；前后各 2m 线性过渡。
+                    _ddw_f = max(0.0, min(1.0, (_ddw + 2.0) / 4.0))
+                    vx_c = min(vx_c, _dv2 + max(vx_c - _dv2, 0.0) * _ddw_f)
+                    break
         try:
             fwd = np.array([d.xmat[1][0], d.xmat[1][3]])
             fx, fy = fwd[0], fwd[1]
