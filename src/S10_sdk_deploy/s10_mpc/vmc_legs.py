@@ -1353,6 +1353,7 @@ class FootPlaceVMC:
     def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel,
                     cmd, terrain_h, dt=0.005):
         body = self._body_state(qpos, qvel)
+        _posmode_fp = float(os.environ.get('S10_FP_POSMODE', '0'))
         self._vx_f += (float(cmd.get("vx", 0.0)) - self._vx_f) * min(
             1.0, dt / 0.10)
         self._om_f = getattr(self, "_om_f", 0.0)
@@ -1432,7 +1433,6 @@ class FootPlaceVMC:
             # v822: 位置基模式（S10_FP_POSMODE=1）——支撑腿目标下调静压
             # 余量 S10_FP_PRESS（用户方案：位置控制下轮"硬顶"台面，接触力
             # 自然够，不用力控下压）
-            _posmode_fp = float(os.environ.get('S10_FP_POSMODE', '0'))
             wz_ground = float(terrain_h[leg]) + self.fk.r
             if _posmode_fp > 0:
                 wz_ground -= float(os.environ.get('S10_FP_PRESS', '0.005'))
