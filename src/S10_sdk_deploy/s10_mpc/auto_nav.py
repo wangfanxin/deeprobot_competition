@@ -1167,6 +1167,10 @@ class AutoNavFollower:
         # 悬空失接触实测）。过棱后回台面+半径。
         if os.environ.get("S10_STAIR_REF_ARC", "0") == "1":
             radius = float(os.environ.get("S10_STAIR_R", "0.081"))
+            # v793: 爬升段长可调（S10_STAIR_CLIMB_L，默认 0.15m）+ smoothstep
+            # ——v792 线性 0.081m 内升 0.125m 太快（1.2m/s 下仅 0.067s）腿跟
+            # 不上弹回；0.15m 平滑给 0.125s（1m/s 垂直），轮贴面滚上。
+            _cl = float(os.environ.get("S10_STAIR_CLIMB_L", "0.15"))
             for k, (y_r, z_top) in enumerate(zip(rs, ts)):
                 z_bottom = (self.STAIR_GROUND if k == 0
                             else float(ts[k - 1]))
@@ -1174,8 +1178,10 @@ class AutoNavFollower:
                 if h <= radius:
                     continue
                 d = y_r - y
-                mask = (d > 0.0) & (d <= radius)
-                z_climb = z_bottom + radius + h * (radius - d) / radius
+                mask = (d > 0.0) & (d <= _cl)
+                t = np.clip(1.0 - d / max(_cl, 1e-6), 0.0, 1.0)
+                ss = t * t * (3.0 - 2.0 * t)
+                z_climb = z_bottom + radius + h * ss
                 z = np.where(mask, np.maximum(z, z_climb), z)
             return z
         if os.environ.get("S10_STAIR_REF_STEP", "0") == "1":
