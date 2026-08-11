@@ -794,11 +794,13 @@ class AutoNavFollower:
                                    _wp2[0] - wp_next[0]))
             _da = abs(float(np.arctan2(np.sin(_a2 - _a1),
                                        np.cos(_a2 - _a1))))
+            _brake_fired = False
             if _da > float(os.environ.get(
                     "S10_AUTO_TURN_BRAKE_ANG", "1.40")) and d_wp < float(
                         os.environ.get("S10_AUTO_TURN_BRAKE_DIST", "3.0")):
                 v_lim = min(v_lim, float(os.environ.get(
                     "S10_AUTO_TURN_BRAKE_VX", "2.0")))
+                _brake_fired = True
         # v340: 导航不做 err 分级限速——速度只由几何任务剖面决定。
         # v387（用户：先防错过航点打转，速度>1m/s 即可）：到达制动——
         # 接近航点且偏航大时速度压到 1.2（差速转向轨道半径 r=v/om 缩小，
@@ -849,7 +851,10 @@ class AutoNavFollower:
         _rmin = float(os.environ.get("S10_RIDGE_MIN_VX", "0.0"))
         _in_step = (next_idx >= 2 and next_idx - 1 < len(self.step_zone)
                     and bool(self.step_zone[next_idx - 1]))
-        if _rmin > 0.0 and not _in_step:
+        # v809: 制动触发时跳过横脊动量提升（ridge boost 的 max 覆盖了
+        # TURN_BRAKE——wp17 45° 弯制动 2.0 被 RIDGE_MIN_VX=3.0 顶掉，
+        # 3.0m/s 入弯过冲翻车实测）
+        if _rmin > 0.0 and not _in_step and not _brake_fired:
             for _rs in getattr(self, "ridge_s", []):
                 _ds = _rs - self._s_cur
                 if 0.0 <= _ds <= float(os.environ.get(

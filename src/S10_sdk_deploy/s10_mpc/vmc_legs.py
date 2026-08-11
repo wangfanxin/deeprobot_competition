@@ -1113,8 +1113,19 @@ class CarVMC:
             # v317: 差速参考随抓地系数衰减——轮子因地形/抬轮离地时保持
             # 差速会在落地瞬间产生 yaw 冲击（起步坡 wz0.6 实测 yaw 1.6->0.2
             # 自旋）；与 yaw 反馈一致用 ground_f 淡出差速，接地后恢复。
+            # v807: 低速差速放大（S10_CAR_LOWSPD_TURN）——vx 低 + 偏航需求大
+            # 时轮差速放大（内轮减速近停转，必要时反向=点转），提高低速转向
+            # 权威（wp16→17 低速打转卡死实测：1.2-1.8m/s 差速不足 yaw 极限环
+            # 振荡）。连续量：放大随 |vx| 降低增大，上限 4x。
+            _lowb = float(os.environ.get("S10_CAR_LOWSPD_TURN", "0.0"))
+            _om_ref2 = _om_ref
+            if _lowb > 0.0:
+                _vr_abs = abs(self._vx_f)
+                if _vr_abs < 2.5:
+                    _om_ref2 = _om_ref * float(np.clip(
+                        1.0 + _lowb * (2.5 - _vr_abs) / 2.5, 1.0, 4.0))
             v_ref = (self._vx_f
-                     + side * _om_ref * _ysc * self._ground_f
+                     + side * _om_ref2 * _ysc * self._ground_f
                      * self.track_half)
             # v241/v242: yaw 摩擦前馈（RobuROC6 库仑摩擦补偿）——差速转向需
             # 先克服侧向滑移阻力才有 yaw 运动，纯误差反馈有死区滞后；按指令
