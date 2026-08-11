@@ -108,6 +108,24 @@ def main():
         yaw_gain=float(os.environ.get('S10_AUTO_YAW_GAIN', '2.5')),
         lookahead=float(os.environ.get('S10_AUTO_LOOKAHEAD', '1.5')))
 
+    # v826e: ref_path 导出（S10_REF_DUMP 路径；S10_DUMP_ONLY=1 只出图
+    # 不仿真——每次测试前先生成 ref_path 供用户审阅质量）
+    _dump_p = os.environ.get('S10_REF_DUMP', '')
+    if _dump_p:
+        try:
+            np.savez(_dump_p,
+                     path_pts=fol.path_pts,
+                     path_vlim=fol.path_vlim,
+                     path_wp_s=fol.path_wp_s,
+                     path_cum=fol.path_cum,
+                     path_curv=fol.path_curv_signed,
+                     wp=wp)
+            print(f'[VMC] ref_path dump -> {_dump_p}', flush=True)
+        except Exception as _e:
+            print('[VMC] ref_path dump 失败', _e, flush=True)
+    if os.environ.get('S10_DUMP_ONLY', '0') == '1':
+        return
+
     # 已知地图横脊预扫描（与节点 _scan_ridge_zones 同法）
     ridge_arcs = []
     _ridge_signed = {}

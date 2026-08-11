@@ -1354,6 +1354,8 @@ class FootPlaceVMC:
                     cmd, terrain_h, dt=0.005):
         body = self._body_state(qpos, qvel)
         _posmode_fp = float(os.environ.get('S10_FP_POSMODE', '0'))
+        _fp_press = (float(os.environ.get('S10_FP_PRESS', '0.005'))
+                     if _posmode_fp > 0 else 0.0)
         self._vx_f += (float(cmd.get("vx", 0.0)) - self._vx_f) * min(
             1.0, dt / 0.10)
         self._om_f = getattr(self, "_om_f", 0.0)
@@ -1515,10 +1517,25 @@ class FootPlaceVMC:
                          q1t, q2t, q1, q2), flush=True)
             tau[hipx_i] = (self.kp * (self.pose_target[b] - qhx)
                            - self.kd * float(qvel[6 + LEG_QV_LEG[b]]))
-            tau[hipy_i] = (_kp_leg * (q1t - q1)
-                           - _kd_leg * float(qvel[6 + LEG_QV_LEG[b + 1]]))
-            tau[knee_i] = (_kp_leg * (q2t - q2)
-                           - _kd_leg * float(qvel[6 + LEG_QV_LEG[b + 2]]))
+            # v828: posmode 支撑腿用单侧垂直阻抗（用户：力控只做阻抗）——
+            # 轮贴地滚动，腿只下压不吸抬（位置锁定支撑腿在斜坡上过冲弹射
+            # 实测）；抬升腿仍位置控制（IK 全增益）
+            if _posmode_fp > 0 and sl <= 0.5:
+                pz_des9 = float(terrain_h[leg]) + self.fk.r - _fp_press
+                _dz9 = pz_des9 - float(wheel_xyz[leg, 2])
+                _F9 = float(os.environ.get('S10_FP_KPH', '300')) * min(_dz9, 0.0)
+                _F9 = max(_F9, 2.0)
+                J9 = self.fk.jac(q1, q2)
+                f_b9 = body["R"].T @ np.array([0.0, 0.0, _F9], dtype=np.float64)
+                f_s9 = np.array([f_b9[0], -f_b9[2]])
+                _th9, _tk9 = J9.T @ f_s9
+                tau[hipy_i] = float(_th9)
+                tau[knee_i] = float(_tk9)
+            else:
+                tau[hipy_i] = (_kp_leg * (q1t - q1)
+                               - _kd_leg * float(qvel[6 + LEG_QV_LEG[b + 1]]))
+                tau[knee_i] = (_kp_leg * (q2t - q2)
+                               - _kd_leg * float(qvel[6 + LEG_QV_LEG[b + 2]]))
             wq = float(qvel[WHEEL_QV_IDX[leg]])
             v_wheel = -wq * self.fk.r
             # 差速保持航向 + yaw 率阻尼
