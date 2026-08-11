@@ -76,6 +76,11 @@ class BodyMPPI:
             'S10_MPPI_ADA', '1'))
         self.rng = np.random.default_rng(seed)
         self._u = np.zeros(2)
+        # v826b: 输出速率限幅基准——上一拍实际输出（非实测速度）。
+        # 实测速度基准在起步/停顿时死锁（狗没动→指令永远 0.125m/s，
+        # 轮矩<静摩擦卡死实测）；指令基准使 vx 确定性爬升，轮速误差
+        # 增长→力矩突破静摩擦正常起步。
+        self._out_prev = np.zeros(2)
         self._cost_ref = 1.0
         self.sigma_scale = 1.0
 
@@ -190,11 +195,16 @@ class BodyMPPI:
         # 系统性超速 0.2-0.3 m/s（坡顶 3.5 vs vlim 3.23 过脊离地自旋实测）。
         _vcap = min(self.vx_max, guide_vx)
         _om_out = float(np.minimum(self.omega_max, self.omega_lim_fn(s0[3])))
-        # v826: 输出加速度钳制——第一拍指令不得超出当前速度 ±a_max·dt
-        # （起步 0→6 阶跃直接交给 CarVMC 会打滑自旋侧翻）
+        # v826b: 输出加速度钳制——以**上一拍输出指令**为基准做速率
+        # 限幅（vx 变化 ≤ a_max·dt）。起步指令确定性爬升，突破静摩擦
+        # 正常起步；不会像 v826a 用实测速度那样死锁，也不会像无钳制
+        # 那样 0→6 阶跃打滑自旋侧翻。
         _vx_out = float(np.clip(
-            u_new[0], s0[3] - self.a_max * self.dt,
-            s0[3] + self.a_max * self.dt))
-        u_out = np.array([np.clip(_vx_out, 0.0, _vcap),
+            u_new[0],
+            self._out_prev[0] - self.a_max * self.dt,
+            self._out_prev[0] + self.a_max * self.dt))
+        _vx_out = float(np.clip(_vx_out, 0.0, _vcap))
+        u_out = np.array([_vx_out,
                           np.clip(u_new[1], -_om_out, _om_out)])
+        self._out_prev = u_out
         return float(u_out[0]), float(u_out[1])
