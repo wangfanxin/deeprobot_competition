@@ -1119,6 +1119,10 @@ def main():
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
         t += DT
+        # v782: 密集轨迹记录（S10_TRAJ_DENSE=1 时每个控制周期 5ms 记录，
+        # 供速度着色轨迹图；默认关保持原行为）
+        if os.environ.get('S10_TRAJ_DENSE', '0') == '1':
+            traj.append([t, body_pos[0], body_pos[1], float(d.cvel[1][3])])
         if _viewer is not None:
             if not _viewer.is_running():
                 print('[VMC] viewer 已关闭，结束', flush=True)
