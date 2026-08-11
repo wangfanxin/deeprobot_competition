@@ -242,22 +242,20 @@ class AutoNavFollower:
         return self.wp[k] + t * (self.wp[k + 1] - self.wp[k])
 
     def _biarc_path(self, xy):
-        """v833: 全弧双圆弧样条（biarc）——整条路径全由圆弧组成：
-        - 每个航点都在圆弧上（航点=apex，切线=转角平分线方向）；
-        - 相邻圆弧相接点相切，航点处前后弧共享切线 → 全程 C1 连续；
-        - 每段双圆弧中，接近下一航点的弧（arc B）目标弧长
-          S10_BIARC_TURNIN（默认 5m）——提前入弯、半径大；
-        - 段长不足 2×TURNIN 时目标弧长对分（L/2）；
-        - 求解参数 γ（接点切线角）：弧长目标用一维扫描。
-        数学：圆弧弦方向 = 两端切线方向均值；LA·e^{i(a0+γ)/2}
-        + LB·e^{i(γ+a1)/2} = D 线性解 LA/LB，半径=弦/(2sin(θ/2))。
+        """v850: 每 wp 一段圆弧（wp 精确在弧上，硬指标）+ 弧间切线链连接。
+
+        用户规格（2026-08-11）：
+        - 半径 R_i = min(3, min(相邻两段长)/2)；
+        - 每 wp 圆弧转满该弯转角、apex=wp（wp 在弧上，精确）；
+        - 相邻圆弧用直线连接（切线链，**不严格**：允许小折角，不强求相切）。
+        构造确定性、无需优化器：圆心 = wp + R·rot(转角平分线, s·90°)，
+        弧 S_i→wp→E_i（切线 u_{i-1}→u_i），段间直接连线。
         """
         import numpy as _np
         n = len(xy)
-        turn_in = float(os.environ.get("S10_BIARC_TURNIN", "5.0"))
-        # 用户 2026-08-11：最大转弯半径 3m（软约束，S10_CORNER_R_MAX）
+        if n < 3:
+            return _np.asarray(xy, dtype=_np.float64)
         r_cap = float(os.environ.get("S10_CORNER_R_MAX", "3.0"))
-        # 1) 段方向 + 航点切线（内部=转角平分线，端点=段方向）
         segs = []
         for i in range(n - 1):
             d = xy[i + 1] - xy[i]
@@ -265,189 +263,51 @@ class AutoNavFollower:
             if L < 1e-9:
                 return None
             segs.append((d / L, L))
-        T = []
-        _iy = float(os.environ.get("S10_INIT_YAW", "1.5708"))
-        for i in range(n):
-            if i == 0:
-                T.append(_np.array([_np.cos(_iy), _np.sin(_iy)]))
-            elif i == n - 1:
-                T.append(segs[-1][0])
-            else:
-                sv = segs[i - 1][0] + segs[i][0]
-                ns = float(_np.linalg.norm(sv))
-                T.append(sv / ns if ns > 1e-9 else segs[i][0])
-        # 2) 每段求解 biarc
+        m = n - 2
+        R = _np.zeros(m)
+        sgn = _np.zeros(m)
+        bis = _np.zeros((m, 2))
+        for k in range(m):
+            i = k + 1
+            R[k] = min(r_cap, min(segs[i - 1][1], segs[i][1]) / 2.0)
+            u1, u2 = segs[i - 1][0], segs[i][0]
+            cr = float(u1[0] * u2[1] - u1[1] * u2[0])
+            sgn[k] = 1.0 if cr >= 0 else -1.0
+            b = u1 + u2
+            nb = float(_np.linalg.norm(b))
+            bis[k] = b / nb if nb > 1e-9 else u1
         out = [xy[0].copy()]
-        self._biarc_meta = []
-        for i in range(n - 1):
-            P0 = xy[i]; P1 = xy[i + 1]
-            L = segs[i][1]
-            a0 = float(_np.arctan2(T[i][1], T[i][0]))
-            a1 = float(_np.arctan2(T[i + 1][1], T[i + 1][0]))
-            # a1 折算到 a0 的短弧侧
-            dlt = (a1 - a0 + _np.pi) % (2.0 * _np.pi) - _np.pi
-            a1 = a0 + dlt
-            sB_tgt = min(turn_in, L / 2.0)
-            D = P1 - P0
-            best = None
-            # v833b: 全角度扫描 γ（允许 S 弯——弦方向不在两端切线
-            # 锥内时，γ 需落在区间外，两弧反向转）
-            n_g = 720
-            for k in range(n_g + 1):
-                gamma = a0 - _np.pi + 2.0 * _np.pi * k / n_g
-                thA0 = abs(gamma - a0)
-                thB0 = abs(a1 - gamma)
-                if thA0 < 1e-4 or thB0 < 1e-4:
-                    continue
-                if thA0 >= _np.pi - 1e-3 or thB0 >= _np.pi - 1e-3:
-                    continue
-                da = (a0 + gamma) / 2.0
-                db = (gamma + a1) / 2.0
-                M = _np.array([[_np.cos(da), _np.cos(db)],
-                               [_np.sin(da), _np.sin(db)]])
-                det = float(M[0, 0] * M[1, 1] - M[0, 1] * M[1, 0])
-                if abs(det) < 1e-9:
-                    continue
-                sol = _np.linalg.solve(M, D)
-                LA = float(sol[0]); LB = float(sol[1])
-                if LA <= 1e-6 or LB <= 1e-6:
-                    continue
-                thA = abs(gamma - a0)
-                thB = abs(a1 - gamma)
-                RA = LA / (2.0 * _np.sin(thA / 2.0))
-                RB = LB / (2.0 * _np.sin(thB / 2.0))
-                if RA <= 1e-6 or RB <= 1e-6:
-                    continue
-                sB = RB * thB
-                over = max(0.0, RA - r_cap) + max(0.0, RB - r_cap)
-                score = abs(sB - sB_tgt) + 4.0 * over
-                if best is None or score < best[0]:
-                    best = (score, gamma, LA, LB, RA, RB)
-            if best is None:
-                _seg0 = len(out)
-                out.append(P1.copy())
-                self._biarc_meta.append(dict(
-                    fallback=True, seg0=_seg0, seg1=len(out)))
-                continue
-            _, gamma, LA, LB, RA, RB = best
-            da = (a0 + gamma) / 2.0
-            db = (gamma + a1) / 2.0
-            J = P0 + LA * _np.array([_np.cos(da), _np.sin(da)])
-            _seg0 = len(out)
-            # 采样 arc A（P0→J，转向 a0→γ）
-            signA = 1.0 if gamma > a0 else -1.0
-            nA = _np.array([-signA * _np.sin(a0), signA * _np.cos(a0)])
-            cA = P0 + RA * nA
-            ang0 = _np.arctan2(P0[1] - cA[1], P0[0] - cA[0])
-            angJ = _np.arctan2(J[1] - cA[1], J[0] - cA[0])
-            swA = (angJ - ang0 + _np.pi) % (2.0 * _np.pi) - _np.pi
-            if swA * signA < 0:
-                swA = -swA
-            nA_pts = max(int(abs(swA) * RA / 0.08), 4)
-            for kk in range(1, nA_pts + 1):
-                ang = ang0 + swA * kk / nA_pts
-                out.append(cA + RA * _np.array([_np.cos(ang), _np.sin(ang)]))
-            # 采样 arc B（J→P1，转向 γ→a1）
-            signB = 1.0 if a1 > gamma else -1.0
-            nB = _np.array([-signB * _np.sin(gamma), signB * _np.cos(gamma)])
-            cB = J + RB * nB
-            ang0 = _np.arctan2(J[1] - cB[1], J[0] - cB[0])
-            ang1 = _np.arctan2(P1[1] - cB[1], P1[0] - cB[0])
-            swB = (ang1 - ang0 + _np.pi) % (2.0 * _np.pi) - _np.pi
-            if swB * signB < 0:
-                swB = -swB
-            nB_pts = max(int(abs(swB) * RB / 0.08), 4)
-            for kk in range(1, nB_pts + 1):
-                ang = ang0 + swB * kk / nB_pts
-                out.append(cB + RB * _np.array([_np.cos(ang), _np.sin(ang)]))
-            self._biarc_meta.append(dict(
-                fallback=False, P0=P0.copy(), P1=P1.copy(), J=J.copy(),
-                cA=cA.copy(), RA=RA, cB=cB.copy(), RB=RB,
-                signA=signA, signB=signB,
-                a0=a0, gamma=gamma, a1=a1, seg0=_seg0, seg1=len(out)))
-        return _np.asarray(out, dtype=_np.float64)
-
-    def _biarc_straighten(self, raw, xy):
-        """v836: biarc 段中部的双弧替换为两圆外公切线直线。
-        切点需落在本段两弧内部（P0→J 与 J→P1）且直线长>=0.3m 才替换，
-        否则保留原双弧。弯道保持大半径圆弧（过航点），段中间为直线。
-        """
-        import numpy as _np
-        meta = getattr(self, "_biarc_meta", [])
-        if not meta:
-            return raw
-
-        def on_arc(pt, c, a_s, a_e, sgn):
-            a_pt = _np.arctan2(pt[1] - c[1], pt[0] - c[0])
-            a0p = _np.arctan2(a_s[1] - c[1], a_s[0] - c[0])
-            a1p = _np.arctan2(a_e[1] - c[1], a_e[0] - c[0])
-            sw = (a1p - a0p + _np.pi) % (2.0 * _np.pi) - _np.pi
-            if sgn * sw < 0:
-                sw = -sw
-            d_pt = (a_pt - a0p + _np.pi) % (2.0 * _np.pi) - _np.pi
-            if sgn * d_pt < 0:
-                d_pt = -d_pt
-            return -0.3 <= d_pt <= sw + 0.3
-
-        pieces = []
-        for md in meta:
-            seg0, seg1 = int(md["seg0"]), int(md["seg1"])
-            seg_raw = raw[seg0:seg1 + 1]
-            if md.get("fallback"):
-                pieces.append(seg_raw)
-                continue
-            P0, P1, J = md["P0"], md["P1"], md["J"]
-            cA, RA = md["cA"], md["RA"]
-            cB, RB = md["cB"], md["RB"]
-            signA, signB = md["signA"], md["signB"]
-            d = cB - cA
-            dist = float(_np.linalg.norm(d))
-            sols = []
-            if dist > 1e-9:
-                u = d / dist
-                v = _np.array([-u[1], u[0]])
-                cos_t = (RA - RB) / dist
-                if abs(cos_t) <= 1.0:
-                    sin_t = float(_np.sqrt(max(1.0 - cos_t * cos_t, 0.0)))
-                    for sgn in (1.0, -1.0):
-                        nv = cos_t * u + sgn * sin_t * v
-                        sols.append((cA + RA * nv, cB + RB * nv))
-            best = None
-            for T1, T2 in sols:
-                if not on_arc(T1, cA, P0, J, signA):
-                    continue
-                if not on_arc(T2, cB, J, P1, signB):
-                    continue
-                td = T2 - T1
-                if float(_np.dot(td, P1 - P0)) <= 0:
-                    continue
-                Ln = float(_np.linalg.norm(td))
-                if Ln < 0.3:
-                    continue
-                if best is None or Ln > best[0]:
-                    best = (Ln, T1, T2)
-            if best is None:
-                pieces.append(seg_raw)
-                continue
-            _, T1, T2 = best
-            d1 = _np.sum((seg_raw - T1[None, :]) ** 2, axis=1)
-            d2 = _np.sum((seg_raw - T2[None, :]) ** 2, axis=1)
-            mid = len(seg_raw) // 2
-            i1 = int(_np.argmin(d1[:mid + 1]))
-            i2 = mid + int(_np.argmin(d2[mid:]))
-            new_seg = list(seg_raw[:i1 + 1])
-            Ln = float(_np.linalg.norm(T2 - T1))
-            n_s = max(int(Ln / 0.08), 2)
-            for kk in range(1, n_s):
-                new_seg.append(T1 + (T2 - T1) * kk / n_s)
-            new_seg.extend(seg_raw[i2:])
-            pieces.append(_np.asarray(new_seg))
-        out = [raw[0].copy()]
-        for pc in pieces:
-            start = 0
-            if len(out) > 0 and _np.linalg.norm(out[-1] - pc[0]) < 1e-9:
-                start = 1
-            out.extend(pc[start:].tolist())
+        prev = xy[0].copy()
+        for k in range(m):
+            i = k + 1
+            s = sgn[k]
+            r = R[k]
+            b = bis[k]
+            c = xy[i] + r * _np.array([-s * b[1], s * b[0]])
+            def rot(v):
+                return _np.array([-s * v[1], s * v[0]])
+            S = c - r * rot(segs[i - 1][0])
+            E = c - r * rot(segs[i][0])
+            # 弧 S→wp→E（短弧，含 wp）
+            a_s = _np.arctan2(S[1] - c[1], S[0] - c[0])
+            a_e = _np.arctan2(E[1] - c[1], E[0] - c[0])
+            a_w = _np.arctan2(xy[i, 1] - c[1], xy[i, 0] - c[0])
+            dlt = (a_e - a_s + _np.pi) % (2.0 * _np.pi) - _np.pi
+            e = (a_w - a_s + _np.pi) % (2.0 * _np.pi) - _np.pi
+            if not (e * dlt >= 0 and abs(e) <= abs(dlt) + 1e-6):
+                dlt = -dlt
+            if abs(dlt) > _np.pi - 1e-3:
+                dlt = _np.sign(dlt) * (_np.pi - 1e-3)
+            # 段间连接（切线链，不严格）：prev → S
+            if _np.linalg.norm(S - prev) > 1e-6:
+                out.append(S.copy())
+            npt = max(int(abs(dlt) * r / 0.08), 6)
+            for kk in range(1, npt + 1):
+                ang = a_s + dlt * kk / npt
+                out.append(c + r * _np.array([_np.cos(ang), _np.sin(ang)]))
+            prev = E
+        if _np.linalg.norm(xy[-1] - prev) > 1e-6:
+            out.append(xy[-1].copy())
         return _np.asarray(out, dtype=_np.float64)
 
     def _build_smooth_path(self):
