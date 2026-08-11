@@ -1406,7 +1406,11 @@ class FootPlaceVMC:
                             _dw[2]])
             # v732: 抬升腿放宽 IK 伸展钳制（上 0.125m 台面需轮相对髋
             # z≈-0.25~-0.31，原 -0.16 锁死抬升）；支撑腿保持 -0.16 防猛伸
-            _lo = -0.34 if sl > 0.1 else -0.16
+            # v810: 支撑腿腿长钳制可调（S10_FP_REACH）——断崖 0.377m 落差 >
+            # 支撑腿默认 -0.16 行程，FP 无法放轮卡崖边实测；放宽到 -0.36
+            # （腿行程极限）让前轮能落到低地。默认 -0.16 保 stair 行为。
+            _lo = (-0.34 if sl > 0.1
+                   else float(os.environ.get('S10_FP_REACH', '-0.16')))
             _hi = 0.15 if sl > 0.1 else 0.02
             _rz = float(np.clip(rel[2], _lo, _hi))
             q1t, q2t = self._ik(float(rel[0]), _rz, q1, q2, lift=(sl > 0.1))
