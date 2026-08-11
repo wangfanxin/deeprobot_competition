@@ -15,7 +15,8 @@ import os
 
 import numpy as np
 
-from .stair_vmc_legs import FootPlaceVMC, LEG_QV_LEG, WHEEL_Q_IDX, WHEEL_QV_IDX
+from .stair_vmc_legs import (FootPlaceVMC, LEG_QV_LEG, LEG_CTRL_IDX,
+                               WHEEL_Q_IDX, WHEEL_QV_IDX)
 
 
 class StairWBC(FootPlaceVMC):
@@ -245,19 +246,35 @@ class StairWBC(FootPlaceVMC):
         finally:
             if _kpp > 0:
                 os.environ["S10_FP_KP_POS"] = str(_kpp)
-        # v889/v890: 爬升窗轮矩——差速降至 30%（纯前驱会漂西、满差速会
-        # 自旋，实测折中），去掉 yaw 率反馈项；后轮满驱推力
+        # v892(方案1): 爬升瞬态冻结轮层 yaw——轮离地(fn≈0)时差速无控制
+        # 权威（自旋/漂移实测），轮矩纯前驱（vx_f，无 ω 项），航向交 Hip X
         try:
             _vx_f = float(getattr(self, "_vx_f", 0.0))
-            _om_f = float(getattr(self, "_om_f", 0.0))
             for _leg in range(4):
-                _side = -1.0 if _leg in (0, 1) else 1.0
                 _wq = float(qvel[WHEEL_QV_IDX[_leg]])
                 _vw = -_wq * self.fk.r
-                _vr = (_vx_f + _side * _om_f * self.track_half * 0.30)
-                _tw = (-(self.wheel_k * (_vr - _vw))
+                _tw = (-(self.wheel_k * (_vx_f - _vw))
                        - self.wheel_d * _wq)
                 tau[WHEEL_Q_IDX[_leg]] = float(np.clip(_tw, -13.5, 13.5))
+        except Exception:
+            pass
+        # v892(方案1): 腿控 Yaw——爬升瞬态（前轴 SWING 且 vx>0.5）用
+        # Hip X 外展/内收修正航向（导航 yaw 误差 + yaw 率阻尼）
+        try:
+            _climbing = (float(np.max(step_lift[0:2])) > 0.5
+                         and abs(float(getattr(self, "_vx_f", 0.0))) > 0.5)
+            if _climbing:
+                _kp_y = float(os.environ.get("S10_FP_YAW_KP", "2.0"))
+                _kd_y = float(os.environ.get("S10_FP_YAW_KD", "0.5"))
+                _yerr = 0.0
+                if self.stair is not None:
+                    _yerr = float(getattr(self.stair, "_last_err", 0.0))
+                _yr = float(body["omega"])
+                _th_y = _kp_y * _yerr - _kd_y * _yr
+                tau[LEG_CTRL_IDX[0]] += _th_y     # FL hipx
+                tau[LEG_CTRL_IDX[3]] -= _th_y     # FR hipx
+                tau[LEG_CTRL_IDX[6]] += 0.5 * _th_y   # RL hipx
+                tau[LEG_CTRL_IDX[9]] -= 0.5 * _th_y   # RR hipx
         except Exception:
             pass
         # QP Checker：用本步腿 PD 力矩反推接触力校验（下步生效）

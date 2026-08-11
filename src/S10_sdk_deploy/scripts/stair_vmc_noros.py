@@ -97,7 +97,13 @@ def main():
                 _sz0 = (8.0 - _hit0) + 0.24
         except Exception:
             pass
-        if _sbk <= 0.0:
+        # v893(方案3): 台架出生点直接放 step1 台面(y=38.0)——只测
+        # 0.125m 单阶，排除首级小台阶与后轮爬小台阶干扰
+        if float(os.environ.get('S10_STAIR_BENCH', '0')) > 0:
+            # 出生在走廊 x=-14.5（wp6.x=-15.12 在 x=-15.0 柱子上）
+            d.qpos[0:3] = [-14.50, 38.00, 0.78]
+            _iy = 1.5708
+        elif _sbk <= 0.0:
             d.qpos[0:3] = [float(wp[START_WP][0]),
                            float(wp[START_WP][1]), _sz0]
         else:
@@ -227,6 +233,21 @@ def main():
         print(f'[VMC] 楼梯世界坐标 {len(stair_world)} 处', flush=True)
     except Exception as e:
         print('[VMC] 楼梯坐标表失败', e, flush=True)
+    # v891(方案3): 单级台架模式——只保留第一个高 riser(0.125m)，
+    # 排除首级小台阶与后续多级，定位单级爬升动力学
+    if float(os.environ.get('S10_STAIR_BENCH', '0')) > 0:
+        try:
+            # y>38.0 排除出生点狗体/柱子伪影（y37.69/顶0.849 是狗挡射线）
+            _bench = [x for x in stair_world
+                      if x[3] > 0.085 and x[0][1] > 38.0]
+            if _bench:
+                stair_world = _bench[:1]
+                _b0 = stair_world[0]
+                stair_risers = [(_b0[2], _b0[3])]
+                print('[VMC] BENCH 单级台架: 仅保留 0.125m riser y=%.2f'
+                      % float(_b0[0][1]), flush=True)
+        except Exception as e:
+            print('[VMC] BENCH 过滤失败', e, flush=True)
     # v871: 几何表单源化——预扫描 stair_world 回填导航 stair 表（消除
     # 硬编码 STAIR_RISERS/TOPS 双源，换地图不失效）
     try:
@@ -348,6 +369,9 @@ def main():
             return (8.0 - hit) if hit > 0 else 0.0
 
     next_idx = START_WP if 'START_WP' in dir() else 0
+    # v893: 台架模式跳过 wp6（出生在 step1，直接以 wp7 为目标）
+    if float(os.environ.get('S10_STAIR_BENCH', '0')) > 0 and next_idx == START_WP:
+        next_idx = START_WP + 1
     # v822: 布尔几何相位状态（用户方案：位置基全身控制，硬切换非 sin²）
     _sp_f = 0.0; _sp_r = 0.0
     _sp_f_top = 0.0; _sp_r_top = 0.0
