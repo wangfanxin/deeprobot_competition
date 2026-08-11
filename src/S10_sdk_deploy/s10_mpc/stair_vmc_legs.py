@@ -1531,11 +1531,12 @@ class FootPlaceVMC:
             # （place_z 由 StairWBC 贴面爬升给，≈台面顶）
             if sl > 0.5 and pz > 0.01:
                 wz = min(wz, pz + self.fk.r + _margin + 0.005)
-            # v896: 支撑腿 wz 封顶在 台面顶+R-press（只许下压不许抬离）——
-            # 前轮 SWING 时 body 俯仰修正把后轮目标抬到 0.83 → 后轮离地
-            # 失抓地 → yaw 自旋侧翻（台架实测）；支撑腿必须保持贴地牵引
+            # v896/v898: 支撑腿 wz 封顶在 台面顶+R-press+0.05——只许下压、
+            # 最多抬离 5cm（body-z 闭环靠抬高 stance 目标把 body 压下来，
+            # 完全封死则 body 压不住、后轮被物理抬到 0.8-1.26 实测）
             if sl <= 0.5:
-                wz = min(wz, float(terrain_h[leg]) + self.fk.r - _fp_press)
+                wz = min(wz, float(terrain_h[leg]) + self.fk.r
+                         - _fp_press + 0.05)
             _dw = np.array([wheel_xyz[leg, 0] - hip_w[0],
                            wheel_xyz[leg, 1] - hip_w[1],
                            wz - hip_w[2]])
@@ -1548,7 +1549,10 @@ class FootPlaceVMC:
             # v810: 支撑腿腿长钳制可调（S10_FP_REACH）——断崖 0.377m 落差 >
             # 支撑腿默认 -0.16 行程，FP 无法放轮卡崖边实测；放宽到 -0.36
             # （腿行程极限）让前轮能落到低地。默认 -0.16 保 stair 行为。
+            # v898: 任一轴 SWING 时支撑腿行程放宽（body 被前轮抬升后，
+            # 后腿需 -0.36 大行程才够得到地面——0.8 实测离地）
             _lo = (-0.34 if sl > 0.1
+                   else -0.36 if float(np.max(_sl_all)) > 0.5
                    else float(os.environ.get('S10_FP_REACH', '-0.16')))
             _hi = 0.15 if sl > 0.1 else 0.02
             _rz = float(np.clip(rel[2], _lo, _hi))
