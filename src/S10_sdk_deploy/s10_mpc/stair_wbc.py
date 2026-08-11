@@ -178,6 +178,44 @@ class StairWBC(FootPlaceVMC):
         cmd = dict(cmd)
         cmd["step_lift"] = step_lift
         cmd["place_z"] = place_z
+        # v878: 贴面爬升——抬升轮目标沿 riser 立面连续上升（保持接触滚动，
+        # 替代悬空折叠抬腿）。对每只抬升轮按世界坐标算 z_face：
+        #   d=轮心到棱沿切线距离；d∈[-r,0] 内 z 从底+r 平滑升到顶+r；
+        # 经 place_z 传入 FP（wz = place_z+r+margin → z_face）。
+        _sw_wheel0 = float(os.environ.get("S10_STAIR_SWING_WHEEL0", "1"))
+        if float(os.environ.get("S10_STAIR_FACE", "1")) > 0:
+            _pz_new = np.array(cmd.get("place_z", np.zeros(4)),
+                               dtype=np.float64).copy()
+            _r = self.fk.r
+            for _leg in range(4):
+                if step_lift[_leg] <= 0.02:
+                    continue
+                # 找该轮前方最近高 riser
+                _best_d = 1e9; _best = None
+                for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
+                    if _dhv <= 0.085:
+                        continue
+                    _dd = float(np.dot(wheel_xyz[_leg, :2] - _rp, _tng))
+                    if -0.20 < _dd < 0.05 and abs(_dd) < abs(_best_d):
+                        _best_d = _dd; _best = (_rp, _tng, _dhv, _top)
+                if _best is None:
+                    continue
+                (_rp, _tng, _dhv, _top) = _best
+                _z_bot = float(_top - _dhv)
+                _d_w = float(np.dot(wheel_xyz[_leg, :2] - _rp, _tng))
+                if -_r <= _d_w <= 0.0:
+                    _t = float(np.clip((_d_w + _r) / max(_r, 1e-6), 0.0, 1.0))
+                    _ss = _t * _t * (3.0 - 2.0 * _t)
+                    _z_face = _z_bot + _r + _dhv * _ss
+                else:
+                    _z_face = _top + _r
+                # FP: wz = min(place_z + r + margin, hip+0.15) -> 反解 place_z
+                _margin = float(os.environ.get("S10_STAIR_LIFT_MARGIN", "0.04"))
+                _pz_new[_leg] = _z_face - _r - _margin
+            cmd["place_z"] = _pz_new
+            os.environ["S10_STAIR_SWING_WHEEL0"] = "0"
+        elif _sw_wheel0 > 0:
+            os.environ["S10_STAIR_SWING_WHEEL0"] = "1"
         _kpp = float(os.environ.get("S10_FP_KP_POS", "0"))
         if _kpp > 0:
             os.environ["S10_FP_KP_POS"] = str(_kpp * self._qp_scale)

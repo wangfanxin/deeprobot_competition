@@ -1595,7 +1595,9 @@ class FootPlaceVMC:
             # 用户方案改进4）；支撑腿开环轮速 PID（位置控制下腿不顶 body，
             # 轮矩可开到 T_max，不用 μN 钳制）
             if _posmode_fp > 0 and sl > 0.5:
-                tau[WHEEL_Q_IDX[leg]] = 0.0
+                # v878: 贴面爬升时抬升轮保持驱动（滚上立面），默认仍 0
+                if float(os.environ.get('S10_STAIR_SWING_WHEEL0', '1')) > 0:
+                    tau[WHEEL_Q_IDX[leg]] = 0.0
             else:
                 tau[WHEEL_Q_IDX[leg]] = (
                     -(self.wheel_k * (v_ref - v_wheel))
