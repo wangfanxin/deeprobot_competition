@@ -35,6 +35,8 @@ class StairWBC(FootPlaceVMC):
         self._sp_r_top = 0.0
         self._rel_f_t = None
         self._rel_r_t = None
+        self._sw_f_t0 = -1e9
+        self._sw_r_t0 = -1e9
         self._t = 0.0
         self._qp_scale = 1.0
         self._osqp = None
@@ -68,13 +70,18 @@ class StairWBC(FootPlaceVMC):
         _wz_r = float(np.mean([wheel_xyz[i, 2] for i in (2, 3)]))
         r = self.fk.r
         _swd = float(os.environ.get("S10_STAIR_SWING_D", "0.15"))
+        _to = float(os.environ.get("S10_STAIR_SWING_TO", "1.5"))
         if self._sp_f <= 0.0:
-            if -_swd < _df < 0.05:
+            # 前轴 SWING 期间禁止后轴进入（永不双轴同抬）
+            if -_swd < _df < 0.05 and self._sp_r <= 0.0:
                 self._sp_f = 1.0
                 self._sp_f_top = _tf
                 self._rel_f_t = None
+                self._sw_f_t0 = self._t
         else:
-            if _df < -0.05 and _wz_f >= self._sp_f_top + r - 0.01:
+            # v888: 释放符号修正——d>0.05 是"过棱后 0.05"，原 d<-0.05
+            # （棱前）永远不触发，全靠超时释放（双轴同抬 sl=[1,1,1,1] 实测）
+            if _df > 0.05 and _wz_f >= self._sp_f_top + r - 0.01:
                 if self._rel_f_t is None:
                     self._rel_f_t = self._t
                 elif self._t - self._rel_f_t >= 0.05:
@@ -82,19 +89,26 @@ class StairWBC(FootPlaceVMC):
                     self._rel_f_t = None
             else:
                 self._rel_f_t = None
+            if self._t - self._sw_f_t0 > _to:   # 绝对超时兜底
+                self._sp_f = 0.0
+                self._rel_f_t = None
         if self._sp_r <= 0.0:
             if -_swd < _dr < 0.05 and self._sp_f <= 0.0:
                 self._sp_r = 1.0
                 self._sp_r_top = _tr
                 self._rel_r_t = None
+                self._sw_r_t0 = self._t
         else:
-            if _dr < -0.05 and _wz_r >= self._sp_r_top + r - 0.01:
+            if _dr > 0.05 and _wz_r >= self._sp_r_top + r - 0.01:
                 if self._rel_r_t is None:
                     self._rel_r_t = self._t
                 elif self._t - self._rel_r_t >= 0.05:
                     self._sp_r = 0.0
                     self._rel_r_t = None
             else:
+                self._rel_r_t = None
+            if self._t - self._sw_r_t0 > _to:
+                self._sp_r = 0.0
                 self._rel_r_t = None
         step_lift = np.array([self._sp_f, self._sp_f,
                               self._sp_r, self._sp_r], dtype=np.float64)

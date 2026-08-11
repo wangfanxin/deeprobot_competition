@@ -79,13 +79,24 @@ def main():
     # 用于验证其余赛段 wp7→33；0=正常从 wp0 起跑）
     START_WP = int(os.environ.get('S10_START_WP', '0'))
     if START_WP > 0 and START_WP < len(wp):
-        # v775: 起始高度用航点地形+站立高（原硬编码 1.2 在高架平台
-        # terr=1.166 处压腿不稳，起步即侧翻）
-        _sz0 = float(wp[START_WP][2]) + 0.21
-        # v818: 起始回退距离可调（S10_START_BACK，默认 1.0=原 y-1m 行为；
-        # 设 0 从航点本身起跑跳过该点到达验证后续段——wp16 从西侧接近，
-        # y-1m 放南侧导致 180° 掉头伪影实测）
+        # v886: 起始高度用起跑点实际地形+半蹲站立高——原 wp6 用 wp6.z+0.21
+        # 且腿用伸展位姿（膝 2.45 轮只低髋 0.12m），在 0.63m 坡面悬浮起步
+        # （轮离地→v870 ground_f=0 无驱动→被迫 GF=1.0 兜底→进梯离地差速
+        # 对转）。半蹲位姿（膝 1.90，轮低髋 0.207m）+ terrain+0.24 让轮落地，
+        # 恢复 v870 离地阻尼。
         _sbk = float(os.environ.get('S10_START_BACK', '1.0'))
+        _sz0 = float(wp[START_WP][2]) + 0.21
+        try:
+            _g0 = np.array([-1], dtype=np.int32)
+            _dist0 = np.zeros(1); _nrm0 = np.zeros(3)
+            _hit0 = mujoco.mj_ray(m, d,
+                                  [float(wp[START_WP][0]),
+                                   float(wp[START_WP][1]) - _sbk, 8.0],
+                                  [0, 0, -1], None, True, -1, _g0, _nrm0)
+            if _hit0 > 0:
+                _sz0 = (8.0 - _hit0) + 0.24
+        except Exception:
+            pass
         if _sbk <= 0.0:
             d.qpos[0:3] = [float(wp[START_WP][0]),
                            float(wp[START_WP][1]), _sz0]
@@ -99,10 +110,8 @@ def main():
         else:
             _iy = 1.5708
         d.qpos[3:7] = [np.cos(_iy / 2), 0, 0, np.sin(_iy / 2)]
-        d.qpos[7:23] = np.array([-0.438, -1.16, 2.45, 0.0,
-                                  0.438, -1.16, 2.45, 0.0,
-                                 -0.438,  1.16, -2.45, 0.0,
-                                  0.438,  1.16, -2.45, 0.0])
+        # v886: 半蹲位姿（STAND_TARGET）——伸展位姿轮高离地悬浮
+        d.qpos[7:23] = STAND_TARGET.copy()
         mujoco.mj_forward(m, d)
         print(f'[VMC] 从 wp{START_WP} 起跑（跳过 wp0→{START_WP}）', flush=True)
 
@@ -718,7 +727,7 @@ def main():
                 if -_sw_d < _df_p < 0.05:
                     _sp_f = 1.0; _sp_f_top = _tf_p
                     _sp_f_t0 = t
-            elif (_df_p < -0.05
+            elif (_df_p > 0.05
                   and float(np.mean(_wz4p[0:2])) >= _sp_f_top + self_fk_r):
                 _sp_f = 0.0; _sp_f_t0 = None
             # v871: SWING 超时释放（1.5s 内未达台面顶则回 STANCE，防卡死空跳）
@@ -730,7 +739,7 @@ def main():
                 if -_sw_d < _dr_p < 0.05 and _sp_f <= 0.0:
                     _sp_r = 1.0; _sp_r_top = _tr_p
                     _sp_r_t0 = t
-            elif (_dr_p < -0.05
+            elif (_dr_p > 0.05
                   and float(np.mean(_wz4p[2:4])) >= _sp_r_top + self_fk_r):
                 _sp_r = 0.0; _sp_r_t0 = None
             if _sp_r > 0 and _sp_r_t0 is not None and t - _sp_r_t0 > float(
