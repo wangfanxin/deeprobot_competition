@@ -401,7 +401,9 @@ class AutoNavFollower:
         n = len(xy)
         min_turn = float(os.environ.get("S10_CORNER_MIN_TURN", "0.25"))
         pass_d = float(os.environ.get("S10_CORNER_PASS_DIST", "0.28"))
-        r_max = float(os.environ.get("S10_CORNER_R_MAX", "4.0"))
+        # v834: 过弯圆弧最大半径 5m（用户指令）；实际受 0.3m 判点限制：
+        # R(sec(θ/2)-1) ≤ 0.3 → 90° 弯上限 ~0.7m，缓弯可到 5m
+        r_max = float(os.environ.get("S10_CORNER_R_MAX", "5.0"))
         fit = float(os.environ.get("S10_CORNER_FIT", "0.45"))
         # 1) 每个转角航点的 (R, d)
         params = []
@@ -683,7 +685,9 @@ class AutoNavFollower:
         n_per = int(os.environ.get("S10_GLOBAL_NPER_SEG", "24"))
         xy = self._stair_corridor_xy(wp[:, :2])
         # v833: 弯道模式 S10_CORNER_MODE: biarc(全弧双圆弧,默认)/bezier(过航点)/fillet(v830圆弧)/spline(旧)
-        _cmode = os.environ.get("S10_CORNER_MODE", "biarc")
+        # v834: 默认 fillet=直线+过弯圆弧(R≤5m 自适应)，用户架构：
+        # 剩余区域直线保速度；bezier/biarc/spline 为备选
+        _cmode = os.environ.get("S10_CORNER_MODE", "fillet")
         if _cmode == "bezier":
             raw = self._bezier_corner_path(xy)
         elif _cmode == "fillet":
