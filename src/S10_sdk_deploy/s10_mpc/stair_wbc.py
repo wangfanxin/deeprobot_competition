@@ -15,7 +15,7 @@ import os
 
 import numpy as np
 
-from .stair_vmc_legs import FootPlaceVMC, LEG_QV_LEG, WHEEL_Q_IDX
+from .stair_vmc_legs import FootPlaceVMC, LEG_QV_LEG, WHEEL_Q_IDX, WHEEL_QV_IDX
 
 
 class StairWBC(FootPlaceVMC):
@@ -245,6 +245,21 @@ class StairWBC(FootPlaceVMC):
         finally:
             if _kpp > 0:
                 os.environ["S10_FP_KP_POS"] = str(_kpp)
+        # v889/v890: 爬升窗轮矩——差速降至 30%（纯前驱会漂西、满差速会
+        # 自旋，实测折中），去掉 yaw 率反馈项；后轮满驱推力
+        try:
+            _vx_f = float(getattr(self, "_vx_f", 0.0))
+            _om_f = float(getattr(self, "_om_f", 0.0))
+            for _leg in range(4):
+                _side = -1.0 if _leg in (0, 1) else 1.0
+                _wq = float(qvel[WHEEL_QV_IDX[_leg]])
+                _vw = -_wq * self.fk.r
+                _vr = (_vx_f + _side * _om_f * self.track_half * 0.30)
+                _tw = (-(self.wheel_k * (_vr - _vw))
+                       - self.wheel_d * _wq)
+                tau[WHEEL_Q_IDX[_leg]] = float(np.clip(_tw, -13.5, 13.5))
+        except Exception:
+            pass
         # QP Checker：用本步腿 PD 力矩反推接触力校验（下步生效）
         try:
             _q1q2 = []
