@@ -480,6 +480,11 @@ def main():
             terr_foot = np.array([terrain_at(wheel_xyz[i, 0],
                                              wheel_xyz[i, 1])
                                   for i in range(4)])
+            # v890: 高架伪影过滤——轮接触时运动学地面(轮心z-r)即真值；
+            # terrain_at 读到上方结构底面(比运动学高>0.15m)时用运动学值，
+            # 消除高度环 0.36m 偏置导致的腿力矩饱和（实测 hErr 恒定 0.36）。
+            terr_foot = np.minimum(
+                terr_foot, wheel_xyz[:, 2] - 0.081 + 0.15)
             # v231: 运动学 fallback 默认关（改变 wp4→5 部分格值致混沌翻车）；
             # 需要时 S10_VMC_TERRAIN_KIN=1（wp5→6 缓坡无数据区）
             if (os.environ.get('S10_VMC_TERRAIN_KIN', '0') == '1'
@@ -492,10 +497,15 @@ def main():
             _hx = body_pos[0] + _bx * _lk
             _hy = body_pos[1] + _by * _lk
             terr_ahead = np.full(4, terrain_at(_hx, _hy))
+            # v890: 前视点同样滤高架伪影——以当前轮接触最高点为基准，
+            # 高出 0.25m 视为结构底面（真实坡/脊在前视窗内最多 +0.25）。
+            terr_ahead = np.minimum(
+                terr_ahead, float(np.max(wheel_xyz[:, 2] - 0.081)) + 0.25)
             terr = (1.0 - _w_eff) * terr_foot + _w_eff * terr_ahead
         else:
             terr = np.array([terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
                              for i in range(4)])
+            terr = np.minimum(terr, wheel_xyz[:, 2] - 0.081 + 0.15)
         # v223b: 地形低通（lidar 栅格稀疏/噪声，防腿抖）
         _tlp = float(os.environ.get('S10_VMC_TERRAIN_LP', '0.0'))
         if _tlp > 0.0:
