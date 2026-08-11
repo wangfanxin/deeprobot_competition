@@ -57,6 +57,12 @@ class BodyMPPI:
         self.N, self.H, self.dt = N, H, dt
         self.tau_v, self.tau_w = tau_v, tau_w
         self.mu, self.g = mu, g
+        # v826c: 最小转弯半径约束（cap 测试 vx=2/ω=3 → R_min=0.67m）。
+        # 低速时摩擦锥 μg/v 趋于无穷、能力表也允许 ω=3，MPPI 会命令
+        # 原地打转（vx≈0, ω≈2）→ 轮滑差速正反馈自旋侧翻（wp4→5 发卡
+        # 实测）。加 ω ≤ |v|/R_min：任何速度都必须走半径 ≥ R_min 的弧，
+        # 原地自旋被禁止，急转只能靠先减速后小半径转弯。
+        self.r_min = float(_os.environ.get('S10_MPPI_R_MIN', '0.67'))
         self.vx_max, self.omega_max = vx_max, omega_max
         # v826: 纵向加速度硬约束（S10_MPPI_A_MAX，默认 2.5 m/s² =
         # CarVMC 能力标定 0→5m/s≈2s）。起步/出弯不允许 MPPI 直接给出
@@ -96,6 +102,9 @@ class BodyMPPI:
             om_lim = np.minimum(self.omega_max,
                                 self.mu * self.g / (np.abs(vx_now) + 1e-3))
             om_lim = np.minimum(om_lim, self.omega_lim_fn(vx_now))
+            # v826c: 最小转弯半径（低速禁自旋）
+            om_lim = np.minimum(om_lim,
+                                np.abs(vx_now) / self.r_min)
             om_c = np.clip(om_c, -om_lim, om_lim)
             vx_c = np.clip(vx_c, 0.0, self.vx_max)
             # v826: 加速度硬约束（能力表派生，S10_MPPI_A_MAX）
@@ -194,7 +203,15 @@ class BodyMPPI:
         # v318: vx 额外钳到当前 v_ref——MPPI 加权平均会因路径距离收益
         # 系统性超速 0.2-0.3 m/s（坡顶 3.5 vs vlim 3.23 过脊离地自旋实测）。
         _vcap = min(self.vx_max, guide_vx)
-        _om_out = float(np.minimum(self.omega_max, self.omega_lim_fn(s0[3])))
+        # v826c: 输出 omega 钳制与 rollout 同一套约束（此前漏了摩擦锥
+        # μg/|v| 与最小转弯半径——vx≈2.5 时输出 ω=-2.0 → a_lat=5.0
+        # 超侧翻包线，wp4→5 发卡翻车实测）。
+        _v_abs = max(abs(float(s0[3])), 1e-3)
+        _om_out = float(np.minimum(
+            self.omega_max,
+            min(self.mu * self.g / _v_abs,
+                float(self.omega_lim_fn(s0[3])),
+                _v_abs / self.r_min)))
         # v826b: 输出加速度钳制——以**上一拍输出指令**为基准做速率
         # 限幅（vx 变化 ≤ a_max·dt）。起步指令确定性爬升，突破静摩擦
         # 正常起步；不会像 v826a 用实测速度那样死锁，也不会像无钳制
