@@ -772,6 +772,26 @@ class LidarTerrain:
         return 0.0
 
 
+def car_omega_limit(vx):
+    # CarVMC 极限转向能力表（cap 测试实测：vx<=2 ω=3.0；vx=3→1.5；
+    # vx=4→1.2 超过侧翻）。保守取值防翻，压弯加强后可上修。
+    import os as _os
+    _tbl = [(0.0, 3.0), (2.0, 3.0), (3.0, 1.5), (3.5, 1.5),
+            (4.0, 1.2), (5.0, 1.0), (6.0, 0.8)]
+    _env = _os.environ.get("S10_CAR_OMEGA_TBL", "")
+    if _env:
+        try:
+            _tbl = [(float(a.split(":")[0]), float(a.split(":")[1]))
+                    for a in _env.split(",") if ":" in a]
+        except Exception:
+            pass
+    import numpy as _np
+    _v0 = _np.array([t[0] for t in _tbl], dtype=_np.float64)
+    _w0 = _np.array([t[1] for t in _tbl], dtype=_np.float64)
+    return _np.interp(_np.abs(_np.asarray(vx, dtype=_np.float64)),
+                      _v0, _w0, left=_w0[0], right=_w0[-1])
+
+
 class CarVMC:
     """v221: 车化巡航控制器——轮=驱动+差速转向，腿=刚性主动悬架(姿态)。
 
@@ -1355,6 +1375,29 @@ class FootPlaceVMC:
             self._wz_f = np.array([terrain_h[leg] + self.fk.r
                                    for leg in range(4)], dtype=np.float64)
         tau = np.zeros(16, dtype=np.float64)
+        # v823: body 姿态解析（用户架构核心）——posmode 下先算 4 轮目标，
+        # 再解期望 body z/pitch（腿目标 = 期望 body 位姿 + 足端相对位，
+        # 替代用实际 body 位姿导致高度漂移弹射）
+        _bdes_z = None
+        _bdes_pitch = 0.0
+        if _posmode_fp > 0:
+            _wz_all = np.zeros(4)
+            for _leg0 in range(4):
+                _sl0 = float(_sl_all[_leg0])
+                _pz0 = float(_pz_all[_leg0])
+                _wg0 = float(terrain_h[_leg0]) + self.fk.r
+                if _posmode_fp > 0:
+                    _wg0 -= float(os.environ.get('S10_FP_PRESS', '0.005'))
+                _wz_all[_leg0] = _wg0
+                if _pz0 > 0.01 and _sl0 > 0.02:
+                    _wz_all[_leg0] = min(
+                        _pz0 + self.fk.r + _margin,
+                        float(body["pos"][2]) + 0.25)
+            _bdes_z = float(np.mean(_wz_all)) + float(os.environ.get(
+                'S10_FP_STAND_DROP', '0.26'))
+            _wz_fm = float(np.mean(_wz_all[0:2]))
+            _wz_rm = float(np.mean(_wz_all[2:4]))
+            _bdes_pitch = float(np.arctan2(_wz_fm - _wz_rm, 0.456))
         for leg in range(4):
             b = leg * 3
             hipx_i, hipy_i, knee_i = (LEG_CTRL_IDX[b],
@@ -1367,11 +1410,21 @@ class FootPlaceVMC:
             # 在 pitch 下 hip z 偏移会让 IK 的 rel_z 错位（v768 平地侧翻）。
             # 抬升腿走关节空间目标（不走 IK），不受此影响。
             _cy = float(np.cos(body["yaw"])); _sy = float(np.sin(body["yaw"]))
-            hip_w = np.array([body["pos"][0] + _cy * LEG_ATTACH[leg, 0]
-                              - _sy * LEG_ATTACH[leg, 1],
-                              body["pos"][1] + _sy * LEG_ATTACH[leg, 0]
-                              + _cy * LEG_ATTACH[leg, 1],
-                              body["pos"][2]])
+            # v823: posmode 用期望 body 位姿（z=均值轮高+站立落差，pitch=前后
+            # 轮坡度）算髋，腿目标=期望body+足端相对位，body 被拉向期望姿态
+            _bposz = (float(_bdes_z) if _bdes_z is not None
+                      else float(body["pos"][2]))
+            _bposp = (_bdes_pitch if _bdes_z is not None
+                      else float(body["pitch"]))
+            _attach = LEG_ATTACH[leg]
+            _hip_off = np.array([_cy * _attach[0] - _sy * _attach[1],
+                                 _sy * _attach[0] + _cy * _attach[1],
+                                 0.0])
+            # 期望 pitch 下髋的 z 偏移（前腿高、后腿低）
+            _hip_off[2] = -_attach[1] * float(np.sin(_bposp))
+            hip_w = np.array([body["pos"][0] + _hip_off[0],
+                              body["pos"][1] + _hip_off[1],
+                              _bposz + _hip_off[2]])
             sl = float(_sl_all[leg])
             pz = float(_pz_all[leg])
             # 落脚目标：支撑腿 = 轮下地形+半径；抬升腿按 CPG 波形插值到
