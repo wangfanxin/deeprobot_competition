@@ -1526,6 +1526,11 @@ class FootPlaceVMC:
             # （place_z 由 StairWBC 贴面爬升给，≈台面顶）
             if sl > 0.5 and pz > 0.01:
                 wz = min(wz, pz + self.fk.r + _margin + 0.005)
+            # v896: 支撑腿 wz 封顶在 台面顶+R-press（只许下压不许抬离）——
+            # 前轮 SWING 时 body 俯仰修正把后轮目标抬到 0.83 → 后轮离地
+            # 失抓地 → yaw 自旋侧翻（台架实测）；支撑腿必须保持贴地牵引
+            if sl <= 0.5:
+                wz = min(wz, float(terrain_h[leg]) + self.fk.r - _fp_press)
             _dw = np.array([wheel_xyz[leg, 0] - hip_w[0],
                            wheel_xyz[leg, 1] - hip_w[1],
                            wz - hip_w[2]])

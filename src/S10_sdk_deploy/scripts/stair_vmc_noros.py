@@ -101,9 +101,9 @@ def main():
         # 0.125m 单阶，排除首级小台阶与后轮爬小台阶干扰
         if float(os.environ.get('S10_STAIR_BENCH', '0')) > 0:
             # 出生在走廊 x=-14.5（wp6.x=-15.12 在 x=-15.0 柱子上）
-            # y=37.90：前轮在 step1 台面(y38.13)且离 riser2 立面 0.21m，
-            # 站起地形跟随不会顶到立面（y38.0 实测翘头 pitch-1.0）
-            d.qpos[0:3] = [-14.50, 37.90, 0.78]
+            # v894: riser2(38.34)前 1.2m 平地(y37.14)——riser1 已抹平，
+            # 地面 0.479 一直平到 riser2 单阶
+            d.qpos[0:3] = [-14.50, 37.14, 0.72]
             _iy = 1.5708
         elif _sbk <= 0.0:
             d.qpos[0:3] = [float(wp[START_WP][0]),
@@ -122,6 +122,27 @@ def main():
         d.qpos[7:23] = STAND_TARGET.copy()
         mujoco.mj_forward(m, d)
         print(f'[VMC] 从 wp{START_WP} 起跑（跳过 wp0→{START_WP}）', flush=True)
+
+    # v894(方案1): 台架抹平 riser1(0.061m)——内存中把 step1 顶条(y≈37.9-38.3,
+    # 顶面0.54)下压到地面0.479，只留 riser2 单级 0.125m；不改任何 XML/STL
+    if float(os.environ.get('S10_STAIR_BENCH', '0')) > 0:
+        try:
+            _flat_cnt = 0
+            for _gi in range(m.ngeom):
+                if int(m.geom_type[_gi]) != 7 or int(m.geom_group[_gi]) != 0:
+                    continue
+                _xp = d.geom_xpos[_gi]
+                _sz = m.geom_size[_gi]
+                if (37.9 <= float(_xp[1]) <= 38.3
+                        and 0.52 <= float(_xp[2]) + float(_sz[2]) <= 0.56
+                        and float(_sz[0]) > 3.0):
+                    m.geom_pos[_gi, 2] = float(_xp[2]) - (
+                        float(_xp[2]) + float(_sz[2]) - 0.479)
+                    _flat_cnt += 1
+            mujoco.mj_forward(m, d)
+            print('[VMC] BENCH 抹平 riser1: %d 个 strip' % _flat_cnt, flush=True)
+        except Exception as e:
+            print('[VMC] BENCH 抹平失败', e, flush=True)
 
     fol = AutoNavFollower(
         wp,
@@ -250,17 +271,19 @@ def main():
     # 排除首级小台阶与后续多级，定位单级爬升动力学
     if float(os.environ.get('S10_STAIR_BENCH', '0')) > 0:
         try:
-            # y>38.0 排除出生点狗体/柱子伪影（y37.69/顶0.849 是狗挡射线）
-            _bench = [x for x in stair_world
-                      if x[3] > 0.085 and x[0][1] > 38.0]
-            if _bench:
-                stair_world = _bench[:1]
-                _b0 = stair_world[0]
-                stair_risers = [(_b0[2], _b0[3])]
-                print('[VMC] BENCH 单级台架: 仅保留 0.125m riser y=%.2f'
-                      % float(_b0[0][1]), flush=True)
+            # v895: 台架表直接手工构造 riser2 单级（预扫描被出生狗体污染，
+            # 造出狗身边假 riser → 全轮 SWING → 卡死实测）
+            _k2 = int(np.argmin(np.abs(fol.path_pts[:, 1] - 38.34)))
+            _pt2 = fol.path_pts[_k2, :2].copy()
+            _hd2 = float(fol.path_heading[_k2])
+            _tng2 = np.array([np.cos(_hd2), np.sin(_hd2)])
+            _arc2 = float(fol.path_cum[_k2])
+            stair_world = [(_pt2, _tng2, _arc2, 0.125, 0.666)]
+            stair_risers = [(_arc2, 0.125)]
+            print('[VMC] BENCH 手工 riser2 单级: y=%.2f arc=%.2f'
+                  % (float(_pt2[1]), _arc2), flush=True)
         except Exception as e:
-            print('[VMC] BENCH 过滤失败', e, flush=True)
+            print('[VMC] BENCH 手工表失败', e, flush=True)
     # v871: 几何表单源化——预扫描 stair_world 回填导航 stair 表（消除
     # 硬编码 STAIR_RISERS/TOPS 双源，换地图不失效）
     try:
