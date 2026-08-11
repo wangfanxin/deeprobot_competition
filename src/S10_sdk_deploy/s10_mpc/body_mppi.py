@@ -25,7 +25,7 @@ class BodyMPPI:
     def __init__(self, N=4096, H=40, dt=0.05,
                  tau_v=0.15, tau_w=0.10, mu=0.75, g=9.81,
                  vx_max=6.0, omega_max=4.0,
-                 lam=0.35, sigma_vx=0.45, sigma_om=0.55,
+                 lam=0.6, sigma_vx=0.45, sigma_om=0.55,
                  w_dist=2.0, w_v=0.80, w_h=0.0, w_s=0.05,
                  ada_alpha=0.35, ada_min=0.5, ada_max=2.0,
                  seed=0, a_max=2.5):
