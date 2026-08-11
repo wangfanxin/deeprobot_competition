@@ -14,6 +14,7 @@ DBaS 自适应 σ：成本高时放大采样噪声，低时收敛。
 MPPI 摩擦锥 + 长视界，导航不再做动力学限速）；20Hz 调用（CPU）。
 """
 import numpy as np
+from s10_mpc.vmc_legs import car_omega_limit
 
 
 def _wrap(a):
@@ -52,10 +53,7 @@ class BodyMPPI:
         # 转向中），距离成本整体淡出，让 guide 指令主导（实测 wp3→4 狗偏
         # 北 1.5m 时 w_dist*d_min 压过 w_g，MPPI 输出 om≈0 不转向绕圈）；
         # 对准后距离成本恢复精修路线。连续量，无门控。
-        self.align_gate = float(_os.environ.get(
-            'S10_MPPI_ALIGN_GATE', '0.8'))
-        self.w_dist_align = float(_os.environ.get(
-            'S10_MPPI_W_DIST_ALIGN', '0'))
+        self.omega_lim_fn = car_omega_limit
         self.N, self.H, self.dt = N, H, dt
         self.tau_v, self.tau_w = tau_v, tau_w
         self.mu, self.g = mu, g
@@ -86,6 +84,7 @@ class BodyMPPI:
             vx_now = s[:, h, 3]
             om_lim = np.minimum(self.omega_max,
                                 self.mu * self.g / (np.abs(vx_now) + 1e-3))
+            om_lim = np.minimum(om_lim, self.omega_lim_fn(vx_now))
             om_c = np.clip(om_c, -om_lim, om_lim)
             vx_c = np.clip(vx_c, 0.0, self.vx_max)
             yaw = s[:, h, 2]
@@ -106,13 +105,6 @@ class BodyMPPI:
         R = ref.shape[0]
         xy = s[:, :, 0:2]                               # (N,H+1,2)
         # v435: 用当前狗状态（s0）相对最近参考点的航向误差算对准系数
-        _a = 1.0
-        if self.w_dist_align > 0.0 and R > 0:
-            _d2_0 = np.sum((s[:, None, 0, 0:2] - ref[None, :, 0:2]) ** 2, axis=1)
-            _h0 = float(ref[int(np.argmin(_d2_0)), 2])
-            _e0 = abs(float(_wrap(s[0, 0, 2] - _h0)))
-            _a = float(np.clip(1.0 - _e0 / max(self.align_gate, 1e-3),
-                               0.0, 1.0))
         d2 = np.sum((xy[:, :, None, :] - ref[None, None, :, 0:2]) ** 2,
                     axis=-1)                             # (N,H+1,R)
         i_min = np.argmin(d2, axis=-1)                  # (N,H+1)
@@ -123,7 +115,7 @@ class BodyMPPI:
             i_min[..., None], axis=-1)[..., 0]
         h_err = _wrap(s[:, :, 2] - h_ref)
         v_err = s[:, :, 3] - v_ref
-        cost = (self.w_dist * _a * d_min
+        cost = (self.w_dist * d_min
                 + self.w_h * h_err ** 2
                 + self.w_v * v_err ** 2)
         cost = cost.sum(axis=1)
@@ -155,8 +147,9 @@ class BodyMPPI:
                 guide_om = float(np.clip(
                     _dh * guide_vx / 2.0, -self.omega_max, self.omega_max))
         else:
-            guide_om = float(np.clip(
-                guide_om, -self.omega_max, self.omega_max))
+            _om_cap = float(np.minimum(
+                self.omega_max, self.omega_lim_fn(s0[3])))
+            guide_om = float(np.clip(guide_om, -_om_cap, _om_cap))
         noise_vx = self.rng.normal(0.0, sv, (self.N, self.H))
         noise_om = self.rng.normal(0.0, so, (self.N, self.H))
         u_seq = np.zeros((self.N, self.H, 2))
@@ -186,6 +179,7 @@ class BodyMPPI:
         # v318: vx 额外钳到当前 v_ref——MPPI 加权平均会因路径距离收益
         # 系统性超速 0.2-0.3 m/s（坡顶 3.5 vs vlim 3.23 过脊离地自旋实测）。
         _vcap = min(self.vx_max, guide_vx)
+        _om_out = float(np.minimum(self.omega_max, self.omega_lim_fn(s0[3])))
         u_out = np.array([np.clip(u_new[0], 0.0, _vcap),
-                          np.clip(u_new[1], -self.omega_max, self.omega_max)])
+                          np.clip(u_new[1], -_om_out, _om_out)])
         return float(u_out[0]), float(u_out[1])
