@@ -1124,6 +1124,11 @@ class CarVMC:
             if not hasattr(self, "_om_ff_lp"):
                 self._om_ff_lp = 0.0
             self._om_ff_lp += (self._om_f - self._om_ff_lp) * min(1.0, dt / 0.15)
+            # v797: yaw FF 速度渐隐——低速满（巡航弯响应快），高速渐隐
+            # （高速 FF 滞后引发极限环，wp9→10 实测）；连续量无门控。
+            _vspd = float(abs(getattr(self, "_vx_f", 0.0)))
+            _kff *= float(np.clip(
+                1.0 - max(0.0, _vspd - 3.0) / 2.0, 0.0, 1.0))
             # v289: 滑模式 yaw（RobuROC6）——饱和 tanh 误差项（小误差高增益
             # 快收敛、大误差饱和不过冲，替代纯比例→消除低速极限环）+
             # 库仑摩擦前馈（克服低速静摩擦）+ 高频阻尼。
@@ -1156,9 +1161,12 @@ class CarVMC:
             # v280: 动态 yaw slew——|yaw 误差|大时放开（高速/大 err 需激进
             # 转向，30→60+；连续 err 驱动，非门控）
             _yerr = abs(self._om_f - body["omega"])
+            # v797: slew 速度放大——低速小（防过冲瞬态，巡航 wp1 弯），
+            # 高速大（高架 4.9m/s 需 ~200 才不极限环，wp9→10 实测）。
             _tslew = float(os.environ.get("S10_CAR_YAW_SLEW", "30.0")) * float(
                 np.clip(1.0 + _yerr / float(os.environ.get(
-                    "S10_CAR_YAW_SLEW_K", "1.0")), 1.0, 4.0))
+                    "S10_CAR_YAW_SLEW_K", "1.0")), 1.0, 4.0)) * float(
+                np.clip(1.0 + max(0.0, _vspd - 4.2) * 5.0, 1.0, 7.0))
             if not hasattr(self, "_t_yaw_prev"):
                 self._t_yaw_prev = np.zeros(4)
             _ty = float(np.clip(
