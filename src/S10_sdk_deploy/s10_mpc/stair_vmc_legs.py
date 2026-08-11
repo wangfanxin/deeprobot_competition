@@ -1516,7 +1516,11 @@ class FootPlaceVMC:
                 _bkd = float(os.environ.get('S10_FP_BODY_KD', '0.06'))
                 wz += float(qvel[2]) * _bkd
                 _bp_err = float(body["pitch"] - _bdes_pitch)
-                wz += _front * _bp_err * 0.3 * _bk
+                # A2(批准): 俯仰率阻尼——抬升期 body 翘头振荡（pitch -1.4
+                # 实测）用 rate 项削峰，不硬顶
+                _bpd = float(os.environ.get('S10_FP_BODY_PD', '0.05'))
+                wz += _front * (_bp_err * 0.3 * _bk
+                                - _bpd * pitch_rate)
             _dw = np.array([wheel_xyz[leg, 0] - hip_w[0],
                            wheel_xyz[leg, 1] - hip_w[1],
                            wz - hip_w[2]])
@@ -1598,6 +1602,9 @@ class FootPlaceVMC:
                 # v878: 贴面爬升时抬升轮保持驱动（滚上立面），默认仍 0
                 if float(os.environ.get('S10_STAIR_SWING_WHEEL0', '1')) > 0:
                     tau[WHEEL_Q_IDX[leg]] = 0.0
+                else:
+                    # A3(批准): 抬升轮微正转防卡沿（1.5Nm，方向=前驱）
+                    tau[WHEEL_Q_IDX[leg]] = -1.5
             else:
                 tau[WHEEL_Q_IDX[leg]] = (
                     -(self.wheel_k * (v_ref - v_wheel))

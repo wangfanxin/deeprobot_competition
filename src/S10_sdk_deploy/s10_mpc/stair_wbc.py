@@ -74,7 +74,7 @@ class StairWBC(FootPlaceVMC):
                 self._sp_f_top = _tf
                 self._rel_f_t = None
         else:
-            if _df < -0.05 and _wz_f >= self._sp_f_top + r - 0.02:
+            if _df < -0.05 and _wz_f >= self._sp_f_top + r - 0.01:
                 if self._rel_f_t is None:
                     self._rel_f_t = self._t
                 elif self._t - self._rel_f_t >= 0.05:
@@ -88,7 +88,7 @@ class StairWBC(FootPlaceVMC):
                 self._sp_r_top = _tr
                 self._rel_r_t = None
         else:
-            if _dr < -0.05 and _wz_r >= self._sp_r_top + r - 0.02:
+            if _dr < -0.05 and _wz_r >= self._sp_r_top + r - 0.01:
                 if self._rel_r_t is None:
                     self._rel_r_t = self._t
                 elif self._t - self._rel_r_t >= 0.05:
@@ -209,6 +209,8 @@ class StairWBC(FootPlaceVMC):
                     _z_face = _z_bot + _r + _dhv * _ss
                 else:
                     _z_face = _top + _r
+                # A1(批准): 硬上限——body 闭环/IK 不得把抬升目标泵高
+                _z_face = min(_z_face, _top + _r + 0.005)
                 # FP: wz = min(place_z + r + margin, hip+0.15) -> 反解 place_z
                 _margin = float(os.environ.get("S10_STAIR_LIFT_MARGIN", "0.04"))
                 _pz_new[_leg] = _z_face - _r - _margin

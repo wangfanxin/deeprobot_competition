@@ -487,10 +487,13 @@ def main():
             _mppi_off = False
             try:
                 if fol.mode == 'STAIR' and stair_world:
+                    # v879: MPPI 关闭窗用 stair_world[0]（第 1 级小台阶）——
+                    # 实测用高 riser 时接近段 MPPI 多跑 0.4s 提前失速(y37.7)，
+                    # 回到能到 y38 的旧窗口
                     (_rp0, _tng0, _sr0, _dh0, _top0) = stair_world[0]
                     _d_f0 = float(np.dot(pos2 - _rp0, _tng0))
                     _mppi_off = abs(_d_f0) < float(os.environ.get(
-                        'S10_STAIR_MPPI_OFF_D', '2.0'))
+                        'S10_STAIR_MPPI_OFF_D', '0.5'))
             except Exception:
                 _mppi_off = False
             if (os.environ.get('S10_VMC_USE_NAV', '0') == '1'
@@ -647,10 +650,16 @@ def main():
         _stair_exec = False
         if _in_stairzone_now and stair_world:
             try:
-                (_rp0, _tng0, _sr0, _dh0, _top0) = stair_world[0]
-                _d_first = float(np.dot(body_pos[:2] - _rp0, _tng0))
-                # v874: abs()——原 _d_first<D 在 riser 前恒成立（负数），
-                # 解耦从未生效；改为前后 0.5m 内才切位置基执行器
+                # v879(批准 A+B): 执行器只对"高 riser"(dh>0.085) 生效——
+                # 第 1 级小台阶(0.061m)保持 CarVMC 动量滚上，第 2 级起
+                # (0.125m)才切 StairWBC 贴面爬升
+                _d_first = 1e9
+                for (_rp0, _tng0, _sr0, _dh0, _top0) in stair_world:
+                    if _dh0 <= 0.085:
+                        continue
+                    _dd0 = float(np.dot(body_pos[:2] - _rp0, _tng0))
+                    if abs(_dd0) < abs(_d_first):
+                        _d_first = _dd0
                 _stair_exec = abs(_d_first) < float(os.environ.get(
                     'S10_STAIR_EXEC_D', '0.5'))
             except Exception:
