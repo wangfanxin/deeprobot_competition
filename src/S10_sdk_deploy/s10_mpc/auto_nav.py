@@ -846,6 +846,16 @@ class AutoNavFollower:
                         "S10_RIDGE_MIN_DIST", "1.5")):
                     v_lim = max(v_lim, _rmin)
                     break
+        # v795: 墙区位置直判限速（放在最后生效，不被 RIDGE_MIN_VX 动量提升
+        # 覆盖——wp11→12 机器人抄近道绕墙东端时 s_cur 投影失效、ridge 提升
+        # max(vlim,3.0) 把墙区 1.5 顶掉实测）；按真实位置判墙区。
+        if (float(os.environ.get("S10_WALL_DETOUR_AMP", "0.0")) > 0.0):
+            _wvx = float(os.environ.get("S10_WALL_VX", "0.0"))
+            if _wvx > 0.0:
+                _wc, _wh = -6.0, 2.5
+                if (_wc - _wh <= robot_xy[0] <= _wc + _wh
+                        and 40.5 <= robot_xy[1] <= 43.5):
+                    v_lim = min(v_lim, _wvx)
         # 速度限幅：避免转向后瞬间 0→4 m/s 的侧向冲击（侧翻风险）
         dv = self.max_accel * (_dt_nav)   # 每拍增量按真实更新周期缩放（v442）
         vx = float(np.clip(v_lim,
