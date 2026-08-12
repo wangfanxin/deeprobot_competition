@@ -189,7 +189,7 @@ class NmpcWbc:
         kd_y = float(os.environ.get('S10_NMPC_KD_YAW', '2.0'))
         w_f = float(os.environ.get('S10_NMPC_WF', '1e-3'))
         w_a = float(os.environ.get('S10_NMPC_WA', '1.0'))
-        w_m = float(os.environ.get('S10_NMPC_WM', '0.05'))
+        w_m = float(os.environ.get('S10_NMPC_WM', '0.1'))
         # 名义支撑力参考：防 QP 把 F 压到 0 → 自由落体（台架 F=0 实测）
         w_fr = float(os.environ.get('S10_NMPC_WFR', '0.02'))
         # v1060/v1061: 贴面爬升——SWING 轮保留小接触力（F_z≥5N）；
@@ -274,8 +274,11 @@ class NmpcWbc:
         u = np.hstack([be] + ub + [1e9] * 12)
         for i in range(4):
             if swing[i] > 0.5:
-                # 贴面爬升：F_z ≥ 5N（保留接触），F_xy 自由
-                l[3 + len(rows) + 3*i + 2] = 5.0
+                # v1070: 贴面爬升——SWING 轮 F_z ≥ 半支撑(46N)，非 5N。
+                # 5N 几乎卸载 → 后轴抬升期 body 俯仰 → 前腿被动上折泵高
+                # （t=7 轮 1.09 实测）；半支撑让轮保持滚爬、俯仰小
+                l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
+                    'S10_NMPC_SWING_FZ_MIN', '46.0'))
                 u[3 + len(rows) + 3*i + 2] = self.fz_max
         if self._nmpc_prob is None:
             import osqp
@@ -419,6 +422,18 @@ class NmpcWbc:
                 # 卡死实测）；正则把腿拉回标称蹲姿，防奇异漂移
                 _kp_pose = float(os.environ.get('S10_NMPC_KP_POSE', '20.0'))
                 _kd_pose = float(os.environ.get('S10_NMPC_KD_POSE', '6.0'))
+                # v1071: 对侧轴 SWING 时本轴强姿态保持——后轴抬升反作用
+                # 使前腿上折泵高（轮 1.09 实测）；前腿钉在弯曲位形防折叠
+                if float(np.max(swing[2:4])) > 0.5 and leg in (0, 1):
+                    _kp_pose = float(os.environ.get(
+                        'S10_NMPC_KP_POSE_OPP', '200.0'))
+                    _kd_pose = float(os.environ.get(
+                        'S10_NMPC_KD_POSE_OPP', '20.0'))
+                if float(np.max(swing[0:2])) > 0.5 and leg in (2, 3):
+                    _kp_pose = float(os.environ.get(
+                        'S10_NMPC_KP_POSE_OPP', '200.0'))
+                    _kd_pose = float(os.environ.get(
+                        'S10_NMPC_KD_POSE_OPP', '20.0'))
                 tau[LEG_CTRL_IDX[b + 1]] = float(
                     th1 + _kp_pose * (_qp1 - q1) - _kd_pose * dq1)
                 tau[LEG_CTRL_IDX[b + 2]] = float(
