@@ -626,8 +626,16 @@ def main():
                         _ys_err += 2.0 * np.pi
                     _sh_g = float(os.environ.get('S10_STAIR_HDG_K', '1.2'))
                     _sh_d = float(os.environ.get('S10_STAIR_HDG_D', '2.5'))
+                    # v1038: 积分项消除稳态偏置——P+D 航向锁压不住西漂
+                    # (yaw 1.5→2.2 实测)，Ki 累积误差持续回推
+                    _sh_i = getattr(fol, '_sh_int', 0.0)
+                    _sh_i += _ys_err * _dt_nav
+                    _sh_i = float(np.clip(_sh_i, -0.4, 0.4))
+                    fol._sh_int = _sh_i
+                    _sh_ki = float(os.environ.get('S10_STAIR_HDG_KI', '0.4'))
                     om_c = float(np.clip(
-                        _sh_g * _ys_err - _sh_d * float(qvel[5]),
+                        _sh_g * _ys_err + _sh_ki * _sh_i
+                        - _sh_d * float(qvel[5]),
                         -float(os.environ.get('S10_STAIR_HDG_OM', '0.6')),
                         float(os.environ.get('S10_STAIR_HDG_OM', '0.6'))))
                     if os.environ.get('S10_NAV_DEBUG', '0') == '1':

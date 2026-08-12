@@ -298,7 +298,12 @@ class StairWBC(FootPlaceVMC):
         # 垂直力抗抬头"对应项）——后轴抬轮把 body 后部顶起，前腿压载
         # 把 body 拉平，防前轮被反作用折叠上翻（0.86-0.91 实测）。
         _press_base = float(os.environ.get("S10_FP_PRESS", "0.005"))
-        if self._sp_r > 0.5:
+        if self._sp_f > 0.5:
+            # v1037: 前轴 SWING 期后轮深压抗翘头——前轮抬升+后轮推力
+            # → body 翘头、后轮离地 0.2m、前腿软增益压不住（轮 1.1 实测）
+            os.environ["S10_FP_PRESS"] = str(float(os.environ.get(
+                "S10_FP_PRESS_FRONT", "0.040")))
+        elif self._sp_r > 0.5:
             os.environ["S10_FP_PRESS"] = str(float(os.environ.get(
                 "S10_FP_PRESS_REAR", "0.030")))
         elif float(os.environ.get("S10_FP_PRESS", "0.005")) != _press_base:
@@ -382,26 +387,26 @@ class StairWBC(FootPlaceVMC):
             _brake_k = float(os.environ.get("S10_FP_YAW_BRAKE_K", "8.0"))
             _brake_w = float(np.clip(
                 (abs(_om_yx) - _brake_g) / 1.0, 0.0, 1.0))
-            # v1035: 导航 om 差速回归轮控（原 v1025 重写丢弃基类 om 跟踪 →
-            # 航向锁定/导航转向在 WBC 期完全无效）。vref 含 om·track 差速
-            # + 前驱下限 + yaw 率差速/硬刹。
+            # v1036: yaw 差速必须在前驱下限**之后**叠加——v1035 把差速放
+            # vref 里被 max(_tw,-6) 吞掉（正常滚动 vw≈vref→PID≈0→左右同被
+            # 钳 -6，差速=0），航向锁定在 WBC 期毫无作用、狗持续东漂。
+            # 结构：公共速度 PID→前驱下限→叠加 nav om 差速→yaw 率阻尼→硬刹。
             _om_cmd = float(cmd.get("omega", 0.0))
             for _leg in range(4):
                 if step_lift[_leg] <= 0.5:
-                    # 左轮(0,2)=-1 右轮(1,3)=+1（CarVMC 约定）：om>0 左转
+                    # 左轮(0,2)=-1 右轮(1,3)=+1（CarVMC 约定）
                     _sd = -1.0 if _leg in (0, 2) else 1.0
                     _wq = float(qvel[WHEEL_QV_IDX[_leg]])
                     _vw = -_wq * self.fk.r
-                    _vref_w = (self._vx_f
-                               + _sd * _om_cmd * self.track_half
-                               - _sd * _om_yx * _kd_yx * self.track_half)
-                    _tw = -(self.wheel_k * (_vref_w - _vw)
+                    _tw = -(self.wheel_k * (self._vx_f - _vw)
                             - self.wheel_d * _wq)
-                    _tw = max(float(_tw), _dfx)
+                    _tw = max(float(_tw), _dfx)      # 前驱下限（公共项）
+                    # 导航 om>0=左转：左轮减载/右轮加载（-wheel_k·sd·om·t）
+                    _tw -= self.wheel_k * _sd * _om_cmd * self.track_half
+                    # yaw 率阻尼：左自旋(om_yx>0)→左轮加载/右轮减载
+                    _tw += _sd * _om_yx * _kd_yx * self.track_half
                     if _brake_w > 0.0:
-                        _tw = min(float(tau[WHEEL_Q_IDX[_leg]]), _dfx) - (
-                            _corr + _sx * _om_yx * _brake_k
-                            * self.track_half * _brake_w)
+                        _tw += _sd * _om_yx * _brake_k * self.track_half * _brake_w
                     tau[WHEEL_Q_IDX[_leg]] = _tw
         except Exception:
             pass
