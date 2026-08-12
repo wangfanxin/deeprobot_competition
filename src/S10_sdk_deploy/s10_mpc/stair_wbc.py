@@ -365,6 +365,22 @@ class StairWBC(FootPlaceVMC):
                         tau[WHEEL_Q_IDX[_leg]] = -3.0
         except Exception:
             pass
+        # v1021: 支撑轮前驱下限——爬升期后轮空转被速度 PID 判超速倒转
+        # → 狗卡在棱口不推进(y 卡 38.0、vx≈0 实测)。SWING 期支撑轮至少
+        # -DRIVE_FLOOR 前驱(负=前)。
+        # v1022: 贴面前轮温和前驱 -3Nm 滚上立面——狗卡在 d=-0.1(轮贴面
+        # 前 3cm)不推进，SWING 目标=地面不抬。body 已健康(0.80)+阻抗已
+        # 生效，温和前驱让轮滚上棱(此前爆炸因 body 塌+无阻抗)。
+        try:
+            _any_swx = float(np.max(step_lift)) > 0.5
+            if _any_swx:
+                _dfx = -float(os.environ.get("S10_FP_DRIVE_FLOOR", "6.0"))
+                for _leg in range(4):
+                    if step_lift[_leg] <= 0.5:
+                        tau[WHEEL_Q_IDX[_leg]] = min(
+                            float(tau[WHEEL_Q_IDX[_leg]]), _dfx)
+        except Exception:
+            pass
         # 腿控 Yaw：HipX 外展/内收修正航向（导航 yaw 误差 + yaw 率阻尼）
         try:
             _kp_y = float(os.environ.get("S10_FP_YAW_KP", "2.0"))
