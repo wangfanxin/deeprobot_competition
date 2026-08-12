@@ -1541,6 +1541,15 @@ class FootPlaceVMC:
             if sl <= 0.5:
                 wz = min(wz, float(terrain_h[leg]) + self.fk.r
                          - _fp_press + 0.05)
+                # v919: 几何台面顶封顶——轮在台面上时运动学地面可能锁死
+                # 过伸（前轮上台后悬空 0.15m 卡在台上不进实测）；拉回
+                # geo_top+r+0.01 让轮落回台面抓地
+                try:
+                    _gt = float(cmd.get("geo_top", np.zeros(4))[leg])
+                    if _gt > 0.4:
+                        wz = min(wz, _gt + self.fk.r + 0.01)
+                except Exception:
+                    pass
             _dw = np.array([wheel_xyz[leg, 0] - hip_w[0],
                            wheel_xyz[leg, 1] - hip_w[1],
                            wz - hip_w[2]])
