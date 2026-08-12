@@ -106,7 +106,9 @@ class StairWBCQP:
                 # 爬完 body 侧滚、对侧髋变低必须折叠才能到台面 → 过伸实测
                 _roll_gate = True
                 if not _lead:
-                    _roll_gate = abs(getattr(self, '_body_roll', 0.0)) < 0.08
+                    # v954: 门控放宽到 0.15——FL 上台面后 body 几何 roll 约
+                    # 0.1（腿吸收后观测 -0.1），0.08 太紧 FR 永远等不到
+                    _roll_gate = abs(getattr(self, '_body_roll', 0.0)) < 0.15
                 _ok = (_win_lo < d[i] < _win_hi
                        and not self._done[i]
                        and (not _lead or _front_done)
