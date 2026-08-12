@@ -624,7 +624,9 @@ def main():
             # 航向保持交给 WBC 反馈（om_f=0 时差速≈0，四轮统一向前推）。
             # v871: 技能门控改 fol.mode（z 先验 stair_zone 不再作触发）
             if fol.mode == 'STAIR':
-                om_c *= 0.5
+                # v1032: stair 区 om 缩放改为环境可调——原 0.5 把修正砍半，
+                # 16° 偏航需要 0.68rad/s 被压到 0.25 → 进梯前纠不回来
+                om_c *= float(os.environ.get('S10_STAIR_OM_SCALE', '0.5'))
             # v263: 回退 v261/v262 脊前对准（起步被扰动 + wp4→5 仍不稳，
             # 脆）。过脊靠地形前瞻（ERR_GATE 提高后转弯中保持生效）+ 慢速。
             # 近脊仅保留速度相关 omcap（v245）。
@@ -764,7 +766,7 @@ def main():
                 _d_crest = 1e9
                 _fax_c = body_pos[:2] + np.array([_fx_p * 0.228, _fy_p * 0.228])
                 for (_rp, _tng, _sr, _dhv, _top) in stair_world:
-                    if _dhv <= 0.085:
+                    if _dhv <= 0.050:
                         continue
                     _ddc = float(np.dot(_fax_c - _rp, _tng))
                     if abs(_ddc) < abs(_d_crest):
@@ -795,7 +797,7 @@ def main():
                 # (0.125m)才切 StairWBC 贴面爬升
                 _d_first = 1e9
                 for (_rp0, _tng0, _sr0, _dh0, _top0) in stair_world:
-                    if _dh0 <= 0.085:
+                    if _dh0 <= 0.050:
                         continue
                     _dd0 = float(np.dot(body_pos[:2] - _rp0, _tng0))
                     if abs(_dd0) < abs(_d_first):
@@ -842,7 +844,7 @@ def main():
             _df_p = 1e9; _dr_p = 1e9; _tf_p = 0.0; _tr_p = 0.0
             for (_rp, _tng, _sr, _dhv, _top) in stair_world:
                 # 只对高 riser（>轮半径 0.085）触发抬升，小台阶纯滚
-                if _dhv <= 0.085:
+                if _dhv <= 0.050:
                     continue
                 _dd_f = float(np.dot(_fax_p - _rp, _tng))
                 _dd_r = float(np.dot(_rax_p - _rp, _tng))
@@ -1305,7 +1307,7 @@ def main():
                         # v769: 台阶高 ≤ 轮半径(0.081) 的 riser 不抬轮——
                         # 纯滚动可过，提前抬轮反而让前轮离地失牵引卡死实测
                         # （首级 0.063m 小台阶 < r，历史上是第一个卡点）。
-                        if _dhv <= 0.085:
+                        if _dhv <= 0.050:
                             continue
                         _df8 = float(np.dot(_fax8 - _rp, _tng))
                         _dr8 = float(np.dot(_rax8 - _rp, _tng))

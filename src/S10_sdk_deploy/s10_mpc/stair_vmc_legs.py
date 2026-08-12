@@ -1540,6 +1540,11 @@ class FootPlaceVMC:
             if sl <= 0.5:
                 wz = min(wz, float(terrain_h[leg]) + self.fk.r
                          - _fp_press + 0.05)
+                # v1028: 支撑轮 wz 下限钳制——body-z 闭环把目标压到地底
+                # (0.39 实测) → IK 不可达 → 腿折叠死举 → body 塌 0.64。
+                # 只许比静压位再低 2cm，fold 被物理阻断，振荡有界。
+                wz = max(wz, float(terrain_h[leg]) + self.fk.r
+                         - _fp_press - 0.02)
             _dw = np.array([wheel_xyz[leg, 0] - hip_w[0],
                            wheel_xyz[leg, 1] - hip_w[1],
                            wz - hip_w[2]])
@@ -1551,7 +1556,7 @@ class FootPlaceVMC:
             # 前冲让前腿向后折叠(relx -0.18~-0.36 实测)，后向腿近奇异无力
             # 举身 → body 塌 0.63 死举。正常站姿腿必须前伸(relx>0)，
             # 才有垂直力分量把 body 举回。
-            rel[0] = max(float(rel[0]), 0.05)
+            rel[0] = max(float(rel[0]), 0.0)   # v1029: 仅防折叠(relx<0)，不强制前移 0.05——接管时腿位形与巡航一致，避免重构塌陷
             # v732: 抬升腿放宽 IK 伸展钳制（上 0.125m 台面需轮相对髋
             # z≈-0.25~-0.31，原 -0.16 锁死抬升）；支撑腿保持 -0.16 防猛伸
             # v810: 支撑腿腿长钳制可调（S10_FP_REACH）——断崖 0.377m 落差 >

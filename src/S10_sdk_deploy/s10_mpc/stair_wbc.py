@@ -34,7 +34,7 @@ class StairWBC(FootPlaceVMC):
         self.stair_world = []      # [(pt, tng, arc, dh, top)] 世界坐标
         self.stair = None          # AutoNavFollower 引用（stair_terrain）
         # ---- 参数（终版固定值，收敛为类属性） ----
-        self.swing_d = 0.15        # 抬升窗：与 ModeSchedule 触发窗对齐（v1008）
+        self.swing_d = float(os.environ.get("S10_STAIR_SWING_D", "0.15"))  # 抬升窗（v1031: 环境可调，与脚本相位机对齐）
         # 0.30 提前预拉腿目标 → body 塌陷(0.63 实测)；0.15 保持 body 0.77
         self.swing_to = 1.5        # SWING 绝对超时兜底
         self.lift_margin = 0.04    # place_z -> 轮心目标 的余量
@@ -63,7 +63,7 @@ class StairWBC(FootPlaceVMC):
         """前/后轴到最近高 riser 的沿切线投影距离与台面顶高（世界坐标）。"""
         dmin, top = 1e9, 0.0
         for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
-            if _dhv <= 0.085:      # 小台阶纯滚（首级 0.063m < 轮半径）
+            if _dhv <= 0.050:      # v1027: riser1(0.061m) 也走 SWING 抬轮放置（锐角滚动对偏航极敏感）
                 continue
             _dd = float(np.dot(np.asarray(ax, dtype=np.float64) - _rp, _tng))
             if abs(_dd) < abs(dmin):
@@ -88,7 +88,10 @@ class StairWBC(FootPlaceVMC):
                 self._rel_f_t = None
                 self._sw_f_t0 = self._t
         else:
-            if _df > 0.10 and _wz_f >= self._sp_f_top + r + 0.005:
+            # v1030: 释放阈值放低到 top+r-0.01——带静压(-0.005)的轮在
+            # 台面实际高 top+r-0.005，原 +0.005 阈值(0.627)永远够不到
+            # (实测 0.617) → SWING 挂起到超时，期间腿泵高翻车
+            if _df > 0.10 and _wz_f >= self._sp_f_top + r - 0.01:
                 if self._rel_f_t is None:
                     self._rel_f_t = self._t
                 elif self._t - self._rel_f_t >= 0.05:
@@ -106,7 +109,7 @@ class StairWBC(FootPlaceVMC):
                 self._rel_r_t = None
                 self._sw_r_t0 = self._t
         else:
-            if _dr > 0.10 and _wz_r >= self._sp_r_top + r + 0.005:
+            if _dr > 0.10 and _wz_r >= self._sp_r_top + r - 0.01:
                 if self._rel_r_t is None:
                     self._rel_r_t = self._t
                 elif self._t - self._rel_r_t >= 0.05:
@@ -139,7 +142,7 @@ class StairWBC(FootPlaceVMC):
             _best_d = 1e9
             _best = None
             for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
-                if _dhv <= 0.085:
+                if _dhv <= 0.050:
                     continue
                 _dd = float(np.dot(_ax_xy - _rp, _tng))
                 if -self.swing_d < _dd < 0.05 and abs(_dd) < abs(_best_d):
