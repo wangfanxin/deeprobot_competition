@@ -389,6 +389,16 @@ class StairWBCQP:
                            - _kdp * float(qvel[6 + LEG_QV_LEG[b + 1]]))
                     tk += (_kpp * (self.pose_target[b + 2] - q2)
                            - _kdp * float(qvel[6 + LEG_QV_LEG[b + 2]]))
+                # v955: 支撑腿防过伸——轮在台面上时实际高度超过 geo-top+r
+                # 过多(>0.03)就伸膝压回台面（FR 姿态期持续 1.03-1.06 悬空
+                # 实测，stance PD 被 body roll 带高拉不回）
+                if _gt_hi > 0.4:
+                    _over_s = float(wheel_xyz[leg, 2]) - (_gt_hi + self.fk.r)
+                    if _over_s > 0.01:
+                        # v957: 支撑腿防过伸用更高增益(默认1000)——前轮悬空
+                        # 0.03-0.06 无抓地、狗不前进、RR 进不了窗实测
+                        _k_ovs = float(os.environ.get("S10_QP_K_OVER_ST", "1000.0"))
+                        tk -= _k_ovs * _over_s
                 tau[hipy_i] = float(np.clip(th, -48, 48))
                 tau[knee_i] = float(np.clip(tk, -48, 48))
             else:
