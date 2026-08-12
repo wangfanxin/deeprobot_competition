@@ -619,10 +619,11 @@ def main():
                 try:
                     _stair_hdg = float(np.arctan2(
                         stair_world[0][1][1], stair_world[0][1][0]))
-                    # v1044: 横向收敛——yaw 振荡均值偏东导致 1.8m 横漂离开
-                    # 台阶平台；瞄准方向 = 切线 + 横向偏差修正（把狗拉回中线）
+                    # v1046: 横向收敛符号修正——狗在东侧(x>center)应向西修
+                    # (yaw 增大，aim>hdg)；原 lat_err=center-x 给负值→继续
+                    # 向东发散（ex56 东漂 2m 到平台外实测）。东正 lat_err。
                     _center_x = float(stair_world[0][0][0])
-                    _lat_err = _center_x - body_pos[0]
+                    _lat_err = body_pos[0] - _center_x
                     _k_lat = float(os.environ.get('S10_STAIR_HDG_LAT', '0.35'))
                     _aim_h = _stair_hdg + float(np.clip(
                         _lat_err * _k_lat, -0.6, 0.6))

@@ -170,7 +170,11 @@ class StairWBC(FootPlaceVMC):
             else:
                 _z_face = _top + _r
             _z_face = min(_z_face, _top + _r + 0.005)
-            _pz[_leg] = _z_face - _r - self.lift_margin
+            # v1047/v1048: place_z 语义=台面顶(基类 wz=pz+r+margin)——
+            # 原 pz=z_face-r-margin → 轮目标=顶(0.541) 压进台面 8cm；
+            # v1047 改 z_face-r 仍差 margin 4cm；正确输出 z_face，
+            # 基类得轮目标=顶+半径+margin(0.662)，轮悬空越过棱角再落台
+            _pz[_leg] = _z_face
         return _pz
 
     # ---------------- QP Checker：接触合规校验（非分配主环） ----------------
@@ -366,11 +370,17 @@ class StairWBC(FootPlaceVMC):
                 _drop_r = float(_hip_r[2] - wheel_xyz[_leg, 2])
                 # v1011: 仅当前腿未 SWING 时触发——SWING 期轮在髋附近
                 # (垂距<3cm 正常)，恢复矩误触发 + 后轮前驱 → 弹射
+                # v1045: 触发阈值环境可调 + drop 过小项——body 塌到 0.59
+                # (drop=0.04) 时原 0.03 阈值不触发，死举无恢复 → 轮失压
+                # → yaw 差速打滑。drop<阈值时同加恢复矩掰腿前伸
+                _recov_drop = float(os.environ.get("S10_FP_RECOV_DROP", "0.03"))
                 if (step_lift[_leg] <= 0.5
-                        and (_relx_r < 0.0 or _drop_r < 0.03)):
+                        and (_relx_r < 0.0 or _drop_r < _recov_drop)):
                     _recov_on = True
                     _q1 = float(qpos[6 + _leg * 3 + 1])
                     _tau_r = _recov_k * max(0.05 - _relx_r, 0.0)
+                    _tau_r += _recov_k * 0.5 * max(
+                        _recov_drop - _drop_r, 0.0)
                     # 终版公式：K_recov=15 Nm/m * relx 误差，温和恢复
                     _tau_r = float(np.clip(_tau_r, -48.0, 48.0))
                     tau[LEG_CTRL_IDX[_leg * 3 + 1]] += _tau_r
