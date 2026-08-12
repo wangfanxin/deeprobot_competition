@@ -126,8 +126,8 @@ class NmpcWbc:
                 self._sp_f_top = _tf
                 self._sw_f_t0 = self._t
         else:
-            # v1066: 释放条件改为"轮高达台面顶+半径"（原还要 d>0.10，
-            # 横向偏 0.35m 使 d 投影永不过 → 轮悬 1.11 发射实测）
+            # v1066: 释放条件"轮高达台面顶+半径"（v1073 双轴同 SWING 实测
+            # 失稳 om 4.57，回退顺序 SWING）
             if _wz_f >= self._sp_f_top + r - 0.01:
                 self._sp_f = 0.0
             elif self._t - self._sw_f_t0 > self.swing_to:
@@ -196,7 +196,7 @@ class NmpcWbc:
         # F_ref 按实际接触轮数分配（前轮抬升时后轮各担 mg/2，否则
         # 求解器给后轮 0 → body 落 → 前轮饱和 → 振荡发射实测）
         F_ref = np.zeros(12)
-        _n_cont = max(float(np.sum(swing <= 0.5)), 1e-3)
+        _n_cont = max(float(np.sum(swing <= 0.5)), 1.0)
         for i in range(4):
             F_ref[3*i+2] = m * g / _n_cont * (
                 1.0 if swing[i] <= 0.5 else 0.2)
