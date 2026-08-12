@@ -178,6 +178,8 @@ class StairWBCQP:
                 float(body["pos"][2]) - 0.78)
             a_des[3] = float(os.environ.get("S10_QP_AR_K", "-50.0")) * body["roll"]
             a_des[4] = float(os.environ.get("S10_QP_AP_K", "-50.0")) * body["pitch"]
+            # v907: yaw 率阻尼——QP 侧向力耦合出 yaw 自旋(om±2.9 实测)
+            a_des[5] = float(os.environ.get("S10_QP_AY_K", "-20.0")) * qvel[5]
             W1 = np.diag([0.0, 0.0, 400.0, 50.0, 50.0, 20.0])
             P = A.T @ W1 @ A + 1e-2 * np.eye(n)
             q = -A.T @ W1 @ (a_des - b0) - 1e-2 * lam_ref

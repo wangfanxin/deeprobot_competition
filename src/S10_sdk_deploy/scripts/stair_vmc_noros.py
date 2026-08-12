@@ -504,7 +504,9 @@ def main():
                     _d_rear = float(np.dot(_rax9 - _lp, _ltng))
                     _wz_rear = float(np.mean([
                         d.xpos[WHEEL_BODY[i], 2] for i in (2, 3)]))
-                    _exit_geom = (_d_rear < -0.05
+                    # v907: 出口符号修正——d>0.05 是"过末级棱后"；原 d<-0.05
+                    # （棱前）恒成立→mode 反复切换（QP 台架实测）
+                    _exit_geom = (_d_rear > 0.05
                                   and _wz_rear >= _ltop + self_fk_r - 0.02)
                 if _exit_geom:
                     _exit_cnt[0] += _nav_period * DT
