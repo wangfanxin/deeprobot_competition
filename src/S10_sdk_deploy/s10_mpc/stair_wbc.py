@@ -366,21 +366,30 @@ class StairWBC(FootPlaceVMC):
                         tau[WHEEL_Q_IDX[_leg]] = -3.0
         except Exception:
             pass
-        # v1021/v1023: 支撑轮前驱下限 + yaw_rate 差速——爬升期后轮空转被
-        # PID 倒转 → 卡死；且前轮贴面不对称让 yaw 漂到 2.1(偏 34°)，前驱
-        # 全变西向推力(实测)。SWING 期支撑轮至少 -DRIVE_FLOOR 前驱(负=前)
-        # + yaw_rate 差速把航向拉回。
+        # v1021/v1023/v1024: stance-wheel forward-drive floor (all time) + yaw-rate diff
+        # v1025: FIX yaw-rate diff to LEFT/RIGHT split (old front/rear split was pitch
+        # modulation, not heading correction -> unbraked spin at takeover, ex04 flip)
+        # + smooth yaw-rate brake (continuous ramp above gate, overrides drive floor).
         try:
-            _any_swx = float(np.max(step_lift)) > 0.5
-            if _any_swx:
-                _dfx = -float(os.environ.get("S10_FP_DRIVE_FLOOR", "6.0"))
-                _kd_yx = float(os.environ.get("S10_FP_YAW_DIFF", "2.0"))
-                for _leg in range(4):
-                    if step_lift[_leg] <= 0.5:
-                        _sx = -1.0 if _leg in (0, 1) else 1.0
-                        _corr = _sx * float(qvel[5]) * _kd_yx * self.track_half
-                        tau[WHEEL_Q_IDX[_leg]] = min(
-                            float(tau[WHEEL_Q_IDX[_leg]]), _dfx) - _corr
+            _dfx = -float(os.environ.get("S10_FP_DRIVE_FLOOR", "6.0"))
+            _kd_yx = float(os.environ.get("S10_FP_YAW_DIFF", "2.0"))
+            _om_yx = float(qvel[5])
+            _brake_g = float(os.environ.get("S10_FP_YAW_BRAKE_GATE", "1.2"))
+            _brake_k = float(os.environ.get("S10_FP_YAW_BRAKE_K", "8.0"))
+            _brake_w = float(np.clip(
+                (abs(_om_yx) - _brake_g) / 1.0, 0.0, 1.0))
+            for _leg in range(4):
+                if step_lift[_leg] <= 0.5:
+                    # left wheels(0,2)=+1 right(1,3)=-1: positive yaw rate (left spin)
+                    # -> left more forward / right reduced, generating right-turn moment
+                    _sx = 1.0 if _leg in (0, 2) else -1.0
+                    _corr = _sx * _om_yx * _kd_yx * self.track_half
+                    _tw = min(float(tau[WHEEL_Q_IDX[_leg]]), _dfx) - _corr
+                    if _brake_w > 0.0:
+                        _tw = min(float(tau[WHEEL_Q_IDX[_leg]]), _dfx) - (
+                            _corr + _sx * _om_yx * _brake_k
+                            * self.track_half * _brake_w)
+                    tau[WHEEL_Q_IDX[_leg]] = _tw
         except Exception:
             pass
         # 腿控 Yaw：HipX 外展/内收修正航向（导航 yaw 误差 + yaw 率阻尼）

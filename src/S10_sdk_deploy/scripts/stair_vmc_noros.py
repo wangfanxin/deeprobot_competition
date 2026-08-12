@@ -120,6 +120,10 @@ def main():
             _dy = wp[START_WP + 1][1] - wp[START_WP][1]
             _dx = wp[START_WP + 1][0] - wp[START_WP][0]
             _iy = float(np.arctan2(_dy, _dx))
+            # v1026: START_WP 分支允许 S10_INIT_YAW 覆盖（原无视 env 直接
+            # 用 wp 朝向 1.551，与路径 heading 1.514 差 2°+ 触发导航蛇行）
+            if os.environ.get('S10_INIT_YAW'):
+                _iy = float(os.environ.get('S10_INIT_YAW'))
         else:
             _iy = 1.5708
         d.qpos[3:7] = [np.cos(_iy / 2), 0, 0, np.sin(_iy / 2)]
@@ -564,7 +568,7 @@ def main():
             _rp_cnt += 1
             _rp_tot += _rp_dt
             _rp_max = max(_rp_max, _rp_dt)
-            if os.environ.get('S10_NAV_DEBUG', '0') == '1' and next_idx <= 6:
+            if os.environ.get('S10_NAV_DEBUG', '0') == '1' and next_idx <= 7:
                 print('[NAV] t=%.1f pos=(%.2f,%.2f) yaw=%.2f err=%.2f '
                       'tgt=(%.2f,%.2f) s_cur=%.2f vyaw=%.2f cte=%.2f'
                       % (t, body_pos[0], body_pos[1], yaw,
