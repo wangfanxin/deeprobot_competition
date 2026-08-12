@@ -68,6 +68,8 @@ class NmpcWbc:
         self._sp_r = 0.0
         self._sp_f_hover = 0.0
         self._sp_f_hover_s = 0.0
+        self._sp_f_hover_t0 = -1e9
+        self._sp_f_hover_pos = None
         self._sp_f_top = 0.0
         self._sp_r_top = 0.0
         self._sw_f_t0 = -1e9
@@ -137,11 +139,34 @@ class NmpcWbc:
                     self._sp_f_hover = 1.0
                     self._sp_f_hover_s = float(getattr(
                         self.stair, '_s_cur', 0.0))
-                _h_len = float(os.environ.get('S10_NMPC_HOVER_LEN', '0.12'))
+                    self._sp_f_hover_t0 = self._t
+                    self._sp_f_hover_pos = np.asarray(
+                        body_pos[:2], dtype=np.float64)
+                # v1082: ???????????? / ??????? / ?? /
+                # ?????????????? _s_cur ????????
+                _h_len = float(os.environ.get('S10_NMPC_HOVER_LEN', '0.10'))
+                _h_tmax = float(os.environ.get('S10_NMPC_HOVER_TMAX', '0.5'))
+                _h_done = False
                 if float(getattr(self.stair, '_s_cur', 0.0)) - \
                         self._sp_f_hover_s >= _h_len:
+                    _h_done = True
+                if not _h_done and self._sp_f_hover_pos is not None:
+                    _dp = np.asarray(body_pos[:2], dtype=np.float64) - \
+                        self._sp_f_hover_pos
+                    if float(_dp[0] * fwd[0] + _dp[1] * fwd[1]) >= _h_len:
+                        _h_done = True
+                if not _h_done and \
+                        self._t - self._sp_f_hover_t0 >= _h_tmax:
+                    _h_done = True
+                if not _h_done and \
+                        _wz_f <= self._sp_f_top + r - 0.04:
+                    _h_done = True
+                if _h_done:
                     self._sp_f = 0.0
                     self._sp_f_hover = 0.0
+                    if os.environ.get('S10_NMPC_DEBUG', '0') == '1':
+                        print('[HOVER] exit t=%.2f y=%.2f wz=%.3f' % (
+                            self._t, float(body_pos[1]), _wz_f), flush=True)
             elif self._t - self._sw_f_t0 > self.swing_to:
                 self._sp_f = 0.0
                 self._sp_f_hover = 0.0
@@ -213,7 +238,7 @@ class NmpcWbc:
         _n_cont = max(float(np.sum(swing <= 0.5)), 1.0)
         for i in range(4):
             F_ref[3*i+2] = m * g / _n_cont * (
-                1.0 if swing[i] <= 0.5 else 0.0)
+                1.0 if swing[i] <= 0.5 else 0.2)
         # 期望线性加速度（世界系）
         a_des = np.zeros(3)
         a_des[2] = kp_z * (ref['z'] - body['pos'][2]) \
@@ -237,6 +262,20 @@ class NmpcWbc:
         al_des[2] = kp_y * (ref['hdg'] - body['yaw']) \
             - kd_y * float(np.dot(R[:, 2], body['omega']))
         al_des[0] = -3.0 * body['roll']
+        # v1082: SWING/HOVER ??? z/????????a_des[2]<-g ?????
+        # ? F_z>=0 ?? ? ?????? F=0 ?????v1081 HOVER ???
+        # F ????????????????F ?????
+        a_des[2] = float(np.clip(a_des[2], float(os.environ.get(
+            'S10_NMPC_AZ_MIN', '-4.0')), float(os.environ.get(
+                'S10_NMPC_AZ_MAX', '12.0'))))
+        if float(np.max(swing)) > 0.5:
+            _al_lim = float(os.environ.get('S10_NMPC_AL_LIM', '6.0'))
+            al_des[1] = float(np.clip(al_des[1], -_al_lim, _al_lim))
+            al_des[2] = 0.0
+            _fwd2 = fwd_w[0:2]
+            _n2 = float(np.dot(_fwd2, _fwd2))
+            if _n2 > 1e-6:
+                a_des[0:2] = (float(np.dot(a_des[0:2], _fwd2)) / _n2) * _fwd2
         M_des = self.I_body @ al_des \
             + np.cross(body['omega'], self.I_body @ body['omega'])
         # 轮相对 CoM 位置（世界系）
@@ -271,6 +310,16 @@ class NmpcWbc:
         Ae[2, 14] = m
         # m·a - ΣF = m·g_vec，g_vec=(0,0,-g)（重力向下）——写 +mg 会让
         # ΣF 解为向下、WBC 把 body 往上推发射（台架翻车实测）
+        # v1087(??3????): ????? mode ????SWING ????
+        # ?/???WBC ????? PD???? F_des?????????
+        # SWING ? F_z ? ????????????? ? ???????
+        # ?????real14-18 ?? bz 0.70?fn ????
+        for i in (0, 1):
+            if swing[i] > 0.5:
+                A_m[:, 3 * i:3 * i + 3] = 0.0
+                Ae[0, 3 * i + 0] = 0.0
+                Ae[1, 3 * i + 1] = 0.0
+                Ae[2, 3 * i + 2] = 0.0
         be = np.array([0.0, 0.0, -m * g])
         # 不等式（固定结构）：每轮 6 行
         rows = []
@@ -301,15 +350,25 @@ class NmpcWbc:
                 # riser2 y=38.3）、后轴 SWING F_z≥46（滚爬，v1070 实测后轮
                 # 需要力才能爬）——不对称接触界
                 if i in (0, 1):
+                    l[3 + len(rows) + 3*i + 0] = 0.0
+                    u[3 + len(rows) + 3*i + 0] = 0.0
+                    l[3 + len(rows) + 3*i + 1] = 0.0
+                    u[3 + len(rows) + 3*i + 1] = 0.0
                     l[3 + len(rows) + 3*i + 2] = 0.0
                     u[3 + len(rows) + 3*i + 2] = 0.0
                 else:
                     l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
                         'S10_NMPC_SWING_FZ_MIN', '46.0'))
                     u[3 + len(rows) + 3*i + 2] = self.fz_max
+            elif float(np.max(swing[0:2])) > 0.5 and i in (2, 3):
+                # v1082: ?? SWING/HOVER ????????????? QP ?
+                # ?? F ??? 0?v1081 ???????????
+                l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
+                    'S10_NMPC_SWING_FZ_MIN', '46.0'))
+                u[3 + len(rows) + 3*i + 2] = self.fz_max
+        import osqp
+        from scipy import sparse
         if self._nmpc_prob is None:
-            import osqp
-            from scipy import sparse
             prob = osqp.OSQP()
             prob.setup(P=sparse.csc_matrix(P), q=q,
                        A=sparse.csc_matrix(A), l=l, u=u,
@@ -318,7 +377,8 @@ class NmpcWbc:
             self._nmpc_prob = prob
         else:
             prob = self._nmpc_prob
-            prob.update(q=q, l=l, u=u)
+            prob.update(P=sparse.csc_matrix(P), q=q,
+                        A=sparse.csc_matrix(A), l=l, u=u)
         try:
             import time as _t
             _t0 = _t.perf_counter()
@@ -367,7 +427,7 @@ class NmpcWbc:
                     # 地面 0.55 → 轮目标乱摆发射）；正确：地面+r → 台面顶+r
                     # 随窗 smoothstep（位置基 _face_place_z 同款，已验证）
                     _t = float(np.clip(
-                        (_d_w + self.swing_d) / (0.7 * self.swing_d),
+                        (_d_w + self.swing_d) / (0.15 * self.swing_d),
                         0.0, 1.0))
                     _ss = _t * _t * (3.0 - 2.0 * _t)
                     _zc = _z_bot + r + _dhv * _ss
@@ -389,9 +449,17 @@ class NmpcWbc:
                 # v1079(方向1): HOVER 期前轮目标 = body 相对 drop（正 drop
                 # 恒定，轮随 body 平移），钳在台面顶+半径以上不插台面
                 if self._sp_f_hover > 0.5 and leg in (0, 1):
-                    _hd = float(os.environ.get('S10_NMPC_HOVER_DROP', '0.08'))
+                    _hd = float(os.environ.get('S10_NMPC_HOVER_DROP', '0.03'))
                     wz_t = float(hip_w[2]) - _hd
-                    wz_t = max(wz_t, self._sp_f_top + r - 0.02)
+                    wz_t = min(wz_t, self._sp_f_top + r + 0.008)
+                    wz_t = max(wz_t, self._sp_f_top + r - 0.005)
+                # v1089: ???????????????????-2cm?????
+                # ???+R????????????????????????
+                # J^T ??????????? body ???real19 ?? body 0.63?
+                # ? 0.75 ????????????? z ???????????
+                wz_t = min(wz_t, max(float(hip_w[2]) - 0.02,
+                                     self._sp_f_top + r))
+
                 rel = np.array([
                     wheel_xyz[leg, 0] - hip_w[0],
                     wheel_xyz[leg, 1] - hip_w[1],
@@ -402,7 +470,7 @@ class NmpcWbc:
                                  rel[2]])
                 relb[0] = max(float(relb[0]), 0.0)
                 _lo = float(os.environ.get('S10_NMPC_REACH', '-0.34'))
-                _rz = float(np.clip(relb[2], _lo, 0.02))
+                _rz = float(np.clip(relb[2], _lo, -0.02))
                 q1t, q2t = self._ik(float(relb[0]), _rz, q1, q2, leg=leg)
                 # v1075: 后轴 SWING 低增益（少抬多滚）——前轮已证明贴面滚爬
                 # 能越阶；后轴强位置引导会把 body 顶起俯仰 → 前腿上折。
@@ -425,6 +493,20 @@ class NmpcWbc:
                     tau[LEG_CTRL_IDX[b + 2]] += float(_th2o)
                 # 贴面：摆腿轮保留小前驱（滚上立面），非自由
                 F_w = np.asarray(F_des[leg], dtype=np.float64)
+                # v1082: ??/HOVER ? hipx ?? 0?????????????
+                # ?? + F_y ????????????v1081 ??????
+                # v1092: ?? SWING = ??????????????? PD ??
+                # ?? J^T?F_des ????? NMPC ?????????????
+                if leg in (2, 3):
+                    _fb2 = R.T @ F_w
+                    _fs2 = np.array([float(_fb2[0]), -float(_fb2[2])])
+                    _J2 = self.fk.jac(q1, q2)
+                    _th1f, _th2f = _J2.T @ _fs2
+                    tau[LEG_CTRL_IDX[b + 1]] += float(_th1f)
+                    tau[LEG_CTRL_IDX[b + 2]] += float(_th2f)
+                tau[LEG_CTRL_IDX[b]] = float(
+                    0.30 * F_w[1] + 80.0 * (
+                        -0.05 if leg in (0, 1) else 0.05))
                 fwd_w = R @ np.array([1.0, 0.0, 0.0])
                 fx_fb = float(np.dot(F_w, fwd_w))
                 tau[WHEEL_Q_IDX[leg]] = float(np.clip(
