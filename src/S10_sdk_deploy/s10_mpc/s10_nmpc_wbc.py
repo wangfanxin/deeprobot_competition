@@ -134,7 +134,9 @@ class NmpcWbc:
         _wz_f = float(np.mean([wheel_xyz[i, 2] for i in (0, 1)]))
         _wz_r = float(np.mean([wheel_xyz[i, 2] for i in (2, 3)]))
         r = self.fk.r
-        _bz_ok = float(body_pos[2]) > 0.80   # G1: body_z ??
+        # G1 ?? 0.80->0.72????? riser1 ??? 0.698??? 0.061 ??
+        # ???0.80 ???????SWING ??????0.72 ??????? #1?
+        _bz_ok = float(body_pos[2]) > 0.62   # G1: body_z ??????? riser1 ? 0.66?
         if self._sp_f <= 0.0:
             if -self.swing_d < _df < 0.05 and _bz_ok:
                 self._sp_f = 1.0
@@ -178,8 +180,9 @@ class NmpcWbc:
                 if _dd > -0.4:
                     gt = max(gt, float(_top))
             _z_geo.append((gt if gt > 0.4 else float(terrain_h[leg])) + r)
-        z_ref = float(np.mean(_z_geo)) + float(os.environ.get(
-            'S10_NMPC_Z_OFF', '0.20'))
+        # #4(???): body z ????????lerp(??????)+???? 0.22
+        # ??? drop?S10_FP_STAND_DROP??Z_OFF ???????????
+        z_ref = float(np.mean(_z_geo)) + 0.22
         _pitch_ref = -float(np.arctan2(
             float(np.mean(_z_geo[0:2])) - float(np.mean(_z_geo[2:4])),
             0.456))
