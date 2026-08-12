@@ -459,11 +459,8 @@ class StairWBCQP:
             _vw = -_wq * self.fk.r
             if stance_mask[leg] > 0.5:
                 if _any_swing:
-                    # v942: 任何 swing 期支撑轮开环满前驱（用户 A3）——
-                    # 速度 PID 在爬升期把支撑轮刹车(+13.5 反向实测) → 狗
-                    # 卡在棱前不前进、后轮够不到 SWING 窗。v931 失败时
-                    # 是宽抬升窗+泵高环境，现 v939 窄窗+v935 阻尼已不同。
-                    # 后轮爬顶期叠加 yaw 率阻尼差速抗自旋（v938）。
+                    # v942: 任何 swing 期支撑轮速度 PID（v958 开环满驱在前
+                    # 轮爬升期自旋 3s 翻车回退）
                     _kd_y = float(os.environ.get("S10_QP_WHEEL_KD_Y", "3.0"))
                     _om_gain = (float(qvel[5]) * _kd_y
                                 if float(np.max(step_lift[2:4])) > 0.5 else 0.0)
