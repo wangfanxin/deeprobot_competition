@@ -414,6 +414,24 @@ class StairWBCQP:
         step_lift, place_z = self._update_phases(body["pos"], fwd, wheel_xyz)
         place_z = self._face_place_z(wheel_xyz, step_lift)
         self._step_lift_last = step_lift.copy()
+        # v997: 贴面区判定(软跟随与弱前驱共用)
+        _face_drive = np.zeros(4, dtype=bool)
+        try:
+            _fd_lo = float(os.environ.get("S10_QP_FACE_DRIVE_LO", "-0.12"))
+            _fd_hi = float(os.environ.get("S10_QP_FACE_DRIVE_HI", "0.05"))
+            for _fl in range(4):
+                for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
+                    _dhmin = float(os.environ.get(
+                        "S10_STAIR_RISER_MIN", "0.085"))
+                    if _dhv <= _dhmin:
+                        continue
+                    _ddw = float(np.dot(wheel_xyz[_fl, :2] - _rp, _tng))
+                    if _fd_lo < _ddw < _fd_hi:
+                        _face_drive[_fl] = True
+                        break
+        except Exception:
+            pass
+        _fd_tau = -float(os.environ.get("S10_QP_FACE_DRIVE", "4.0"))
         self._rear_swing = float(np.max(step_lift[2:4])) > 0.5
         self._any_swing = float(np.max(step_lift)) > 0.5
         tau = np.zeros(16, dtype=np.float64)
@@ -634,6 +652,13 @@ class StairWBCQP:
                 # v935: swing kd 默认 30（原 8 阻尼比 ~0.25 欠阻尼，轮离地
                 # 后自由过冲到 1.1 悬空实测）
                 _kds_d = float(os.environ.get("S10_QP_KD_SW", "30.0"))
+                # v997: 贴面软阻尼跟随——前轮贴面时 KP 降到 15、KD 提到 100，
+                # 目标跟轮高+3mm，轮靠前驱滚上立面，腿只吸收冲击。
+                if _face_drive[leg] and leg in (0, 1):
+                    _kps_d = float(os.environ.get("S10_QP_KP_SW_SOFT", "15.0"))
+                    _kds_d = float(os.environ.get("S10_QP_KD_SW_SOFT", "100.0"))
+                    _wz_t = float(wheel_xyz[leg, 2]) + float(os.environ.get(
+                        "S10_QP_FOLLOW_GAP", "0.003"))
                 tau[hipy_i] = (_kps_d * (q1t - q1)
                                - _kds_d * float(qvel[6 + LEG_QV_LEG[b + 1]]))
                 tau[knee_i] = (_kps_d * (q2t - q2)
@@ -642,6 +667,14 @@ class StairWBCQP:
                 # 膝盖加强制伸展力矩把轮压回台面（过伸是动力学折叠惯性，
                 # 位置 PD 拉不回：单轮序列 FR 冲到 1.08 实测）。减少 q2
                 # (伸膝) 推轮向下。
+                if float(os.environ.get("S10_QP_DEBUG", "0")) > 2:
+                    print('[SWDBG] t=%.2f leg=%d q1=%.2f q2=%.2f q1t=%.2f '
+                          'q2t=%.2f wz=%.3f wzt=%.3f bz=%.3f relx=%.2f '
+                          'tauH=%.1f tauK=%.1f'
+                          % (self._t, leg, q1, q2, q1t, q2t,
+                             wheel_xyz[leg, 2], _wz_t, body["pos"][2],
+                             float(_rel[0]), tau[hipy_i], tau[knee_i]),
+                          flush=True)
                 _wz_act2 = float(wheel_xyz[leg, 2])
                 _over2 = _wz_act2 - _wz_t
                 _db2 = float(os.environ.get("S10_QP_OV_DB_SW", "0.020"))
@@ -678,10 +711,14 @@ class StairWBCQP:
                     # v942: 任何 swing 期支撑轮速度 PID（v958 开环满驱在前
                     # 轮爬升期自旋 3s 翻车回退）
                     _kd_y = float(os.environ.get("S10_QP_WHEEL_KD_Y", "3.0"))
-                    _om_gain = (float(qvel[5]) * _kd_y
-                                if float(np.max(step_lift[2:4])) > 0.5 else 0.0)
+                    # v999: 任意 swing 期差速抗旋(前轮抬空失去 yaw 阻力)
+                    _om_gain = float(qvel[5]) * _kd_y
                     _vref = self._vx_f - _side_s[leg] * _om_gain * self.track_half
                     _tw = -(self.wheel_k * (_vref - _vw)) - self.wheel_d * _wq
+                    if _face_drive[leg] and float(wheel_xyz[leg, 2]) < 0.72:
+                        # v998: 轮低于 0.72(贴面爬升中)才前驱，过顶即停——
+                        # 前驱持续把轮顶到 1.2+ 过伸(v997 实测)
+                        _tw = min(float(_tw), _fd_tau)
                     tau[WHEEL_Q_IDX[leg]] = float(np.clip(_tw, -13.5, 13.5))
                 else:
                     # v981: 全支撑(接近段)执行导航 omega 差速——原仅跟 vx_f
@@ -691,7 +728,9 @@ class StairWBCQP:
                     _tw = -(self.wheel_k * (_vref - _vw)) - self.wheel_d * _wq
                     tau[WHEEL_Q_IDX[leg]] = float(np.clip(_tw, -13.5, 13.5))
             else:
-                tau[WHEEL_Q_IDX[leg]] = -1.5
+                tau[WHEEL_Q_IDX[leg]] = (_fd_tau if (_face_drive[leg]
+                                         and float(wheel_xyz[leg, 2]) < 0.72)
+                                         else -1.5)
         # hip yaw（导航误差 + yaw 率阻尼）
         try:
             _kp_y = float(os.environ.get("S10_FP_YAW_KP", "2.0"))
