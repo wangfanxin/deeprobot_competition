@@ -140,8 +140,6 @@ class NmpcWbc:
         # for the wheel target cap (body_z - 0.02 >= riser_top + r).
         _bz_ok_f = float(body_pos[2]) > float(_tf) + r + 0.02
         _bz_ok_r = float(body_pos[2]) > float(_tr) + r + 0.02
-        # v2026(m21): swing re-trigger guard——轮已高于目标（折叠卡死）时
-        # 不重触发 SWING，交 stance 固定蹲姿回拉解锁（m16 折叠 7s 循环）
         if self._sp_f <= 0.0:
             if -self.swing_d < _df < 0.05 and _bz_ok_f:
                 self._sp_f = 1.0
@@ -264,7 +262,12 @@ class NmpcWbc:
         # v1082: SWING/HOVER ??? z/????????a_des[2]<-g ?????
         # ? F_z>=0 ?? ? ?????? F=0 ?????v1081 HOVER ???
         # F ????????????????F ?????
-        a_des[2] = float(np.clip(a_des[2], -4.0, 6.0))
+        # v2026(m23): anti-launch——爬顶发射期 vz>0.5 时允许 a_des z 下探到
+        # -10（原 clip [-4,6] 把 kd_z*vz 率阻尼砍掉，控制器无权刹住发射；
+        # m16 body 0.99/轮 1.2 折叠卡死即此因）
+        _vz_b = float(np.dot(R[:, 2], body['omega']))
+        _zlo = -10.0 if _vz_b > 0.5 else -4.0
+        a_des[2] = float(np.clip(a_des[2], _zlo, 6.0))
         if float(np.max(swing)) > 0.5:
             _al_lim = 30.0
             al_des[1] = float(np.clip(al_des[1], -_al_lim, _al_lim))
