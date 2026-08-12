@@ -202,12 +202,6 @@ class StairWBCQP:
             # roll 崩回退）——最佳状态为前轮上台面稳定 15s 卡死。
             a_des[2] = float(os.environ.get("S10_QP_AZ_K", "-30.0")) * (
                 float(body["pos"][2]) - 0.78)
-            # v933b: roll/pitch 修正只在后轮爬顶期生效（2 点前支撑最需要）
-            # ——前轮爬升期启用会通过 2 后腿产生过伸/λ 爆炸（实测 0.99
-            # 过伸翻车）；后轮爬顶时前腿在台面上，修正力有支撑可作用。
-            # v933 引用了 _qp_solve 里不存在的 step_lift → NameError 被吞
-            # → QP 又静默回退均载（v939 台架"稳定8s"实为位置基行为实测）；
-            # 改用 compute_tau 存入的 self._rear_swing。
             _rear_sw = float(getattr(self, '_rear_swing', 0.0)) > 0.5
             _ar_k = float(os.environ.get("S10_QP_AR_K", "-20.0")) if _rear_sw else 0.0
             _ap_k = float(os.environ.get("S10_QP_AP_K", "-20.0")) if _rear_sw else 0.0
