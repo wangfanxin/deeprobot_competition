@@ -382,13 +382,22 @@ class StairWBC(FootPlaceVMC):
             _brake_k = float(os.environ.get("S10_FP_YAW_BRAKE_K", "8.0"))
             _brake_w = float(np.clip(
                 (abs(_om_yx) - _brake_g) / 1.0, 0.0, 1.0))
+            # v1035: 导航 om 差速回归轮控（原 v1025 重写丢弃基类 om 跟踪 →
+            # 航向锁定/导航转向在 WBC 期完全无效）。vref 含 om·track 差速
+            # + 前驱下限 + yaw 率差速/硬刹。
+            _om_cmd = float(cmd.get("omega", 0.0))
             for _leg in range(4):
                 if step_lift[_leg] <= 0.5:
-                    # left wheels(0,2)=+1 right(1,3)=-1: positive yaw rate (left spin)
-                    # -> left more forward / right reduced, generating right-turn moment
-                    _sx = 1.0 if _leg in (0, 2) else -1.0
-                    _corr = _sx * _om_yx * _kd_yx * self.track_half
-                    _tw = min(float(tau[WHEEL_Q_IDX[_leg]]), _dfx) - _corr
+                    # 左轮(0,2)=-1 右轮(1,3)=+1（CarVMC 约定）：om>0 左转
+                    _sd = -1.0 if _leg in (0, 2) else 1.0
+                    _wq = float(qvel[WHEEL_QV_IDX[_leg]])
+                    _vw = -_wq * self.fk.r
+                    _vref_w = (self._vx_f
+                               + _sd * _om_cmd * self.track_half
+                               - _sd * _om_yx * _kd_yx * self.track_half)
+                    _tw = -(self.wheel_k * (_vref_w - _vw)
+                            - self.wheel_d * _wq)
+                    _tw = max(float(_tw), _dfx)
                     if _brake_w > 0.0:
                         _tw = min(float(tau[WHEEL_Q_IDX[_leg]]), _dfx) - (
                             _corr + _sx * _om_yx * _brake_k
