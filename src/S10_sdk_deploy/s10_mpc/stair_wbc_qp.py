@@ -69,7 +69,8 @@ class StairWBCQP:
     def _nearest_riser(self, ax):
         dmin, top = 1e9, 0.0
         for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
-            if _dhv <= 0.085:
+            _dhmin = float(os.environ.get("S10_STAIR_RISER_MIN", "0.085"))
+            if _dhv <= _dhmin:
                 continue
             _dd = float(np.dot(np.asarray(ax, dtype=np.float64) - _rp, _tng))
             if abs(_dd) < abs(dmin):
@@ -177,7 +178,8 @@ class StairWBCQP:
             _best_d = 1e9
             _best = None
             for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
-                if _dhv <= 0.085:
+                _dhmin2 = float(os.environ.get("S10_STAIR_RISER_MIN", "0.085"))
+                if _dhv <= _dhmin2:
                     continue
                 _dd = float(np.dot(_ax_xy - _rp, _tng))
                 if abs(_dd) < abs(_best_d):
@@ -288,7 +290,8 @@ class StairWBCQP:
                     _sup[_i] = float(terrain_h[_i]) + self.fk.r
                     _gtz = 0.0
                     for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
-                        if _dhv <= 0.085:
+                        _dhmin3 = float(os.environ.get("S10_STAIR_RISER_MIN", "0.085"))
+                        if _dhv <= _dhmin3:
                             continue
                         _ddz = float(np.dot(wheel_xyz[_i, :2] - _rp, _tng))
                         if _ddz > 0.0:
