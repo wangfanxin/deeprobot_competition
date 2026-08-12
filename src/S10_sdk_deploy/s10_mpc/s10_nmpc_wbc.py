@@ -70,6 +70,7 @@ class NmpcWbc:
         self._sp_f_hover_s = 0.0
         self._sp_f_hover_t0 = -1e9
         self._sp_f_hover_pos = None
+        self._sp_f_win_t0 = -1e9
         self._sp_f_top = 0.0
         self._sp_r_top = 0.0
         self._sw_f_t0 = -1e9
@@ -139,6 +140,8 @@ class NmpcWbc:
         _wz_r = float(np.mean([wheel_xyz[i, 2] for i in (2, 3)]))
         r = self.fk.r
         if self._sp_f <= 0.0:
+            if not (-self.swing_d < _df < 0.05):
+                self._sp_f_win_t0 = -1e9
             if -self.swing_d < _df < 0.05 and self._sp_r <= 0.0:
                 # v1110: ??????????? SWING ??????????
                 # ????? z >= ???-0.125+??-0.02?????????
@@ -148,6 +151,16 @@ class NmpcWbc:
                     self._sp_f = 1.0
                     self._sp_f_top = _tf
                     self._sw_f_t0 = self._t
+                else:
+                    # v1155: ???????????????????????
+                    # ???real89 ??? 8s???????? 2s ?? SWING
+                    # ???????????????
+                    if self._sp_f_win_t0 < 0:
+                        self._sp_f_win_t0 = self._t
+                    if self._t - self._sp_f_win_t0 > 2.0:
+                        self._sp_f = 1.0
+                        self._sp_f_top = _tf
+                        self._sw_f_t0 = self._t
         else:
             # v1079(方向1): 前轮过棱后进 HOVER——保持正 drop（body 相对
             # 目标，非台面+R）随 body 平移，平移 hover_len 后 STANCE。
