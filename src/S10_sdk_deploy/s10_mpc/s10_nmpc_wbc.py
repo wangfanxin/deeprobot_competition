@@ -466,8 +466,11 @@ class NmpcWbc:
                     # v1058: 爬升斜坡（原 sqrt(R²-d²) 是下降滚动弧，目标低于
                     # 地面 0.55 → 轮目标乱摆发射）；正确：地面+r → 台面顶+r
                     # 随窗 smoothstep（位置基 _face_place_z 同款，已验证）
+                    # v1163: ??? 0.7??v1159 ?? 0.86 ????????0.15?
+                    # ????????? riser3 ?????real95 ? 1.11??
+                    # ???????????v1157 ???????????????
                     _t = float(np.clip(
-                        (_d_w + self.swing_d) / (0.15 * self.swing_d),
+                        (_d_w + self.swing_d) / (0.7 * self.swing_d),
                         0.0, 1.0))
                     _ss = _t * _t * (3.0 - 2.0 * _t)
                     _zc = _z_bot + r + _dhv * _ss
