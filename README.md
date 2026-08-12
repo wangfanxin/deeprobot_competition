@@ -119,18 +119,20 @@ S10_MUJOCO_XML=/absolute/path/to/model.xml \
   文件 `src/S10_sdk_deploy/S10_description/s10_mjcf/mjcf/new_wp30.xml`，
   路径图 [new_wp30_path.png](doc/new_wp30_path.png)，说明见 doc/0808.md §9.1。
 
-## 当前进度与待办（2026-08-10）
+## 当前进度与待办（2026-08-12）
 
-- **CarVMC 巡航**（当前主线）：
-  - wp0→4 ≈15.6s；wp0→5 **23.1s 稳定通过**（起步坡+S 弯+横脊，lidar 高程图），
-    wp3/wp4 严格判点通过；图 [doc/carvmc_lidar_wp0-5_xy_speed.png](doc/carvmc_lidar_wp0-5_xy_speed.png)。
-  - **攻关中**：高速大弯（wp2→4）yaw 振荡/侧翻（v235 yaw 阻尼待验证；
-    极限包线标定 → 写回导航/控制器硬约束，贴着极限跑而非降速）；
-    wp4→5 横脊高速通过；均速目标 3.5 m/s。
-- **台阶**（stair session）：v216 轮锁 v4 稳定 8/8 不翻，前轮 2~3 级；
-  wp7 全过需左后轮抬升（待决策：最小反射/RL/接受现状）。
-- 待办：CarVMC 全 33 航点、真机迁移（vel_scale 回退 50、IMU 闭环、Orin 实测）、
-  初赛材料（8.20 技术方案 PDF + Demo + GitHub 链接）。
+- **CarVMC 巡航**（主线，稳定）：
+  - wp0→4 ≈13.5s、wp0→5 稳定通过（v890：高架伪影过滤 + 加速度限幅）；
+    wp0→33 分段验证通过 18 点（wp0-6/8/10/12/14-16/18/20/22/26-27，跳过
+    台阶 wp6-7 与横脊/墙区），卡点集中在坡底脊区与 wp17 大弯。
+- **台阶**（stair session，当前攻关）：
+  - v216 轮锁 v4：8/8 不翻、前轮 2~3 级；位置基腿控 80+ 组实验收敛于
+    「爬顶几何冲突」结构性失败（前轮释放后后腿折叠悬空）。
+  - **WBC QP 力分配主环**（v904 起）：`stair_vmc_noros.py` + `stair_wbc_qp.py`，
+    新增 `S10_VMC_MODE=stairwbcqp`；台架已能完全越过 riser2，剩余爬顶瞬间
+    roll/yaw 崩溃。方案见 doc/stair_StairWBC_终版_20260811.md。
+- 待办：WBC QP 爬顶收敛、33 航点全程、真机迁移（vel_scale 回退 50、IMU 闭环、
+  Orin 实测）、初赛材料（8.20 技术方案 PDF + Demo + GitHub 链接）。
 
 详细实验记录与参数演进见 `doc/0808.md`（§9 起）与归档 `_archive_20260808/doc/0806.md`。
 

@@ -20,6 +20,7 @@ from s10_mpc.body_mppi import BodyMPPI
 from s10_mpc.stair_vmc_legs import (VMCController, CarVMC, LEG_ATTACH, WHEEL_BODY,
     WHEEL_Q_IDX, LidarTerrain)
 from s10_mpc.stair_wbc import StairWBC
+from s10_mpc.stair_wbc_qp import StairWBCQP
 
 DT = 0.005
 MAX_SIM = float(os.environ.get('S10_TEST_MAX_SIM', '90'))
@@ -352,6 +353,10 @@ def main():
     vmc_stw = StairWBC()
     vmc_stw.stair_world = stair_world
     vmc_stw.stair = fol
+    # v906: StairWBC-QP（S10_VMC_MODE=stairwbcqp 时 STAIR 区启用）
+    vmc_qp = StairWBCQP()
+    vmc_qp.stair_world = stair_world
+    vmc_qp.stair = fol
 
     # 站起
     t = 0.0
@@ -657,7 +662,7 @@ def main():
         # v885: stairwbc 也走原始地形分支——此前用 WBC 分支的
         # stair_wheel_ref（棱前 0.14m ramp 提前抬升→离地→yaw 对转实测）
         _fp_active = os.environ.get('S10_VMC_MODE', 'wbc') in (
-            'place', 'dual2', 'stairwbc')
+            'place', 'dual2', 'stairwbc', 'stairwbcqp')
         # v746: lidar 高程图在楼梯区失真。但轮下地形与抬轮目标要分开——
         # WBC（力控）：轮下地形用运动学地面（轮心 z - 半径），支撑腿贴地
         # 承重，body 高度不被台面表顶起（z_des 过高→四轮悬空 fn=0 实测）；
@@ -1445,6 +1450,8 @@ def main():
             vmc = vmc_fp if _stair_exec else vmc_car
         if os.environ.get('S10_VMC_MODE', 'wbc') == 'stairwbc':
             vmc = vmc_stw if _stair_exec else vmc_car
+        if os.environ.get('S10_VMC_MODE', 'wbc') == 'stairwbcqp':
+            vmc = vmc_qp if _stair_exec else vmc_car
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         _tleg = float(np.abs(tau[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]]).max())
         _twh = float(np.abs(tau[[3, 7, 11, 15]]).max())
