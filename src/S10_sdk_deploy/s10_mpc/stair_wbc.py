@@ -1,22 +1,25 @@
-﻿"""StairWBC：轮足狗楼梯爬升——位置基全身控制（终版 2026-08-11）。
+"""StairWBC：轮足狗楼梯爬升——位置基全身控制（终版 2026-08-11，清理版）。
 
-ModeSchedule（布尔几何相位，整轴硬切换）→ BodyIK（body 姿态闭环）
-→ LegCtrl（位置 PD 拉满 + 静压 + 微阻抗）→ WheelCtrl（开环限幅：
-SWING=0 / STANCE=差速 PID ≤13.5Nm）→ QPChecker（osqp 接触合规校验，
-非力分配主环，破锥仅微降腿增益）。
+架构（论文方向：位置基 + WBC 仅校验，几何相位硬切换）：
+  ModeSchedule（整轴布尔相位，前轴→后轴，永不双轴同抬）
+  → Body 姿态解析 + FootPlaceVMC 位置 PD（每腿 IK 放轮，静压）
+  → WheelCtrl（支撑轮速度 PID 前驱 / 抬升轮 0）
+  → QP Checker（osqp 接触合规校验，破锥仅微降腿增益，非力分配主环）
+  → 腿控 Yaw（HipX 修正航向，轮差速在爬升期冻结）
 
-复用 FootPlaceVMC（v828 位置基地基：body 状态 / 2D IK / 位置环 /
-单侧垂直阻抗），把终版缺失的部分补上：
-- 4 轮整轴布尔相位状态机（±0.05m 窗口，过棱 + 轮高≥台面顶+R-0.02
-  持续 0.05s 释放，前轴优先防双轴同抬）；
-- QP Checker（osqp 12 变量，2ms 预算，超时/异常回退不阻塞 200Hz 主环）。
+清理说明（用户要求）：
+- 所有参数收敛为类属性（不再散落 S10_STAIR_* / S10_QP_* env）；
+- 删除门控：S10_STAIR_SWING_WHEEL0 状态翻转、S10_STAIR_QP/S10_STAIR_FACE
+  开关（始终生效）；
+- 修复 _qp_check 未初始化 rows/cols/vals/lo/hi 的 NameError（原被 except
+  吞掉，QP Checker 从未真正运行）。
 """
 import os
 
 import numpy as np
 
-from .stair_vmc_legs import (FootPlaceVMC, LEG_QV_LEG, LEG_CTRL_IDX,
-                               WHEEL_Q_IDX, WHEEL_QV_IDX)
+from .stair_vmc_legs import (FootPlaceVMC, LEG_CTRL_IDX, LEG_QV_LEG,
+                             WHEEL_Q_IDX, WHEEL_QV_IDX)
 
 
 class StairWBC(FootPlaceVMC):
@@ -30,6 +33,14 @@ class StairWBC(FootPlaceVMC):
                          wheel_k=wheel_k, wheel_d=wheel_d)
         self.stair_world = []      # [(pt, tng, arc, dh, top)] 世界坐标
         self.stair = None          # AutoNavFollower 引用（stair_terrain）
+        # ---- 参数（终版固定值，收敛为类属性） ----
+        self.swing_d = 0.30        # 抬升窗：棱前提前抬（靠动量越棱，v899）
+        self.swing_to = 1.5        # SWING 绝对超时兜底
+        self.lift_margin = 0.04    # place_z -> 轮心目标 的余量
+        self.qp_mu = 0.6           # QP Checker 摩擦系数
+        self.qp_nmin = 5.0         # QP Checker 支撑轮法向下限
+        self.qp_scale = 1.0        # 破锥时腿增益微降（下限 0.85）
+        # ---- ModeSchedule 状态 ----
         self._sp_f = 0.0
         self._sp_r = 0.0
         self._sp_f_top = 0.0
@@ -39,7 +50,6 @@ class StairWBC(FootPlaceVMC):
         self._sw_f_t0 = -1e9
         self._sw_r_t0 = -1e9
         self._t = 0.0
-        self._qp_scale = 1.0
         self._osqp = None
         try:
             import osqp
@@ -60,8 +70,8 @@ class StairWBC(FootPlaceVMC):
         return dmin, top
 
     def _update_phases(self, body_pos, fwd, wheel_xyz):
-        """前/后轴布尔相位机：|d|<0.05 进入 SWING；过棱（d<-0.05）且
-        轴均值轮高 ≥ 台面顶+R-0.02 持续 0.05s → 释放回 STANCE。
+        """前/后轴布尔相位机：|d|<SWING_D 进入 SWING；过棱（d>0.10）且
+        轴均值轮高 ≥ 台面顶+R+0.005 持续 0.05s → 释放回 STANCE。
         前轴优先：后轴在前轴 SWING 期间不允许进入（永不双轴同抬）。"""
         _fax = body_pos[:2] + fwd * 0.228
         _rax = body_pos[:2] - fwd * 0.228
@@ -70,21 +80,13 @@ class StairWBC(FootPlaceVMC):
         _wz_f = float(np.mean([wheel_xyz[i, 2] for i in (0, 1)]))
         _wz_r = float(np.mean([wheel_xyz[i, 2] for i in (2, 3)]))
         r = self.fk.r
-        _swd = float(os.environ.get("S10_STAIR_SWING_D", "0.15"))
-        _to = float(os.environ.get("S10_STAIR_SWING_TO", "1.5"))
         if self._sp_f <= 0.0:
-            # 前轴 SWING 期间禁止后轴进入（永不双轴同抬）
-            if -_swd < _df < 0.05 and self._sp_r <= 0.0:
+            if -self.swing_d < _df < 0.05 and self._sp_r <= 0.0:
                 self._sp_f = 1.0
                 self._sp_f_top = _tf
                 self._rel_f_t = None
                 self._sw_f_t0 = self._t
         else:
-            # v888: 释放符号修正——d>0.05 是"过棱后 0.05"，原 d<-0.05
-            # （棱前）永远不触发，全靠超时释放（双轴同抬 sl=[1,1,1,1] 实测）
-            # v901: 释放收紧——过棱 d>0.10 且轮高≥顶+R+0.005（确保前轮
-            # 真正落到台面才释放；原 d>0.05/顶+R-0.01 在过渡期释放→前轮
-            # 折叠到 1.08 悬空→爬顶滚翻实测）
             if _df > 0.10 and _wz_f >= self._sp_f_top + r + 0.005:
                 if self._rel_f_t is None:
                     self._rel_f_t = self._t
@@ -93,11 +95,11 @@ class StairWBC(FootPlaceVMC):
                     self._rel_f_t = None
             else:
                 self._rel_f_t = None
-            if self._t - self._sw_f_t0 > _to:   # 绝对超时兜底
+            if self._t - self._sw_f_t0 > self.swing_to:
                 self._sp_f = 0.0
                 self._rel_f_t = None
         if self._sp_r <= 0.0:
-            if -_swd < _dr < 0.05 and self._sp_f <= 0.0:
+            if -self.swing_d < _dr < 0.05 and self._sp_f <= 0.0:
                 self._sp_r = 1.0
                 self._sp_r_top = _tr
                 self._rel_r_t = None
@@ -111,7 +113,7 @@ class StairWBC(FootPlaceVMC):
                     self._rel_r_t = None
             else:
                 self._rel_r_t = None
-            if self._t - self._sw_r_t0 > _to:
+            if self._t - self._sw_r_t0 > self.swing_to:
                 self._sp_r = 0.0
                 self._rel_r_t = None
         step_lift = np.array([self._sp_f, self._sp_f,
@@ -121,29 +123,60 @@ class StairWBC(FootPlaceVMC):
                            dtype=np.float64)
         return step_lift, place_z
 
+    # ---------------- 贴面爬升目标（几何，棱前提前抬） ----------------
+    def _face_place_z(self, wheel_xyz, step_lift):
+        """抬升轮目标沿 riser 立面连续上升（保持接触滚动，替代悬空折叠
+        抬腿）。轴均值距离（左右同相），d∈[-SWING_D,0] 平滑 ramp 底+r→
+        顶+r，d>0 台面顶+r；硬上限顶+r+0.005（防 body 闭环泵高）。"""
+        _r = self.fk.r
+        _pz = np.zeros(4)
+        for _leg in range(4):
+            if step_lift[_leg] <= 0.02:
+                continue
+            _ax_idx = (0, 1) if _leg in (0, 1) else (2, 3)
+            _ax_xy = np.mean([wheel_xyz[_i, :2] for _i in _ax_idx], axis=0)
+            _best_d = 1e9
+            _best = None
+            for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
+                if _dhv <= 0.085:
+                    continue
+                _dd = float(np.dot(_ax_xy - _rp, _tng))
+                if -self.swing_d < _dd < 0.05 and abs(_dd) < abs(_best_d):
+                    _best_d = _dd
+                    _best = (_rp, _tng, _dhv, _top)
+            if _best is None:
+                continue
+            (_rp, _tng, _dhv, _top) = _best
+            _z_bot = float(_top - _dhv)
+            _d_w = float(np.dot(_ax_xy - _rp, _tng))
+            if -self.swing_d <= _d_w <= 0.0:
+                _t = float(np.clip((_d_w + self.swing_d) / self.swing_d,
+                                   0.0, 1.0))
+                _ss = _t * _t * (3.0 - 2.0 * _t)
+                _z_face = _z_bot + _r + _dhv * _ss
+            else:
+                _z_face = _top + _r
+            _z_face = min(_z_face, _top + _r + 0.005)
+            _pz[_leg] = _z_face - _r - self.lift_margin
+        return _pz
+
     # ---------------- QP Checker：接触合规校验（非分配主环） ----------------
     def _qp_check(self, q1q2, body_R, swing, tau_leg, dt):
         """osqp 12 变量：λ 贴近 J^-T·τ_pd，约束 = 抬升 λ≡0 / 支撑摩擦锥
-        λ_z≥N_min。不可行/破锥 → 微降腿增益 _qp_scale（下限 0.85）；
+        λ_z≥N_min。不可行/破锥 → 微降腿增益 qp_scale（下限 0.85）；
         超时/异常沿用上一帧，不阻塞 200Hz 主环。"""
         if self._osqp is None:
-            return
-        _en = float(os.environ.get("S10_STAIR_QP", "1"))
-        if _en <= 0:
             return
         try:
             from scipy import sparse
             n = 12
             lam_ref = np.zeros(n, dtype=np.float64)
-            mus = float(os.environ.get("S10_STAIR_QP_MU", "0.6"))
-            nmin = float(os.environ.get("S10_STAIR_QP_NMIN", "5.0"))
             for leg in range(4):
                 q1, q2 = q1q2[leg]
                 J = self.fk.jac(q1, q2)
                 t_h = float(tau_leg[leg * 3 + 1])   # hipy
                 t_k = float(tau_leg[leg * 3 + 2])   # knee
                 if swing[leg] > 0.5:
-                    lam_ref[leg * 3:leg * 3 + 3] = 0.0
                     continue
                 fs = np.linalg.lstsq(J.T, np.array([t_h, t_k]),
                                      rcond=None)[0]   # (f_fwd, f_down)
@@ -151,21 +184,27 @@ class StairWBC(FootPlaceVMC):
                 lam_ref[leg * 3:leg * 3 + 3] = body_R @ f_b
             P = sparse.eye(n, format="csc")
             q = -lam_ref
+            rows, cols, vals, lo, hi = [], [], [], [], []
             for leg in range(4):
                 base = leg * 3
                 if swing[leg] > 0.5:
                     for k in range(3):
-                        rows.append(0); cols.append(base + k); vals.append(1.0)
-                        lo.append(0.0); hi.append(0.0)
+                        rows.append(len(lo)); cols.append(base + k)
+                        vals.append(1.0); lo.append(0.0); hi.append(0.0)
                 else:
-                    rows.append(0); cols.append(base + 2); vals.append(-1.0)
-                    lo.append(-np.inf); hi.append(-nmin)
+                    rows.append(len(lo)); cols.append(base + 2)
+                    vals.append(-1.0); lo.append(-np.inf)
+                    hi.append(-self.qp_nmin)
                     for k in (0, 1):
-                        rows.append(0); cols.append(base + k); vals.append(1.0)
-                        rows.append(0); cols.append(base + 2); vals.append(-mus)
+                        rows.append(len(lo)); cols.append(base + k)
+                        vals.append(1.0)
+                        rows.append(len(lo)); cols.append(base + 2)
+                        vals.append(-self.qp_mu)
                         lo.append(-np.inf); hi.append(0.0)
-                        rows.append(0); cols.append(base + k); vals.append(-1.0)
-                        rows.append(0); cols.append(base + 2); vals.append(-mus)
+                        rows.append(len(lo)); cols.append(base + k)
+                        vals.append(-1.0)
+                        rows.append(len(lo)); cols.append(base + 2)
+                        vals.append(-self.qp_mu)
                         lo.append(-np.inf); hi.append(0.0)
             A = sparse.csc_matrix(
                 (np.asarray(vals, dtype=np.float64),
@@ -179,11 +218,57 @@ class StairWBC(FootPlaceVMC):
             res = prob.solve()
             ok = res.info.status in ("solved", "solved inaccurate")
             if not ok:
-                self._qp_scale = max(0.85, self._qp_scale - 0.01)
+                self.qp_scale = max(0.85, self.qp_scale - 0.01)
             else:
-                self._qp_scale = min(1.0, self._qp_scale + 0.002)
+                self.qp_scale = min(1.0, self.qp_scale + 0.002)
         except Exception:
             return
+
+    # ---------------- 闭式 2 连杆 IK（覆盖基类迭代式） ----------------
+    def _ik(self, xd, zd, q1, q2, lift=False):
+        """闭式解（q2=+acos 自然膝分支），一次到位、不收敛到镜像折叠解。
+        基类 lift=True 强制 q2>=1.8 → 轮折叠到髋上方（贴面爬升过伸 1.1+
+        实测）；贴面爬升轮应保持髋下（q2 自由）。lift 参数忽略。"""
+        L1, L2 = self.fk.L1, self.fk.L2
+        zd_d = -zd   # 基类 zd 向上为正 -> 闭式用向下为正
+        r2 = min(xd * xd + zd_d * zd_d, (L1 + L2) ** 2 - 1e-6)
+        c2 = float(np.clip((r2 - L1 * L1 - L2 * L2) / (2.0 * L1 * L2),
+                           -1.0, 1.0))
+        q2n = float(np.arccos(c2))
+        # 分支按当前 q2 符号：前腿标称 q2>0 用 +acos，后腿标称 q2<0 用
+        # -acos（镜像腿）。固定 +acos 会让后腿折叠上翻 1.35+（实测）。
+        if q2 < 0:
+            q2n = -q2n
+        q1n = float(np.arctan2(xd, zd_d) - np.arctan2(
+            L2 * np.sin(q2n), L1 + L2 * np.cos(q2n)))
+        q1n = float(np.clip(q1n, -1.7, 1.0))
+        q2n = float(np.clip(q2n, -1.0, 3.0))
+        return q1n, q2n
+
+    # ---------------- 几何地形（终版：世界坐标，不用 lidar） ----------------
+    def _geo_terrain(self, wheel_xyz):
+        """每轮支撑面高（世界坐标几何）：已过 riser → 最高已过顶；未过 →
+        最近 riser 底（当前平台/地面）。替代 lidar terrain_h——棱口 lidar
+        读高 0.7+ 会把支撑腿目标泵到 0.78+、body 抬到 1.0（首跑实测）。"""
+        terr = []
+        for leg in range(4):
+            gt = 0.0
+            best_d = 1e9
+            best_bot = None
+            for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
+                _dd = float(np.dot(wheel_xyz[leg, :2] - _rp, _tng))
+                if _dd > 0.0:
+                    gt = max(gt, float(_top))
+                if abs(_dd) < abs(best_d):
+                    best_d = _dd
+                    best_bot = float(_top - _dhv)
+            if gt > 0.4:
+                terr.append(gt)
+            elif best_bot is not None:
+                terr.append(best_bot)
+            else:
+                terr.append(float(terrain_h[leg]))
+        return np.asarray(terr, dtype=np.float64)
 
     # ---------------- 主入口 ----------------
     def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel,
@@ -191,70 +276,25 @@ class StairWBC(FootPlaceVMC):
         self._t = float(getattr(self, "_t", 0.0)) + dt
         body = self._body_state(qpos, qvel)
         fwd = np.array([np.cos(body["yaw"]), np.sin(body["yaw"])])
-        # 终版：ModeSchedule 在 StairWBC 内计算（覆盖 cmd.step_lift/place_z）
+        # 终版：ModeSchedule + 贴面目标在 StairWBC 内计算（覆盖 cmd）
         step_lift, place_z = self._update_phases(body["pos"], fwd, wheel_xyz)
+        place_z = self._face_place_z(wheel_xyz, step_lift)
         cmd = dict(cmd)
         cmd["step_lift"] = step_lift
         cmd["place_z"] = place_z
-        # v878: 贴面爬升——抬升轮目标沿 riser 立面连续上升（保持接触滚动，
-        # 替代悬空折叠抬腿）。对每只抬升轮按世界坐标算 z_face：
-        #   d=轮心到棱沿切线距离；d∈[-r,0] 内 z 从底+r 平滑升到顶+r；
-        # 经 place_z 传入 FP（wz = place_z+r+margin → z_face）。
-        _sw_wheel0 = float(os.environ.get("S10_STAIR_SWING_WHEEL0", "1"))
-        if float(os.environ.get("S10_STAIR_FACE", "1")) > 0:
-            _pz_new = np.array(cmd.get("place_z", np.zeros(4)),
-                               dtype=np.float64).copy()
-            _r = self.fk.r
-            for _leg in range(4):
-                if step_lift[_leg] <= 0.02:
-                    continue
-                # v880: 轴均值距离——左右轮同相抬升（yaw 偏 4° 时逐轮 d 差
-                # 0.025m → 单侧先抬 → roll 冲击实测）
-                _ax_idx = (0, 1) if _leg in (0, 1) else (2, 3)
-                _ax_xy = np.mean([wheel_xyz[_i, :2] for _i in _ax_idx], axis=0)
-                # 找该轴前方最近高 riser
-                _best_d = 1e9; _best = None
-                for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
-                    if _dhv <= 0.085:
-                        continue
-                    _dd = float(np.dot(_ax_xy - _rp, _tng))
-                    if -0.20 < _dd < 0.05 and abs(_dd) < abs(_best_d):
-                        _best_d = _dd; _best = (_rp, _tng, _dhv, _top)
-                if _best is None:
-                    continue
-                (_rp, _tng, _dhv, _top) = _best
-                _z_bot = float(_top - _dhv)
-                _d_w = float(np.dot(_ax_xy - _rp, _tng))
-                # v899: 抬升窗提前到 SWING 触发点(0.30)——原只在轮半径
-                # 0.081 内抬，狗卡在 d=-0.21 无法进窗（前轮恒 0.62 实测）；
-                # 提前抬让前轮滚 step1 时渐升到 0.747，靠动量越棱
-                _cl = float(os.environ.get("S10_STAIR_SWING_D", "0.30"))
-                if -_cl <= _d_w <= 0.0:
-                    _t = float(np.clip((_d_w + _cl) / max(_cl, 1e-6), 0.0, 1.0))
-                    _ss = _t * _t * (3.0 - 2.0 * _t)
-                    _z_face = _z_bot + _r + _dhv * _ss
-                else:
-                    _z_face = _top + _r
-                # A1(批准): 硬上限——body 闭环/IK 不得把抬升目标泵高
-                _z_face = min(_z_face, _top + _r + 0.005)
-                # FP: wz = min(place_z + r + margin, hip+0.15) -> 反解 place_z
-                _margin = float(os.environ.get("S10_STAIR_LIFT_MARGIN", "0.04"))
-                _pz_new[_leg] = _z_face - _r - _margin
-            cmd["place_z"] = _pz_new
-            os.environ["S10_STAIR_SWING_WHEEL0"] = "0"
-        elif _sw_wheel0 > 0:
-            os.environ["S10_STAIR_SWING_WHEEL0"] = "1"
+        # 终版：支撑腿用几何地形（世界坐标），不用 lidar
+        terrain_h = self._geo_terrain(wheel_xyz)
+        # QP Checker 破锥时微降腿增益（经 S10_FP_KP_POS 传入基类）
         _kpp = float(os.environ.get("S10_FP_KP_POS", "0"))
         if _kpp > 0:
-            os.environ["S10_FP_KP_POS"] = str(_kpp * self._qp_scale)
+            os.environ["S10_FP_KP_POS"] = str(_kpp * self.qp_scale)
         try:
             tau = super().compute_tau(qpos, qvel, wheel_xyz, wheel_vel,
                                       cmd, terrain_h, dt)
         finally:
             if _kpp > 0:
                 os.environ["S10_FP_KP_POS"] = str(_kpp)
-        # v892(方案1): 爬升瞬态冻结轮层 yaw——轮离地(fn≈0)时差速无控制
-        # 权威（自旋/漂移实测），轮矩纯前驱（vx_f，无 ω 项），航向交 Hip X
+        # 爬升瞬态：轮矩纯前驱（冻结差速，航交由 HipX 修正）
         try:
             _vx_f = float(getattr(self, "_vx_f", 0.0))
             for _leg in range(4):
@@ -265,15 +305,14 @@ class StairWBC(FootPlaceVMC):
                 tau[WHEEL_Q_IDX[_leg]] = float(np.clip(_tw, -13.5, 13.5))
         except Exception:
             pass
-        # v892/v894(方案1): 腿控 Yaw——StairWBC 窗口全程激活（不只 SWING），
-        # Hip X 外展/内收修正航向（导航 yaw 误差 + yaw 率阻尼）；轮差速已冻结
+        # 腿控 Yaw：HipX 外展/内收修正航向（导航 yaw 误差 + yaw 率阻尼）
         try:
             _kp_y = float(os.environ.get("S10_FP_YAW_KP", "2.0"))
             _kd_y = float(os.environ.get("S10_FP_YAW_KD", "0.5"))
             _yerr = 0.0
             if self.stair is not None:
                 _yerr = float(getattr(self.stair, "_last_err", 0.0))
-            _yr = float(body["omega"])
+            _yr = float(body["omega"]) if "omega" in body else float(qvel[5])
             _th_y = _kp_y * _yerr - _kd_y * _yr
             tau[LEG_CTRL_IDX[0]] += _th_y     # FL hipx
             tau[LEG_CTRL_IDX[3]] -= _th_y     # FR hipx
