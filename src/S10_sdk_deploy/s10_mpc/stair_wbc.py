@@ -225,24 +225,27 @@ class StairWBC(FootPlaceVMC):
             return
 
     # ---------------- 闭式 2 连杆 IK（覆盖基类迭代式） ----------------
-    def _ik(self, xd, zd, q1, q2, lift=False):
-        """闭式解（q2=+acos 自然膝分支），一次到位、不收敛到镜像折叠解。
-        基类 lift=True 强制 q2>=1.8 → 轮折叠到髋上方（贴面爬升过伸 1.1+
-        实测）；贴面爬升轮应保持髋下（q2 自由）。lift 参数忽略。"""
+    def _ik(self, xd, zd, q1, q2, lift=False, leg=None):
+        """闭式解，一次到位、不收敛到镜像折叠解。分支按腿固定：
+        前腿(0,1) q2=+acos，后腿(2,3) q2=-acos（镜像腿）——按当前 q2
+        符号选分支会卡在镜像折叠(一旦折叠 q2 变号→一直选错分支→永远
+        折叠，FR 0.86/RR 0.81 实测)。lift 参数忽略（贴面爬升轮保持髋下）。"""
         L1, L2 = self.fk.L1, self.fk.L2
         zd_d = -zd   # 基类 zd 向上为正 -> 闭式用向下为正
         r2 = min(xd * xd + zd_d * zd_d, (L1 + L2) ** 2 - 1e-6)
         c2 = float(np.clip((r2 - L1 * L1 - L2 * L2) / (2.0 * L1 * L2),
                            -1.0, 1.0))
         q2n = float(np.arccos(c2))
-        # 分支按当前 q2 符号：前腿标称 q2>0 用 +acos，后腿标称 q2<0 用
-        # -acos（镜像腿）。固定 +acos 会让后腿折叠上翻 1.35+（实测）。
-        if q2 < 0:
+        if leg is not None and leg in (2, 3):
+            q2n = -q2n
+        elif leg is None and q2 < 0:
             q2n = -q2n
         q1n = float(np.arctan2(xd, zd_d) - np.arctan2(
             L2 * np.sin(q2n), L1 + L2 * np.cos(q2n)))
-        q1n = float(np.clip(q1n, -1.7, 1.0))
-        q2n = float(np.clip(q2n, -1.0, 3.0))
+        # 用物理限位(±2.53/±2.72)——原 [-1.7,1.0] 挡住后腿标称 q1=+1.10
+        # → 后腿达不到目标折叠上翻 0.98 实测。分支选择已防镜像，宽限安全。
+        q1n = float(np.clip(q1n, -2.5, 2.5))
+        q2n = float(np.clip(q2n, -2.7, 3.0))
         return q1n, q2n
 
     # ---------------- 几何地形（终版：世界坐标，不用 lidar） ----------------
@@ -279,11 +282,21 @@ class StairWBC(FootPlaceVMC):
         # 终版：ModeSchedule + 贴面目标在 StairWBC 内计算（覆盖 cmd）
         step_lift, place_z = self._update_phases(body["pos"], fwd, wheel_xyz)
         place_z = self._face_place_z(wheel_xyz, step_lift)
+        self._dbg_phases = (self._sp_f, self._sp_r)
         cmd = dict(cmd)
         cmd["step_lift"] = step_lift
         cmd["place_z"] = place_z
         # 终版：支撑腿用几何地形（世界坐标），不用 lidar
         terrain_h = self._geo_terrain(wheel_xyz)
+        # 后轴 SWING 期前腿加深静压（抗后轴抬升反作用，终版"后腿主动加
+        # 垂直力抗抬头"对应项）——后轴抬轮把 body 后部顶起，前腿压载
+        # 把 body 拉平，防前轮被反作用折叠上翻（0.86-0.91 实测）。
+        _press_base = float(os.environ.get("S10_FP_PRESS", "0.005"))
+        if self._sp_r > 0.5:
+            os.environ["S10_FP_PRESS"] = str(float(os.environ.get(
+                "S10_FP_PRESS_REAR", "0.030")))
+        elif float(os.environ.get("S10_FP_PRESS", "0.005")) != _press_base:
+            os.environ["S10_FP_PRESS"] = str(_press_base)
         # QP Checker 破锥时微降腿增益（经 S10_FP_KP_POS 传入基类）
         _kpp = float(os.environ.get("S10_FP_KP_POS", "0"))
         if _kpp > 0:
@@ -294,14 +307,26 @@ class StairWBC(FootPlaceVMC):
         finally:
             if _kpp > 0:
                 os.environ["S10_FP_KP_POS"] = str(_kpp)
-        # 爬升瞬态：轮矩纯前驱（冻结差速，航交由 HipX 修正）
+        # 爬升瞬态：轮矩纯前驱（冻结差速，航交由 HipX 修正）。
+        # 前驱下限：狗撞棱 body 停、后轮空转超速被 PID 倒转(tauW=+9/10
+        # 实测) → 狗被夹死。SWING 期支撑轮至少 -DRIVE_FLOOR 前驱。
+        _df = -6.0
+        _side_s = np.array([-1.0, 1.0, -1.0, 1.0])
         try:
             _vx_f = float(getattr(self, "_vx_f", 0.0))
+            _any_sw = float(np.max(step_lift)) > 0.5
             for _leg in range(4):
                 _wq = float(qvel[WHEEL_QV_IDX[_leg]])
                 _vw = -_wq * self.fk.r
-                _tw = (-(self.wheel_k * (_vx_f - _vw))
+                _vref = _vx_f
+                if _any_sw:
+                    # 前轮抬空后失去 yaw 阻力，支撑轮差速主动抗旋（yaw_rate
+                    # 反馈）；同时保持前驱下限防后轮空转倒转
+                    _vref = _vx_f - _side_s[_leg] * float(qvel[5]) * 2.0                         * self.track_half
+                _tw = (-(self.wheel_k * (_vref - _vw))
                        - self.wheel_d * _wq)
+                if _any_sw:
+                    _tw = max(float(_tw), _df)
                 tau[WHEEL_Q_IDX[_leg]] = float(np.clip(_tw, -13.5, 13.5))
         except Exception:
             pass

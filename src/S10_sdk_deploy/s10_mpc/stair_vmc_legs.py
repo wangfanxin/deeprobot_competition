@@ -1368,7 +1368,7 @@ class FootPlaceVMC:
         return dict(pos=qpos[0:3], yaw=yaw, roll=roll, pitch=pitch,
                     vx=float(vw[0]), R=R)
 
-    def _ik(self, xd, zd, q1, q2, lift=False):
+    def _ik(self, xd, zd, q1, q2, lift=False, leg=None):
         """2D IK：轮目标 (xd, zd)（相对髋，sagittal，zd 向上）→ q1/q2。
         v733: 加关节范围钳制——楼梯抬升目标接近工作空间边界时裸迭代会
         翻到镜像解（q1=2.7 实测）。lift=True（抬升腿）用迈步举轮姿态
@@ -1559,7 +1559,8 @@ class FootPlaceVMC:
                    else float(os.environ.get('S10_FP_REACH', '-0.16')))
             _hi = 0.15 if sl > 0.1 else 0.02
             _rz = float(np.clip(rel[2], _lo, _hi))
-            q1t, q2t = self._ik(float(rel[0]), _rz, q1, q2, lift=(sl > 0.1))
+            q1t, q2t = self._ik(float(rel[0]), _rz, q1, q2,
+                                 lift=(sl > 0.1), leg=leg)
             # v736: 抬升腿真正卸载——PD 增益降到 1/10（kp 220→22），
             # 轮近乎自由摆动（避免硬顶地面→反力顶起全身→四轮离地，
             # v725-728 耦合结论）。支撑腿承担全部载荷。

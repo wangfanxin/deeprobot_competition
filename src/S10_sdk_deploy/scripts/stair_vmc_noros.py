@@ -1611,11 +1611,15 @@ def main():
                 if t - _last_dbg_t >= 0.5:
                     _dbgd = getattr(vmc, "_dbg_d", None)
                     _dbgdn = getattr(vmc, "_dbg_done", None)
+                    _dbgp = getattr(vmc, "_dbg_phases", None)
                     _dbgs = ''
                     if _dbgd is not None:
                         _dbgs = ' d=%s dn=%s' % (
                             np.round(np.asarray(_dbgd), 2).tolist(),
                             np.round(np.asarray(_dbgdn), 0).tolist())
+                    if _dbgp is not None:
+                        _dbgs += ' sp=%s' % (np.round(
+                            np.asarray(_dbgp), 1).tolist())
                     print('[STAIRDBG] t=%.1f pos=(%.2f,%.2f) pitch=%.2f roll=%.2f '
                           'bz=%.3f wz=%s sl=%s terrF=%.3f terrR=%.3f fn=%s '
                           'cmd=(%.2f,%.2f)%s' % (t, body_pos[0], body_pos[1],
