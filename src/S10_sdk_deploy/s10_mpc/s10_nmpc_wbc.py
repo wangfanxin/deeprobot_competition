@@ -66,7 +66,8 @@ class NmpcWbc:
         self._t = 0.0
         self._sp_f = 0.0
         self._sp_r = 0.0
-        self._sp_f_hold = 0.0
+        self._sp_f_hover = 0.0
+        self._sp_f_hover_s = 0.0
         self._sp_f_top = 0.0
         self._sp_r_top = 0.0
         self._sw_f_t0 = -1e9
@@ -127,13 +128,26 @@ class NmpcWbc:
                 self._sp_f_top = _tf
                 self._sw_f_t0 = self._t
         else:
-            # v1066: 释放条件"轮高达台面顶+半径"（v1077 HOLD 轨迹无变化回退）
+            # v1079(方向1): 前轮过棱后进 HOVER——保持正 drop（body 相对
+            # 目标，非台面+R）随 body 平移，平移 hover_len 后 STANCE。
+            # world 目标在 body 抬升时 drop 收缩→折叠；body 相对目标
+            # drop 恒定→腿保持弯曲不折叠，且前轮不空转自旋。
             if _wz_f >= self._sp_f_top + r - 0.01:
-                self._sp_f = 0.0
+                if self._sp_f_hover <= 0.5:
+                    self._sp_f_hover = 1.0
+                    self._sp_f_hover_s = float(getattr(
+                        self.stair, '_s_cur', 0.0))
+                _h_len = float(os.environ.get('S10_NMPC_HOVER_LEN', '0.12'))
+                if float(getattr(self.stair, '_s_cur', 0.0)) - \
+                        self._sp_f_hover_s >= _h_len:
+                    self._sp_f = 0.0
+                    self._sp_f_hover = 0.0
             elif self._t - self._sw_f_t0 > self.swing_to:
                 self._sp_f = 0.0
+                self._sp_f_hover = 0.0
         if self._sp_r <= 0.0:
-            if -self.swing_d < _dr < 0.05 and self._sp_f <= 0.0:
+            if -self.swing_d < _dr < 0.05 and (
+                    self._sp_f <= 0.0 or self._sp_f_hover > 0.5):
                 self._sp_r = 1.0
                 self._sp_r_top = _tr
                 self._sw_r_t0 = self._t
@@ -199,7 +213,7 @@ class NmpcWbc:
         _n_cont = max(float(np.sum(swing <= 0.5)), 1.0)
         for i in range(4):
             F_ref[3*i+2] = m * g / _n_cont * (
-                1.0 if swing[i] <= 0.5 else 0.2)
+                1.0 if swing[i] <= 0.5 else 0.0)
         # 期望线性加速度（世界系）
         a_des = np.zeros(3)
         a_des[2] = kp_z * (ref['z'] - body['pos'][2]) \
@@ -283,12 +297,16 @@ class NmpcWbc:
         u = np.hstack([be] + ub + [1e9] * 12)
         for i in range(4):
             if swing[i] > 0.5:
-                # v1070: 贴面爬升——SWING 轮 F_z ≥ 半支撑(46N)，非 5N。
-                # 5N 几乎卸载 → 后轴抬升期 body 俯仰 → 前腿被动上折泵高
-                # （t=7 轮 1.09 实测）；半支撑让轮保持滚爬、俯仰小
-                l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
-                    'S10_NMPC_SWING_FZ_MIN', '46.0'))
-                u[3 + len(rows) + 3*i + 2] = self.fz_max
+                # v1081: 前轴 SWING F=0（滚动越阶，v1080 实测前轮能滚过
+                # riser2 y=38.3）、后轴 SWING F_z≥46（滚爬，v1070 实测后轮
+                # 需要力才能爬）——不对称接触界
+                if i in (0, 1):
+                    l[3 + len(rows) + 3*i + 2] = 0.0
+                    u[3 + len(rows) + 3*i + 2] = 0.0
+                else:
+                    l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
+                        'S10_NMPC_SWING_FZ_MIN', '46.0'))
+                    u[3 + len(rows) + 3*i + 2] = self.fz_max
         if self._nmpc_prob is None:
             import osqp
             from scipy import sparse
@@ -368,6 +386,12 @@ class NmpcWbc:
             if sl > 0.5 and leg in swing_tgt_z:
                 # 摆腿（贴面爬升）：位置 PD + 小支撑力（F_des 的 F_z 部分）
                 wz_t = swing_tgt_z[leg]
+                # v1079(方向1): HOVER 期前轮目标 = body 相对 drop（正 drop
+                # 恒定，轮随 body 平移），钳在台面顶+半径以上不插台面
+                if self._sp_f_hover > 0.5 and leg in (0, 1):
+                    _hd = float(os.environ.get('S10_NMPC_HOVER_DROP', '0.08'))
+                    wz_t = float(hip_w[2]) - _hd
+                    wz_t = max(wz_t, self._sp_f_top + r - 0.02)
                 rel = np.array([
                     wheel_xyz[leg, 0] - hip_w[0],
                     wheel_xyz[leg, 1] - hip_w[1],
