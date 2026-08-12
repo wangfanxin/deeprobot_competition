@@ -66,6 +66,7 @@ class NmpcWbc:
         self._t = 0.0
         self._sp_f = 0.0
         self._sp_r = 0.0
+        self._sp_f_hold = 0.0
         self._sp_f_top = 0.0
         self._sp_r_top = 0.0
         self._sw_f_t0 = -1e9
@@ -126,8 +127,7 @@ class NmpcWbc:
                 self._sp_f_top = _tf
                 self._sw_f_t0 = self._t
         else:
-            # v1066: 释放条件"轮高达台面顶+半径"（v1073 双轴同 SWING 实测
-            # 失稳 om 4.57，回退顺序 SWING）
+            # v1066: 释放条件"轮高达台面顶+半径"（v1077 HOLD 轨迹无变化回退）
             if _wz_f >= self._sp_f_top + r - 0.01:
                 self._sp_f = 0.0
             elif self._t - self._sw_f_t0 > self.swing_to:
