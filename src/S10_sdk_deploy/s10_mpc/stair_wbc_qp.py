@@ -563,9 +563,11 @@ class StairWBCQP:
                             "S10_QP_K_OVER_ST", "1000.0")) * (_over_s - _db)
                     _lp = float(os.environ.get("S10_QP_OV_LP", "0.25"))
                     self._ov_st_f[leg] += _lp * (_ov_des - self._ov_st_f[leg])
-                    # v985: 经 Jacobian 投影(同 swing)——折叠位姿下大腿参与
-                    th += float((J.T @ np.array([0.0, -self._ov_st_f[leg]]))[0])
-                    tk += float((J.T @ np.array([0.0, -self._ov_st_f[leg]]))[1])
+                    # v985/v986: 经 Jacobian 投影(同 swing)——折叠位姿下大腿
+                    # 参与压轮；[0,+F] 为向下(+z-down)
+                    _tov2 = J.T @ np.array([0.0, self._ov_st_f[leg]])
+                    th += float(_tov2[0])
+                    tk += float(_tov2[1])
                     if float(os.environ.get("S10_QP_DEBUG", "0")) > 2:
                         print('[OVST] t=%.2f leg=%d wz=%.3f top=%.3f '
                               'ov=%.3f ovf=%.1f tk->%.1f'
@@ -635,11 +637,12 @@ class StairWBCQP:
                     _ov2_des = _k_ov * (_over2 - _db2)
                 _lp2 = float(os.environ.get("S10_QP_OV_LP_SW", "0.25"))
                 self._ov_sw_f[leg] += _lp2 * (_ov2_des - self._ov_sw_f[leg])
-                # v985: 防过伸力矩经 Jacobian 投影到 hipy+knee——轮折叠到
-                # q1+q2≈π 时膝盖对轮高近奇异(无权威)，只打膝盖推不动轮
-                # (悬空 0.9+ 实测)。J^T [0, -F] 让大腿也参与压轮。
+                # v985/v986: 防过伸力矩经 Jacobian 投影到 hipy+knee——轮折
+                # 叠到 q1+q2≈π 时膝盖对轮高近奇异(无权威)，只打膝盖推不动
+                # 轮。J^T [0, +F]（+z 为向下）让大腿也参与压轮。
+                # v986 修正: 原写 [0,-F] 是向上推(符号反了)。
                 if abs(self._ov_sw_f[leg]) > 0.5:
-                    _tov = J.T @ np.array([0.0, -self._ov_sw_f[leg]])
+                    _tov = J.T @ np.array([0.0, self._ov_sw_f[leg]])
                     tau[hipy_i] += float(_tov[0])
                     tau[knee_i] += float(_tov[1])
                 if float(os.environ.get("S10_QP_DEBUG", "0")) > 2:
