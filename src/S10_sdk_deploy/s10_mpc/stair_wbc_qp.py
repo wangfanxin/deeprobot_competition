@@ -349,10 +349,15 @@ class StairWBCQP:
                     # v929: SWING 腿 q1 正常分支（防镜像折叠过伸，同 FP v925）
                     q1t = float(np.clip(q1t, -1.1, -0.3))
                     q2t = float(np.clip(q2t, 0.5, 3.0))
-                _kps = float(os.environ.get("S10_QP_KP_SW", str(self.kp)))
-                tau[hipy_i] = (_kps * (q1t - q1)
+                # v934: 前后轴抬升增益不对称——前轮爬升有动量辅助用软增益
+                # （防过伸/泵高）；后轮爬顶需主动抬升 0.125m 用硬增益
+                _kps_d = float(os.environ.get("S10_QP_KP_SW", str(self.kp)))
+                if leg in (2, 3):
+                    _kps_d = float(os.environ.get("S10_QP_KP_SW_REAR",
+                                                  str(self.kp)))
+                tau[hipy_i] = (_kps_d * (q1t - q1)
                                - self.kd * float(qvel[6 + LEG_QV_LEG[b + 1]]))
-                tau[knee_i] = (_kps * (q2t - q2)
+                tau[knee_i] = (_kps_d * (q2t - q2)
                                - self.kd * float(qvel[6 + LEG_QV_LEG[b + 2]]))
         # 轮矩：支撑前驱、抬升 0（差速冻结，hip yaw 全程）
         _rear_swing = float(np.max(step_lift[2:4])) > 0.5
