@@ -66,11 +66,6 @@ class NmpcWbc:
         self._t = 0.0
         self._sp_f = 0.0
         self._sp_r = 0.0
-        self._sp_f_hover = 0.0
-        self._sp_f_hover_s = 0.0
-        self._sp_f_hover_t0 = -1e9
-        self._sp_f_hover_pos = None
-        self._sp_f_win_t0 = -1e9
         self._sp_f_top = 0.0
         self._sp_r_top = 0.0
         self._sw_f_t0 = -1e9
@@ -116,14 +111,14 @@ class NmpcWbc:
         return dmin, top
 
     def _mode_sequence(self, body_pos, fwd, wheel_xyz):
-        """布尔接触模式：前/后轴进入抬升窗 → 该轴轮 F=0（SWING）。
-        轴内左右同步（v1040 结论），过棱且轮高≥台面顶+半径-0.01 释放。"""
+        """??????/?????????? SWING???????????
+        ??????+??-0.01 ???G1?SWING ???? = ??? d<0.35 ?
+        body_z>0.80???????? dh>0.085?????? _nearest_riser ??
+        ????????????? d????/???/????? 6?2 ??????"""
         _fax = body_pos[:2] + fwd * 0.228
         _rax = body_pos[:2] - fwd * 0.228
         _perp = np.array([-fwd[1], fwd[0]])
-        # v1117: ??????????yaw ????????????????
-        # ?????????????????????? yaw ???real43/47
-        # riser2 ?? SWING ? om 1.5-3 ????
+        # v1117: ??????yaw ????????????
         _dfl, _tfl = self._nearest_riser(_fax + _perp * 0.181)
         _dfr, _tfr = self._nearest_riser(_fax - _perp * 0.181)
         if _dfl <= _dfr:
@@ -139,72 +134,19 @@ class NmpcWbc:
         _wz_f = float(np.mean([wheel_xyz[i, 2] for i in (0, 1)]))
         _wz_r = float(np.mean([wheel_xyz[i, 2] for i in (2, 3)]))
         r = self.fk.r
+        _bz_ok = float(body_pos[2]) > 0.80   # G1: body_z ??
         if self._sp_f <= 0.0:
-            if not (-self.swing_d < _df < 0.05):
-                self._sp_f_win_t0 = -1e9
-            if -self.swing_d < _df < 0.05 and self._sp_r <= 0.0:
-                # v1110: ??????????? SWING ??????????
-                # ????? z >= ???-0.125+??-0.02?????????
-                # ?????????????????????real42 ????
-                # ?? riser1 ??y ? 38.0?28s ????????
-                if _wz_r >= _tf - 0.125 + r - 0.02:
-                    self._sp_f = 1.0
-                    self._sp_f_top = _tf
-                    self._sw_f_t0 = self._t
-                else:
-                    # v1155: ???????????????????????
-                    # ???real89 ??? 8s???????? 2s ?? SWING
-                    # ???????????????
-                    if self._sp_f_win_t0 < 0:
-                        self._sp_f_win_t0 = self._t
-                    if self._t - self._sp_f_win_t0 > 2.0:
-                        self._sp_f = 1.0
-                        self._sp_f_top = _tf
-                        self._sw_f_t0 = self._t
+            if -self.swing_d < _df < 0.05 and _bz_ok:
+                self._sp_f = 1.0
+                self._sp_f_top = _tf
+                self._sw_f_t0 = self._t
         else:
-            # v1079(方向1): 前轮过棱后进 HOVER——保持正 drop（body 相对
-            # 目标，非台面+R）随 body 平移，平移 hover_len 后 STANCE。
-            # world 目标在 body 抬升时 drop 收缩→折叠；body 相对目标
-            # drop 恒定→腿保持弯曲不折叠，且前轮不空转自旋。
             if _wz_f >= self._sp_f_top + r - 0.01:
-                if self._sp_f_hover <= 0.5:
-                    self._sp_f_hover = 1.0
-                    self._sp_f_hover_s = float(getattr(
-                        self.stair, '_s_cur', 0.0))
-                    self._sp_f_hover_t0 = self._t
-                    self._sp_f_hover_pos = np.asarray(
-                        body_pos[:2], dtype=np.float64)
-                # v1082: ???????????? / ??????? / ?? /
-                # ?????????????? _s_cur ????????
-                _h_len = float(os.environ.get('S10_NMPC_HOVER_LEN', '0.10'))
-                _h_tmax = float(os.environ.get('S10_NMPC_HOVER_TMAX', '0.5'))
-                _h_done = False
-                if float(getattr(self.stair, '_s_cur', 0.0)) - \
-                        self._sp_f_hover_s >= _h_len:
-                    _h_done = True
-                if not _h_done and self._sp_f_hover_pos is not None:
-                    _dp = np.asarray(body_pos[:2], dtype=np.float64) - \
-                        self._sp_f_hover_pos
-                    if float(_dp[0] * fwd[0] + _dp[1] * fwd[1]) >= _h_len:
-                        _h_done = True
-                if not _h_done and \
-                        self._t - self._sp_f_hover_t0 >= _h_tmax:
-                    _h_done = True
-                if not _h_done and \
-                        _wz_f <= self._sp_f_top + r - 0.04:
-                    _h_done = True
-                if _h_done:
-                    self._sp_f = 0.0
-                    self._sp_f_hover = 0.0
-                    if os.environ.get('S10_NMPC_DEBUG', '0') == '1':
-                        print('[HOVER] exit t=%.2f y=%.2f wz=%.3f' % (
-                            self._t, float(body_pos[1]), _wz_f), flush=True)
+                self._sp_f = 0.0
             elif self._t - self._sw_f_t0 > self.swing_to:
                 self._sp_f = 0.0
-                self._sp_f_hover = 0.0
         if self._sp_r <= 0.0:
-            if -self.swing_d < _dr < 0.05 and (
-                    self._sp_f <= 0.0 or self._sp_f_hover > 0.5):
+            if -self.swing_d < _dr < 0.05 and _bz_ok:
                 self._sp_r = 1.0
                 self._sp_r_top = _tr
                 self._sw_r_t0 = self._t
@@ -288,7 +230,7 @@ class NmpcWbc:
         # v1072: 轴抬升 pitch 前馈——后轴 SWING 减载反作用使 body 翘头
         # （~21Nm），前腿强保持饱和仍上折；前馈主动低头抵消（F_z_min=46
         # 后后轮能出力执行）
-        _ff_sw = float(os.environ.get('S10_NMPC_PITCH_FF_SW', '0.0'))
+        _ff_sw = 1.5
         if _ff_sw > 0.0:
             if float(np.max(swing[2:4])) > 0.5:
                 al_des[1] -= _ff_sw
@@ -300,11 +242,9 @@ class NmpcWbc:
         # v1082: SWING/HOVER ??? z/????????a_des[2]<-g ?????
         # ? F_z>=0 ?? ? ?????? F=0 ?????v1081 HOVER ???
         # F ????????????????F ?????
-        a_des[2] = float(np.clip(a_des[2], float(os.environ.get(
-            'S10_NMPC_AZ_MIN', '-4.0')), float(os.environ.get(
-                'S10_NMPC_AZ_MAX', '12.0'))))
+        a_des[2] = float(np.clip(a_des[2], -4.0, 6.0))
         if float(np.max(swing)) > 0.5:
-            _al_lim = float(os.environ.get('S10_NMPC_AL_LIM', '6.0'))
+            _al_lim = 30.0
             al_des[1] = float(np.clip(al_des[1], -_al_lim, _al_lim))
             # v1147: SWING ? pitch ?????pitch<-0.55???>32?????
             # ???????0.36m?????? ? ???????real83 ??
@@ -358,6 +298,15 @@ class NmpcWbc:
         # ?????real14-18 ?? bz 0.70?fn ????
         # v1109: ??????/?? SWING ??"????"?????????
         # ?? F_z>=20 ??????????? F_z>=46?v1070??
+        # #1(???): ????? NMPC??SWING ?? SRBD ?/??????
+        # ??????????????????? ????????????
+        # ???osqp ???????????????????????
+        for i in range(4):
+            if swing[i] > 0.5:
+                A_m[:, 3 * i:3 * i + 3] = 0.0
+                Ae[0, 3 * i + 0] = 0.0
+                Ae[1, 3 * i + 1] = 0.0
+                Ae[2, 3 * i + 2] = 0.0
         be = np.array([0.0, 0.0, -m * g])
         # 不等式（固定结构）：每轮 6 行
         rows = []
@@ -388,16 +337,23 @@ class NmpcWbc:
                 # riser2 y=38.3）、后轴 SWING F_z≥46（滚爬，v1070 实测后轮
                 # 需要力才能爬）——不对称接触界
                 # v1109: ?? SWING F_z>=20??????????? F_z>=46
-                _fz_min_sw = float(os.environ.get(
-                    'S10_NMPC_SWING_FZ_MIN', '46.0'))
-                if i in (0, 1):
-                    _fz_min_sw = float(os.environ.get(
-                        'S10_NMPC_FRONT_SWING_FZ_MIN', '20.0'))
-                l[3 + len(rows) + 3*i + 2] = _fz_min_sw
-                u[3 + len(rows) + 3*i + 2] = self.fz_max
+                # #1: SWING ? F ???=0???????????==???
+                l[3 + len(rows) + 3*i + 0] = 0.0
+                u[3 + len(rows) + 3*i + 0] = 0.0
+                l[3 + len(rows) + 3*i + 1] = 0.0
+                u[3 + len(rows) + 3*i + 1] = 0.0
+                l[3 + len(rows) + 3*i + 2] = 0.0
+                u[3 + len(rows) + 3*i + 2] = 0.0
             elif float(np.max(swing[0:2])) > 0.5 and i in (2, 3):
                 # v1159: ?? SWING ???????F_z >= ??? 95N??85 ?
                 # ?????????????????????? 124N<186N??
+                l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
+                    'S10_NMPC_STANCE_FZ_MIN', '95.0'))
+                u[3 + len(rows) + 3*i + 2] = self.fz_max
+            elif float(np.max(swing)) <= 0.5:
+                # v1158r: ??????? F_z>=95N??G1(body_z>0.80) ?"???
+                # SWING ??????"?????3?????????? 0.72?
+                # G1 ?? SWING ? ??????????? 0.80+ ????
                 l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
                     'S10_NMPC_STANCE_FZ_MIN', '95.0'))
                 u[3 + len(rows) + 3*i + 2] = self.fz_max
@@ -491,11 +447,6 @@ class NmpcWbc:
                 wz_t = swing_tgt_z[leg]
                 # v1079(方向1): HOVER 期前轮目标 = body 相对 drop（正 drop
                 # 恒定，轮随 body 平移），钳在台面顶+半径以上不插台面
-                if self._sp_f_hover > 0.5 and leg in (0, 1):
-                    _hd = float(os.environ.get('S10_NMPC_HOVER_DROP', '0.03'))
-                    wz_t = float(hip_w[2]) - _hd
-                    wz_t = min(wz_t, self._sp_f_top + r + 0.008)
-                    wz_t = max(wz_t, self._sp_f_top + r - 0.005)
                 # v1089: ???????????????????-2cm?????
                 # ???+R????????????????????????
                 # J^T ??????????? body ???real19 ?? body 0.63?
@@ -582,16 +533,16 @@ class NmpcWbc:
                 # 失去权威（轮 1.09/body 0.85 实测），改用关节空间高增益
                 # PD 把腿拉回标称弯曲位形（防上折，v1014 思路）
                 if float(wheel_xyz[leg, 2]) > _pz_d + 0.02:
-                    _kpo = float(os.environ.get('S10_NMPC_KP_OVR', '300.0'))
-                    _kdo = float(os.environ.get('S10_NMPC_KD_OVR', '30.0'))
+                    _kpo = 300.0
+                    _kdo = 30.0
                     tau[LEG_CTRL_IDX[b + 1]] += _kpo * (_qp1 - q1) - _kdo * dq1
                     tau[LEG_CTRL_IDX[b + 2]] += _kpo * (_qp2 - q2) - _kdo * dq2
                 th1, th2 = J.T @ f_s
                 # v1056: 姿态正则（零空间 PD 拉回蹲姿，VMC 同款）——力控在
                 # 近奇异位形失去权威，腿漂到折叠上伸（轮 1.02/body 0.64
                 # 卡死实测）；正则把腿拉回标称蹲姿，防奇异漂移
-                _kp_pose = float(os.environ.get('S10_NMPC_KP_POSE', '20.0'))
-                _kd_pose = float(os.environ.get('S10_NMPC_KD_POSE', '6.0'))
+                _kp_pose = 20.0
+                _kd_pose = 6.0
                 # v1071: 对侧轴 SWING 时本轴强姿态保持（固定蹲姿）——
                 # v1076 IK 姿态版本在真原图更差（东漂+早翻），回退
                 # v1100: ???????? SWING ??????????????
@@ -600,10 +551,8 @@ class NmpcWbc:
                 # 1.1 ???????????? SWING ????????????
                 # ?????????v1098 ??????? real29 ?????
                 if float(np.max(swing[2:4])) > 0.5 and leg in (0, 1):
-                    _kp_pose = float(os.environ.get(
-                        'S10_NMPC_KP_POSE_OPP', '200.0'))
-                    _kd_pose = float(os.environ.get(
-                        'S10_NMPC_KD_POSE_OPP', '20.0'))
+                    _kp_pose = 20.0
+                    _kd_pose = 6.0
                     _rel3 = np.array([wheel_xyz[leg, 0] - hip_w[0],
                                       wheel_xyz[leg, 1] - hip_w[1],
                                       _pz_d - hip_w[2]])
@@ -617,10 +566,8 @@ class NmpcWbc:
                         float(_relb3[0]), _rz3, q1, q2, leg=leg)
                     _qp1, _qp2 = _q1p, _q2p
                 if float(np.max(swing[0:2])) > 0.5 and leg in (2, 3):
-                    _kp_pose = float(os.environ.get(
-                        'S10_NMPC_KP_POSE_OPP', '200.0'))
-                    _kd_pose = float(os.environ.get(
-                        'S10_NMPC_KD_POSE_OPP', '20.0'))
+                    _kp_pose = 20.0
+                    _kd_pose = 6.0
                 tau[LEG_CTRL_IDX[b + 1]] = float(
                     th1 + _kp_pose * (_qp1 - q1) - _kd_pose * dq1)
                 tau[LEG_CTRL_IDX[b + 2]] = float(
@@ -633,7 +580,7 @@ class NmpcWbc:
         # vx PID 只做微调，下限仅防倒转。v1065: 前驱下限-5×4=247N 前向力
         # 作用在轮心（CoM 下方）→ 50Nm 俯仰 → 翘起发射（台架实测）；
         # F_des 前馈的推力受摩擦锥/规划约束，不会发射。
-        _dfx = -float(os.environ.get('S10_NMPC_DRIVE_FLOOR', '2.0'))
+        _dfx = -2.0
         _om_cmd = float(cmd.get('omega', 0.0))
         _any_sw = float(np.max(swing)) > 0.5
         fwd_w = R @ np.array([1.0, 0.0, 0.0])
@@ -646,23 +593,20 @@ class NmpcWbc:
             _tw = -r * fx_fb
             if swing[leg] > 0.5:
                 # 摆腿（贴面滚爬）：保留前向微驱
-                _tw += -0.5 * float(os.environ.get(
-                    'S10_NMPC_WHEEL_K', '4.0')) * (self._vx_f - v_wheel)
+                _tw += -0.5 * 12.0 * (self._vx_f - v_wheel)
             else:
                 _vref = self._vx_f
                 if not _any_sw:
                     _vref = self._vx_f + _sd * _om_cmd * self.track_half
                 # vx PID 微调（权重 0.3）
-                _tw += -0.3 * float(os.environ.get(
-                    'S10_NMPC_WHEEL_K', '4.0')) * (_vref - v_wheel)
+                _tw += -0.3 * 12.0 * (_vref - v_wheel)
                 # 防倒转下限（小）
                 _tw = min(float(_tw), _dfx)
                 # yaw 率阻尼 + 航向误差（轮差速）
-                _tw += _sd * float(qvel[5]) * float(os.environ.get(
-                    'S10_NMPC_YAW_DIFF', '2.0')) * self.track_half
+                _tw += _sd * float(qvel[5]) * 1.0 * self.track_half
                 try:
                     _hdg_e = float(getattr(self.stair, '_hdg_err', 0.0))
-                    _ky = float(os.environ.get('S10_NMPC_YAW_ERR_K', '2.0'))
+                    _ky = 1.5
                     _tw -= _sd * _hdg_e * _ky * self.track_half
                 except Exception:
                     pass
@@ -693,7 +637,7 @@ class NmpcWbc:
         body = self._body_state(qpos, qvel)
         fwd = np.array([np.cos(body['yaw']), np.sin(body['yaw'])])
         # 速度低通
-        _vt = float(os.environ.get('S10_NMPC_VX_TAU', '0.10'))
+        _vt = 0.10
         self._vx_f += (float(cmd.get('vx', 0.0)) - self._vx_f) * min(1.0, dt / _vt)
         # ModeSequence（布尔抬升轮）
         swing = self._mode_sequence(body['pos'], fwd, wheel_xyz)
@@ -705,7 +649,7 @@ class NmpcWbc:
         if not hasattr(self, '_z_ref0'):
             self._z_ref0 = float(body['pos'][2])
             self._z_ref_t0 = self._t
-        _zr_ramp = float(os.environ.get('S10_NMPC_Z_RAMP', '0.5'))
+        _zr_ramp = 0.5
         _zf = _zr_ramp * 1.0
         _fz = float(np.clip((self._t - self._z_ref_t0) / max(_zf, 1e-3),
                             0.0, 1.0))

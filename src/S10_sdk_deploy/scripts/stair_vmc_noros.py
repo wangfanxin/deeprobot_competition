@@ -632,11 +632,7 @@ def main():
                     # v1046: 横向收敛符号修正——狗在东侧(x>center)应向西修
                     # (yaw 增大，aim>hdg)；原 lat_err=center-x 给负值→继续
                     # 向东发散（ex56 东漂 2m 到平台外实测）。东正 lat_err。
-                    _center_x = float(stair_world[0][0][0])
-                    _lat_err = body_pos[0] - _center_x
-                    _k_lat = float(os.environ.get('S10_STAIR_HDG_LAT', '0.35'))
-                    _aim_h = _stair_hdg + float(np.clip(
-                        _lat_err * _k_lat, -0.6, 0.6))
+                    _aim_h = _stair_hdg
                     _ys_err = _aim_h - yaw
                     while _ys_err > np.pi:
                         _ys_err -= 2.0 * np.pi
@@ -646,16 +642,9 @@ def main():
                     _sh_d = float(os.environ.get('S10_STAIR_HDG_D', '2.5'))
                     # v1038: 积分项消除稳态偏置——P+D 航向锁压不住西漂
                     # (yaw 1.5→2.2 实测)，Ki 累积误差持续回推
-                    _sh_i = getattr(fol, '_sh_int', 0.0)
-                    # v1042: 修复 v1038 引用脚本内不存在的 _dt_nav→NameError
-                    # 被 try/except 吞掉→航向锁定整段静默失效（HDG 归零实测）
-                    _sh_i += _ys_err / max(float(os.environ.get(
-                        'S10_NAV_HZ', '20')), 1e-3)
-                    _sh_i = float(np.clip(_sh_i, -0.4, 0.4))
-                    fol._sh_int = _sh_i
                     _sh_ki = float(os.environ.get('S10_STAIR_HDG_KI', '0.4'))
                     om_c = float(np.clip(
-                        _sh_g * _ys_err + _sh_ki * _sh_i
+                        _sh_g * _ys_err
                         - _sh_d * float(qvel[5]),
                         -float(os.environ.get('S10_STAIR_HDG_OM', '0.6')),
                         float(os.environ.get('S10_STAIR_HDG_OM', '0.6'))))
