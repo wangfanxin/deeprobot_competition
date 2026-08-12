@@ -652,13 +652,13 @@ class StairWBCQP:
                 # v935: swing kd 默认 30（原 8 阻尼比 ~0.25 欠阻尼，轮离地
                 # 后自由过冲到 1.1 悬空实测）
                 _kds_d = float(os.environ.get("S10_QP_KD_SW", "30.0"))
-                # v997: 贴面软阻尼跟随——前轮贴面时 KP 降到 15、KD 提到 100，
-                # 目标跟轮高+3mm，轮靠前驱滚上立面，腿只吸收冲击。
+                # v1003: 贴面软弹簧——前轮贴面时 KP 降到 15、KD 提到 100，
+                # 目标用贴面轮廓(v976 几何面)，软弹簧把轮轻压到面上(悬空
+                # 时向下压、接触后随面滚)，前驱负责滚上。原 v997 用"轮高
+                # +3mm"跟随目标把轮往上托→悬空(实测)。
                 if _face_drive[leg] and leg in (0, 1):
                     _kps_d = float(os.environ.get("S10_QP_KP_SW_SOFT", "15.0"))
                     _kds_d = float(os.environ.get("S10_QP_KD_SW_SOFT", "100.0"))
-                    _wz_t = float(wheel_xyz[leg, 2]) + float(os.environ.get(
-                        "S10_QP_FOLLOW_GAP", "0.003"))
                 tau[hipy_i] = (_kps_d * (q1t - q1)
                                - _kds_d * float(qvel[6 + LEG_QV_LEG[b + 1]]))
                 tau[knee_i] = (_kps_d * (q2t - q2)
@@ -719,6 +719,11 @@ class StairWBCQP:
                         # v998: 轮低于 0.72(贴面爬升中)才前驱，过顶即停——
                         # 前驱持续把轮顶到 1.2+ 过伸(v997 实测)
                         _tw = min(float(_tw), _fd_tau)
+                    # v1004: 支撑轮前驱下限——爬升中后轮空转被 PID 判超速
+                    # 全力倒转(tauW=+13.5 实测)，狗失去前驱+倒转力矩自旋。
+                    # 至少保持 -DRIVE_FLOOR 前驱。
+                    _df = -float(os.environ.get("S10_QP_DRIVE_FLOOR", "6.0"))
+                    _tw = max(float(_tw), _df)
                     tau[WHEEL_Q_IDX[leg]] = float(np.clip(_tw, -13.5, 13.5))
                 else:
                     # v981: 全支撑(接近段)执行导航 omega 差速——原仅跟 vx_f
