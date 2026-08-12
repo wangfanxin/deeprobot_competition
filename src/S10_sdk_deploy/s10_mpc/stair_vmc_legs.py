@@ -1541,15 +1541,6 @@ class FootPlaceVMC:
             if sl <= 0.5:
                 wz = min(wz, float(terrain_h[leg]) + self.fk.r
                          - _fp_press + 0.05)
-                # v919: 几何台面顶封顶——轮在台面上时运动学地面可能锁死
-                # 过伸（前轮上台后悬空 0.15m 卡在台上不进实测）；拉回
-                # geo_top+r+0.01 让轮落回台面抓地
-                try:
-                    _gt = float(cmd.get("geo_top", np.zeros(4))[leg])
-                    if _gt > 0.4:
-                        wz = min(wz, _gt + self.fk.r + 0.01)
-                except Exception:
-                    pass
             _dw = np.array([wheel_xyz[leg, 0] - hip_w[0],
                            wheel_xyz[leg, 1] - hip_w[1],
                            wz - hip_w[2]])
@@ -1579,6 +1570,13 @@ class FootPlaceVMC:
                 _kpp9 = float(os.environ.get('S10_FP_KP_POS', '0'))
                 _kp_leg = (float(_kpp9) if _kpp9 > 0 else self.kp)
                 _kd_leg = self.kd
+                # v922: posmode 抬升腿单独软增益（默认 40，支撑 120）——
+                # 全增益抬升腿把 body 顶高(1.11 实测)而非抬轮（轮贴地推不
+                # 动，反力顶 body）；软增益让轮顺立面滚上、腿只引导不过推
+                if sl > 0.1:
+                    _kpsw = float(os.environ.get('S10_FP_KP_SW', '40'))
+                    _kp_leg = _kpsw
+                    _kd_leg = float(os.environ.get('S10_FP_KD_SW', '3'))
             else:
                 _kp_leg = self.kp * (0.10 if sl > 0.1 else 1.0)
                 _kd_leg = self.kd * (0.3 if sl > 0.1 else 1.0)

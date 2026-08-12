@@ -1404,21 +1404,6 @@ def main():
                     and _in_stairzone_now):
                 step_lift[:] = 0.0
                 stair_lift_flag = 1.0
-            # v919: 每轮几何台面顶（支撑腿过伸封顶用）——取该轮 y 之前最近
-            # 的 riser 台面（轮在台面上=台面顶；平地=STAIR_GROUND）。FP 支撑
-            # 腿目标封顶 geo_top+r，防运动学地面锁死过伸（前轮上台后悬空
-            # 0.15m 卡在台上不进实测）
-            _geo_top4 = np.full(4, float(getattr(fol, 'STAIR_GROUND', 0.48)))
-            try:
-                if _in_stairzone_now and stair_world:
-                    for (_rp, _tng, _sr, _dhv, _top) in stair_world:
-                        for _i in range(4):
-                            _di = float(np.dot(
-                                wheel_xyz[_i, :2] - _rp, _tng))
-                            if _di <= 0.0 and float(_top) > _geo_top4[_i]:
-                                _geo_top4[_i] = float(_top)
-            except Exception:
-                pass
             # v813: 计算每轮爬升窗掩码（轮世界 y 与 riser y 距离）
             _climb_mask = np.zeros(4)
             if _in_stairzone_now and stair_world:
@@ -1494,7 +1479,6 @@ def main():
                       # （单侧贴地抓地）
                       climb_mask=_climb_mask,
                       place_z=place_z,
-                      geo_top=_geo_top4,
                       place_margin=float(os.environ.get(
                           'S10_STAIR_LIFT_MARGIN', '0.04')))
         if (os.environ.get('S10_VMC_MODE', 'wbc') == 'dual'):
