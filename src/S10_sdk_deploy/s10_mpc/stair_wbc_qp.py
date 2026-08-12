@@ -150,11 +150,9 @@ class StairWBCQP:
             (_rp, _tng, _dhv, _top) = _best
             _z_bot = float(_top - _dhv)
             _d_w = float(np.dot(_ax_xy - _rp, _tng))
-            # v920: 贴面轮廓修正（同 StairWBC）——d>=R+0.02 平地 flat+r；
-            # [R+0.02, R-0.06] 平滑抬到 top+r；再后台面顶+r。原 [0,cl]
-            # ramp 提前抬轮悬空失接触实测。
-            _lift_lo = _r - 0.06
-            _lift_hi = _r + 0.02
+            # v920/v924: 贴面轮廓（同 StairWBC）——抬升窗 [0.15,-0.05]
+            _lift_hi = float(os.environ.get("S10_STAIR_LIFT_HI", "0.15"))
+            _lift_lo = -0.05
             if _d_w >= _lift_hi:
                 _z_face = _z_bot + _r
             elif _d_w >= _lift_lo:

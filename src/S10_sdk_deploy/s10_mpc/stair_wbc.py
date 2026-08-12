@@ -1,4 +1,4 @@
-"""StairWBC：轮足狗楼梯爬升——位置基全身控制（终版 2026-08-11）。
+﻿"""StairWBC：轮足狗楼梯爬升——位置基全身控制（终版 2026-08-11）。
 
 ModeSchedule（布尔几何相位，整轴硬切换）→ BodyIK（body 姿态闭环）
 → LegCtrl（位置 PD 拉满 + 静压 + 微阻抗）→ WheelCtrl（开环限幅：
@@ -213,17 +213,12 @@ class StairWBC(FootPlaceVMC):
                 _ax_idx = (0, 1) if _leg in (0, 1) else (2, 3)
                 _ax_xy = np.mean([wheel_xyz[_i, :2] for _i in _ax_idx], axis=0)
                 # 找该轴前方最近高 riser
-                _cl = float(os.environ.get("S10_STAIR_SWING_D", "0.30"))
                 _best_d = 1e9; _best = None
                 for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
                     if _dhv <= 0.085:
                         continue
                     _dd = float(np.dot(_ax_xy - _rp, _tng))
-                    # v921: 搜索窗放宽到 SWING 触发点(_cl)——原 [-0.20,0.05]
-                    # 比 SWING 窗(0.30)窄，d∈(0.05,0.30] 用主循环 place_z
-                    # (=0.666) 目标抬到 0.787 过伸实测；v920 贴面轮廓在
-                    # d>R+0.02 时给平地 flat+r，不会提前抬
-                    if -_cl < _dd < 0.05 and abs(_dd) < abs(_best_d):
+                    if -0.20 < _dd < 0.05 and abs(_dd) < abs(_best_d):
                         _best_d = _dd; _best = (_rp, _tng, _dhv, _top)
                 if _best is None:
                     continue
@@ -233,19 +228,9 @@ class StairWBC(FootPlaceVMC):
                 # v899: 抬升窗提前到 SWING 触发点(0.30)——原只在轮半径
                 # 0.081 内抬，狗卡在 d=-0.21 无法进窗（前轮恒 0.62 实测）；
                 # 提前抬让前轮滚 step1 时渐升到 0.747，靠动量越棱
-                # v920: 贴面轮廓修正（FP 调试实测）——sqrt 弧线在 d∈[0,R]
-                # 目标低于平地轮高(0.541 vs 0.626)，腿目标比轮低 → 腿把
-                # body 顶高 0.2m、IK 分支乱跳（q1t 0.9↔-0.01 实测）。
-                # 正确轮廓：d>=R+0.02 平地 flat+r；[R+0.02, R-0.06] 平滑抬
-                # 到 top+r（棱口处抬升清台面）；再后保持台面顶+r。
-                _lift_lo = _r - 0.06
-                _lift_hi = _r + 0.02
-                if _d_w >= _lift_hi:
-                    _z_face = _z_bot + _r
-                elif _d_w >= _lift_lo:
-                    _t = float(np.clip(
-                        (_lift_hi - _d_w) / max(_lift_hi - _lift_lo, 1e-6),
-                        0.0, 1.0))
+                _cl = float(os.environ.get("S10_STAIR_SWING_D", "0.30"))
+                if -_cl <= _d_w <= 0.0:
+                    _t = float(np.clip((_d_w + _cl) / max(_cl, 1e-6), 0.0, 1.0))
                     _ss = _t * _t * (3.0 - 2.0 * _t)
                     _z_face = _z_bot + _r + _dhv * _ss
                 else:
