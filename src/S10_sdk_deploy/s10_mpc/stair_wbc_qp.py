@@ -102,10 +102,16 @@ class StairWBCQP:
             if self._sp[i] <= 0.0:
                 _win_lo = -_swd if _lead else -0.05
                 _win_hi = 0.05 if _lead else 0.10
+                # v953: 对侧轮(FR/RR)触发要求 body 水平(|roll|<0.08)——FL
+                # 爬完 body 侧滚、对侧髋变低必须折叠才能到台面 → 过伸实测
+                _roll_gate = True
+                if not _lead:
+                    _roll_gate = abs(getattr(self, '_body_roll', 0.0)) < 0.08
                 _ok = (_win_lo < d[i] < _win_hi
                        and not self._done[i]
                        and (not _lead or _front_done)
-                       and (_lead or _opp_done))
+                       and (_lead or _opp_done)
+                       and _roll_gate)
                 if _ok:
                     self._sp[i] = 1.0
                     self._sp_top[i] = top[i]
@@ -295,6 +301,7 @@ class StairWBCQP:
         fwd = np.array([np.cos(yaw), np.sin(yaw)])
         self._vx_f += (float(cmd.get("vx", 0.0)) - self._vx_f) * min(1.0, dt / 0.10)
         self._om_f += (float(cmd.get("omega", 0.0)) - self._om_f) * min(1.0, dt / 0.10)
+        self._body_roll = body["roll"]
         step_lift, place_z = self._update_phases(body["pos"], fwd, wheel_xyz)
         place_z = self._face_place_z(wheel_xyz, step_lift)
         self._rear_swing = float(np.max(step_lift[2:4])) > 0.5
@@ -423,6 +430,15 @@ class StairWBCQP:
                                - _kds_d * float(qvel[6 + LEG_QV_LEG[b + 1]]))
                 tau[knee_i] = (_kps_d * (q2t - q2)
                                - _kds_d * float(qvel[6 + LEG_QV_LEG[b + 2]]))
+                # v952: 防过伸反馈——swing 轮实际高度超过目标>0.02m 时，
+                # 膝盖加强制伸展力矩把轮压回台面（过伸是动力学折叠惯性，
+                # 位置 PD 拉不回：单轮序列 FR 冲到 1.08 实测）。减少 q2
+                # (伸膝) 推轮向下。
+                _wz_act2 = float(wheel_xyz[leg, 2])
+                _over2 = _wz_act2 - _wz_t
+                if _over2 > 0.02:
+                    _k_ov = float(os.environ.get("S10_QP_K_OVER", "150.0"))
+                    tau[knee_i] -= _k_ov * _over2
         # 轮矩：支撑前驱、抬升 0（差速冻结，hip yaw 全程）
         _any_swing = float(np.max(step_lift)) > 0.5
         _side_s = np.array([-1.0, 1.0, -1.0, 1.0])
