@@ -1603,8 +1603,12 @@ class FootPlaceVMC:
                 # 阻抗项只做柔顺补充，不主导）
                 pz_des9 = float(terrain_h[leg]) + self.fk.r - _fp_press
                 _dz9 = pz_des9 - float(wheel_xyz[leg, 2])
+                # v1017: 去掉 max(2.0)——原把"轮高于目标"的负下压力钳成
+                # +2，折叠过伸完全无对抗（轮 1.2 vs 目标 0.747 实测）。
+                # F9<0 = 下压（fz=-f_b9[2]=-F9>0），轮高于目标时强压回位。
                 _F9 = float(os.environ.get('S10_FP_KPH', '300')) * min(_dz9, 0.0)
-                _F9 = max(_F9, 2.0)
+                if _F9 > 0:
+                    _F9 = max(_F9, 2.0)
                 J9 = self.fk.jac(q1, q2)
                 f_b9 = body["R"].T @ np.array([0.0, 0.0, _F9], dtype=np.float64)
                 f_s9 = np.array([f_b9[0], -f_b9[2]])
