@@ -619,7 +619,14 @@ def main():
                 try:
                     _stair_hdg = float(np.arctan2(
                         stair_world[0][1][1], stair_world[0][1][0]))
-                    _ys_err = _stair_hdg - yaw
+                    # v1044: 横向收敛——yaw 振荡均值偏东导致 1.8m 横漂离开
+                    # 台阶平台；瞄准方向 = 切线 + 横向偏差修正（把狗拉回中线）
+                    _center_x = float(stair_world[0][0][0])
+                    _lat_err = _center_x - body_pos[0]
+                    _k_lat = float(os.environ.get('S10_STAIR_HDG_LAT', '0.35'))
+                    _aim_h = _stair_hdg + float(np.clip(
+                        _lat_err * _k_lat, -0.6, 0.6))
+                    _ys_err = _aim_h - yaw
                     while _ys_err > np.pi:
                         _ys_err -= 2.0 * np.pi
                     while _ys_err < -np.pi:
@@ -629,7 +636,10 @@ def main():
                     # v1038: 积分项消除稳态偏置——P+D 航向锁压不住西漂
                     # (yaw 1.5→2.2 实测)，Ki 累积误差持续回推
                     _sh_i = getattr(fol, '_sh_int', 0.0)
-                    _sh_i += _ys_err * _dt_nav
+                    # v1042: 修复 v1038 引用脚本内不存在的 _dt_nav→NameError
+                    # 被 try/except 吞掉→航向锁定整段静默失效（HDG 归零实测）
+                    _sh_i += _ys_err / max(float(os.environ.get(
+                        'S10_NAV_HZ', '20')), 1e-3)
                     _sh_i = float(np.clip(_sh_i, -0.4, 0.4))
                     fol._sh_int = _sh_i
                     _sh_ki = float(os.environ.get('S10_STAIR_HDG_KI', '0.4'))
@@ -638,6 +648,8 @@ def main():
                         - _sh_d * float(qvel[5]),
                         -float(os.environ.get('S10_STAIR_HDG_OM', '0.6')),
                         float(os.environ.get('S10_STAIR_HDG_OM', '0.6'))))
+                    # v1041: 航向误差存 fol，供 WBC 200Hz 轮控高频航向保持
+                    fol._hdg_err = _ys_err
                     if os.environ.get('S10_NAV_DEBUG', '0') == '1':
                         print('[HDG] t=%.2f yaw=%.3f hdg=%.3f err=%.3f om=%.3f'
                               % (t, yaw, _stair_hdg, _ys_err, om_c), flush=True)

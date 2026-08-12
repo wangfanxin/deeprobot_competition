@@ -59,11 +59,11 @@ class StairWBC(FootPlaceVMC):
             self._osqp = None
 
     # ---------------- ModeSchedule：布尔几何相位（整轴硬切换） ----------------
-    def _nearest_riser(self, ax):
+    def _nearest_riser(self, ax, min_dh=0.050):
         """前/后轴到最近高 riser 的沿切线投影距离与台面顶高（世界坐标）。"""
         dmin, top = 1e9, 0.0
         for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
-            if _dhv <= 0.050:      # v1027: riser1(0.061m) 也走 SWING 抬轮放置（锐角滚动对偏航极敏感）
+            if _dhv <= min_dh:
                 continue
             _dd = float(np.dot(np.asarray(ax, dtype=np.float64) - _rp, _tng))
             if abs(_dd) < abs(dmin):
@@ -76,8 +76,10 @@ class StairWBC(FootPlaceVMC):
         前轴优先：后轴在前轴 SWING 期间不允许进入（永不双轴同抬）。"""
         _fax = body_pos[:2] + fwd * 0.228
         _rax = body_pos[:2] - fwd * 0.228
-        _df, _tf = self._nearest_riser(_fax)
-        _dr, _tr = self._nearest_riser(_rax)
+        # v1043: 前轴含 riser1(0.050，抬轮避角)，后轴纯滚 riser1(0.085)
+        # ——后轴 SWING 小台阶时轮泵到 1.09 翻车实测；后轮 0.061 纯滚即可
+        _df, _tf = self._nearest_riser(_fax, 0.050)
+        _dr, _tr = self._nearest_riser(_rax, 0.085)
         _wz_f = float(np.mean([wheel_xyz[i, 2] for i in (0, 1)]))
         _wz_r = float(np.mean([wheel_xyz[i, 2] for i in (2, 3)]))
         r = self.fk.r
@@ -137,9 +139,11 @@ class StairWBC(FootPlaceVMC):
         for _leg in range(4):
             if step_lift[_leg] <= 0.02:
                 continue
-            # v1033: 逐轮距离（原轴均值左右同相）——偏航时左/右轮各自按
-            # 自己的棱距抬升，避免轴均值让先到棱的轮被单侧顶起 0.2m 侧翻
-            _ax_xy = wheel_xyz[_leg, :2]
+            # v1040: 轴均值同抬（回退 v1033）——逐轮抬升让 FL 先抬/FR 拖地
+            # 单侧拖拽激起 yaw 自旋（om 2-4 实测）。快速抬升(v1039)+后轮
+            # 压载(v1037)已解决单侧顶起问题，双轮同时离地无拖拽。
+            _ax_idx = (0, 1) if _leg in (0, 1) else (2, 3)
+            _ax_xy = np.mean([wheel_xyz[_i, :2] for _i in _ax_idx], axis=0)
             _best_d = 1e9
             _best = None
             for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
@@ -155,8 +159,12 @@ class StairWBC(FootPlaceVMC):
             _z_bot = float(_top - _dhv)
             _d_w = float(np.dot(_ax_xy - _rp, _tng))
             if -self.swing_d <= _d_w <= 0.0:
-                _t = float(np.clip((_d_w + self.swing_d) / self.swing_d,
-                                   0.0, 1.0))
+                # v1039: 抬升在窗口前 60% 完成——原全程斜坡，轮到棱角前 5cm
+                # 才抬 75%，拖角激起 yaw 自旋（om 4.09 实测）。提前离地
+                # 完全避开棱角接触。
+                _t = float(np.clip(
+                    (_d_w + self.swing_d) / (0.6 * self.swing_d),
+                    0.0, 1.0))
                 _ss = _t * _t * (3.0 - 2.0 * _t)
                 _z_face = _z_bot + _r + _dhv * _ss
             else:
@@ -405,6 +413,14 @@ class StairWBC(FootPlaceVMC):
                     _tw -= self.wheel_k * _sd * _om_cmd * self.track_half
                     # yaw 率阻尼：左自旋(om_yx>0)→左轮加载/右轮减载
                     _tw += _sd * _om_yx * _kd_yx * self.track_half
+                    # v1041: 200Hz 航向误差项——20Hz 导航采样滞后是 yaw
+                    # 极限环根源；高频误差直驱轮差速，消除相位滞后
+                    try:
+                        _hdg_e = float(getattr(self.stair, "_hdg_err", 0.0))
+                        _kyw = float(os.environ.get("S10_FP_YAW_ERR_K", "10.0"))
+                        _tw -= _sd * _hdg_e * _kyw * self.track_half
+                    except Exception:
+                        pass
                     if _brake_w > 0.0:
                         _tw += _sd * _om_yx * _brake_k * self.track_half * _brake_w
                     tau[WHEEL_Q_IDX[_leg]] = _tw
