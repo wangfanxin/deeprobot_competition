@@ -254,7 +254,8 @@ class NmpcWbc:
                 al_des[1] += _ff_sw
         al_des[2] = kp_y * (ref['hdg'] - body['yaw']) \
             - kd_y * float(np.dot(R[:, 2], body['omega']))
-        al_des[0] = -3.0 * body['roll']
+        al_des[0] = -8.0 * body['roll']
+        al_des[0] -= 6.0 * float(np.dot(R[:, 0], body['omega']))
         # v1082: SWING/HOVER ??? z/????????a_des[2]<-g ?????
         # ? F_z>=0 ?? ? ?????? F=0 ?????v1081 HOVER ???
         # F ????????????????F ?????
@@ -612,10 +613,10 @@ class NmpcWbc:
                 # 防倒转下限（小）
                 _tw = min(float(_tw), _dfx)
                 # yaw 率阻尼 + 航向误差（轮差速）
-                _tw += _sd * float(qvel[5]) * 1.0 * self.track_half
+                _tw += _sd * float(qvel[5]) * 4.0 * self.track_half
                 try:
                     _hdg_e = float(getattr(self.stair, '_hdg_err', 0.0))
-                    _ky = 1.5
+                    _ky = 4.0
                     _tw -= _sd * _hdg_e * _ky * self.track_half
                 except Exception:
                     pass
@@ -644,6 +645,16 @@ class NmpcWbc:
                     cmd, terrain_h, dt=0.005):
         self._t += dt
         body = self._body_state(qpos, qvel)
+        if os.environ.get('S10_NMPC_DEBUG', '0') == '1' and                 int(self._t * 200) % 40 == 0:
+            _lg = []
+            for _b in range(4):
+                _q1 = float(qpos[LEG_Q_IDX[_b * 3 + 1]])
+                _q2 = float(qpos[LEG_Q_IDX[_b * 3 + 2]])
+                _p = self.fk.wheel_pos(_q1, _q2)
+                _J = self.fk.jac(_q1, _q2)
+                _lg.append('L%d px=%+.3f pz=%+.3f J21=%+.3f J22=%+.3f' % (
+                    _b, _p[0], _p[1], _J[1, 0], _J[1, 1]))
+            print('[LEG] ' + ' | '.join(_lg), flush=True)
         fwd = np.array([np.cos(body['yaw']), np.sin(body['yaw'])])
         # 速度低通
         _vt = 0.10
