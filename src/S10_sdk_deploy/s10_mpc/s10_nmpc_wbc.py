@@ -380,7 +380,13 @@ class NmpcWbc:
                 _lo = float(os.environ.get('S10_NMPC_REACH', '-0.34'))
                 _rz = float(np.clip(relb[2], _lo, 0.02))
                 q1t, q2t = self._ik(float(relb[0]), _rz, q1, q2, leg=leg)
-                kp = float(os.environ.get('S10_NMPC_KP_SW', '120.0'))
+                # v1075: 后轴 SWING 低增益（少抬多滚）——前轮已证明贴面滚爬
+                # 能越阶；后轴强位置引导会把 body 顶起俯仰 → 前腿上折。
+                # 后轴 KP 40 让轮主要靠 F_z≥46 滚上立面，俯仰小
+                _kp_sw = float(os.environ.get('S10_NMPC_KP_SW', '120.0'))
+                if leg in (2, 3):
+                    _kp_sw = float(os.environ.get('S10_NMPC_KP_SW_R', '40.0'))
+                kp = _kp_sw
                 kd = float(os.environ.get('S10_NMPC_KD_SW', '6.0'))
                 tau[LEG_CTRL_IDX[b + 1]] = kp * (q1t - q1) - kd * dq1
                 tau[LEG_CTRL_IDX[b + 2]] = kp * (q2t - q2) - kd * dq2
