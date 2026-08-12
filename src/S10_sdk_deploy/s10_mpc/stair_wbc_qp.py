@@ -88,9 +88,9 @@ class StairWBCQP:
                 self._rel_f_t = None
                 self._sw_f_t0 = self._t
         else:
-            # v935: 释放阈值恢复 0.10（滞回）——v930 改 0.05 与触发上限
-            # 相同 → 无滞回 swing 反复翻动 → 前轮过伸 1.12 实测。触发
-            # <-0.30..0.05，释放 >0.10，中间带稳定
+            # v935: 释放阈值 0.10（滞回）——触发 <-0.30..0.05，释放 >0.10。
+            # v943 试 0.08 引发 yaw/roll 新级联（5s 翻车）回退；0.10 状态
+            # 前轮上台面稳定 15s（roll±0.5），卡在悬空无法推进。
             if _df > 0.10 and _wz_f >= self._sp_f_top + r + 0.005:
                 if self._rel_f_t is None:
                     self._rel_f_t = self._t
@@ -414,21 +414,22 @@ class StairWBCQP:
                 tau[knee_i] = (_kps_d * (q2t - q2)
                                - _kds_d * float(qvel[6 + LEG_QV_LEG[b + 2]]))
         # 轮矩：支撑前驱、抬升 0（差速冻结，hip yaw 全程）
-        _rear_swing = float(np.max(step_lift[2:4])) > 0.5
+        _any_swing = float(np.max(step_lift)) > 0.5
         _side_s = np.array([-1.0, 1.0, -1.0, 1.0])
         for leg in range(4):
             _wq = float(qvel[WHEEL_QV_IDX[leg]])
             _vw = -_wq * self.fk.r
             if stance_mask[leg] > 0.5:
-                if _rear_swing:
-                    # v938: 后轮爬顶期前轮用 yaw 率阻尼差速——v932 开环满
-                    # 驱在 2 点支撑期引发 yaw 自旋→roll 崩（实测 yaw 1.66
-                    # →2.85）；差速项按 yaw 率反向分配，抵抗自旋，同时保持
-                    # 前向驱动
+                if _any_swing:
+                    # v942: 任何 swing 期支撑轮开环满前驱（用户 A3）——
+                    # 速度 PID 在爬升期把支撑轮刹车(+13.5 反向实测) → 狗
+                    # 卡在棱前不前进、后轮够不到 SWING 窗。v931 失败时
+                    # 是宽抬升窗+泵高环境，现 v939 窄窗+v935 阻尼已不同。
+                    # 后轮爬顶期叠加 yaw 率阻尼差速抗自旋（v938）。
                     _kd_y = float(os.environ.get("S10_QP_WHEEL_KD_Y", "3.0"))
-                    _vref = (self._vx_f
-                             + _side_s[leg] * _kd_y
-                             * (-float(qvel[5])) * self.track_half)
+                    _om_gain = (float(qvel[5]) * _kd_y
+                                if float(np.max(step_lift[2:4])) > 0.5 else 0.0)
+                    _vref = self._vx_f - _side_s[leg] * _om_gain * self.track_half
                     _tw = -(self.wheel_k * (_vref - _vw)) - self.wheel_d * _wq
                     tau[WHEEL_Q_IDX[leg]] = float(np.clip(_tw, -13.5, 13.5))
                 else:
