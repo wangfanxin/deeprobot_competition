@@ -140,6 +140,8 @@ class NmpcWbc:
         # for the wheel target cap (body_z - 0.02 >= riser_top + r).
         _bz_ok_f = float(body_pos[2]) > float(_tf) + r + 0.02
         _bz_ok_r = float(body_pos[2]) > float(_tr) + r + 0.02
+        # v2026(m21): swing re-trigger guard——轮已高于目标（折叠卡死）时
+        # 不重触发 SWING，交 stance 固定蹲姿回拉解锁（m16 折叠 7s 循环）
         if self._sp_f <= 0.0:
             if -self.swing_d < _df < 0.05 and _bz_ok_f:
                 self._sp_f = 1.0
@@ -516,7 +518,11 @@ class NmpcWbc:
                 # v1141/v1144: ???????????????v1109 J^T ??
                 # ??????????? J^T?F_des ????v1070"?????
                 # ???"????????? riser2??
-                if leg in (2, 3):
+                if False and leg in (2, 3):
+                    # v1144: rear-only J^T climb force——m12 实测后轴爬升腿
+                    # 近折叠位形(L3 pz=-0.294)下 J^T 力把腿甩过头；v1141
+                    # 纯位置摆腿为文献共识。模型侧仍保 Fz>=46（规划现实），
+                    # WBC 侧改纯位置 PD 防折叠。
                     _fb2 = R.T @ F_w
                     _fs2 = np.array([float(_fb2[0]), -float(_fb2[2])])
                     _J2 = self.fk.jac(q1, q2)
@@ -551,24 +557,14 @@ class NmpcWbc:
                 # v1069: 过伸强位置保持——轮高于地形目标时，J^T 在上折位形
                 # 失去权威（轮 1.09/body 0.85 实测），改用关节空间高增益
                 # PD 把腿拉回标称弯曲位形（防上折，v1014 思路）
-                # v2026: geometry-aware return——固定蹲姿(q1=-1.16,q2=2.30)
-                # 在台阶顶会把轮往台面里压（目标 0.633 vs 顶 0.747）→ 反作用
-                # 发射 body（1.28/轮 1.6 实测）；改 IK 目标=实际台面顶，轮
-                # 保持贴顶不穿顶
+                # v2026(m17): 恢复固定蹲姿回拉——几何 IK 在上折位形会选
+                # 折叠分支(q1~2.53 钉在限位, J22~0)致 7s 卡死；固定蹲姿
+                # 直拉 q1/q2 绕过奇异 J，唯一能掰回前伸位形的路径
                 if float(wheel_xyz[leg, 2]) > _pz_d + 0.02:
                     _kpo = 300.0
                     _kdo = 30.0
-                    _rel_o = np.array([
-                        wheel_xyz[leg, 0] - hip_w[0],
-                        wheel_xyz[leg, 1] - hip_w[1],
-                        _pz_d - hip_w[2]])
-                    _relb_o = R.T @ _rel_o
-                    _relb_o[0] = max(float(_relb_o[0]), 0.0)
-                    _rz_o = float(np.clip(_relb_o[2], -0.34, 0.0))
-                    _q1o, _q2o = self._ik(
-                        float(_relb_o[0]), _rz_o, q1, q2, leg=leg)
-                    tau[LEG_CTRL_IDX[b + 1]] += _kpo * (_q1o - q1) - _kdo * dq1
-                    tau[LEG_CTRL_IDX[b + 2]] += _kpo * (_q2o - q2) - _kdo * dq2
+                    tau[LEG_CTRL_IDX[b + 1]] += _kpo * (_qp1 - q1) - _kdo * dq1
+                    tau[LEG_CTRL_IDX[b + 2]] += _kpo * (_qp2 - q2) - _kdo * dq2
                 th1, th2 = J.T @ f_s
                 # v1056: 姿态正则（零空间 PD 拉回蹲姿，VMC 同款）——力控在
                 # 近奇异位形失去权威，腿漂到折叠上伸（轮 1.02/body 0.64
