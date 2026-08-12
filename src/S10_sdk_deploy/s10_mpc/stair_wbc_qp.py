@@ -563,11 +563,22 @@ class StairWBCQP:
                             "S10_QP_K_OVER_ST", "1000.0")) * (_over_s - _db)
                     _lp = float(os.environ.get("S10_QP_OV_LP", "0.25"))
                     self._ov_st_f[leg] += _lp * (_ov_des - self._ov_st_f[leg])
-                    # v985/v986: 经 Jacobian 投影(同 swing)——折叠位姿下大腿
-                    # 参与压轮；[0,+F] 为向下(+z-down)
-                    _tov2 = J.T @ np.array([0.0, self._ov_st_f[leg]])
+                    # v987: 经 pz 梯度方向(同 swing)——折叠位姿下满幅压轮
+                    _Jz2 = np.array([J[1, 0], J[1, 1]])
+                    _nz2 = float(np.linalg.norm(_Jz2)) + 1e-6
+                    _ovg2 = float(np.clip(self._ov_st_f[leg], -48.0, 48.0))
+                    _tov2 = _Jz2 / _nz2 * _ovg2
                     th += float(_tov2[0])
                     tk += float(_tov2[1])
+                    if float(os.environ.get("S10_QP_DEBUG", "0")) > 2:
+                        _hipz3 = float(_hip_w2[2])
+                        print('[PLANT] t=%.2f leg=%d q1=%.2f q2=%.2f '
+                              'q1t=%.2f q2t=%.2f bz=%.3f hipz=%.3f '
+                              'wz=%.3f wzt=%.3f ovf=%.1f th=%.1f tk=%.1f'
+                              % (self._t, leg, q1, q2, _q1t, _q2t,
+                                 body["pos"][2], _hipz3, wheel_xyz[leg, 2],
+                                 _wzt, self._ov_st_f[leg], th, tk),
+                              flush=True)
                     if float(os.environ.get("S10_QP_DEBUG", "0")) > 2:
                         print('[OVST] t=%.2f leg=%d wz=%.3f top=%.3f '
                               'ov=%.3f ovf=%.1f tk->%.1f'
@@ -637,12 +648,14 @@ class StairWBCQP:
                     _ov2_des = _k_ov * (_over2 - _db2)
                 _lp2 = float(os.environ.get("S10_QP_OV_LP_SW", "0.25"))
                 self._ov_sw_f[leg] += _lp2 * (_ov2_des - self._ov_sw_f[leg])
-                # v985/v986: 防过伸力矩经 Jacobian 投影到 hipy+knee——轮折
-                # 叠到 q1+q2≈π 时膝盖对轮高近奇异(无权威)，只打膝盖推不动
-                # 轮。J^T [0, +F]（+z 为向下）让大腿也参与压轮。
-                # v986 修正: 原写 [0,-F] 是向上推(符号反了)。
+                # v987: 防过伸沿 pz 增大梯度方向施加满力矩——J^T 投影在折叠
+                # 位姿(q1+q2≈π)下近奇异，45N 力只剩 ~5Nm 关节力矩推不动轮
+                # (v985/986 实测轮仍悬空 5cm+)。归一化梯度任何姿态都满幅。
                 if abs(self._ov_sw_f[leg]) > 0.5:
-                    _tov = J.T @ np.array([0.0, self._ov_sw_f[leg]])
+                    _Jz = np.array([J[1, 0], J[1, 1]])
+                    _nz = float(np.linalg.norm(_Jz)) + 1e-6
+                    _ovg = float(np.clip(self._ov_sw_f[leg], -48.0, 48.0))
+                    _tov = _Jz / _nz * _ovg
                     tau[hipy_i] += float(_tov[0])
                     tau[knee_i] += float(_tov[1])
                 if float(os.environ.get("S10_QP_DEBUG", "0")) > 2:
