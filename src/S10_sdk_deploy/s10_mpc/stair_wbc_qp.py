@@ -88,7 +88,10 @@ class StairWBCQP:
                 self._rel_f_t = None
                 self._sw_f_t0 = self._t
         else:
-            if _df > 0.10 and _wz_f >= self._sp_f_top + r + 0.005:
+            # v930: 前轮释放阈值 0.10→0.05——d∈(0.05,0.10) 带里前轮反复
+            # 重触发阻塞后轮 SWING（QP 台架 y38.6 前轮上台面但后轮不爬
+            # 实测）；放宽后前轮早释放、后轮可触发
+            if _df > 0.05 and _wz_f >= self._sp_f_top + r + 0.005:
                 if self._rel_f_t is None:
                     self._rel_f_t = self._t
                 elif self._t - self._rel_f_t >= 0.05:
@@ -150,17 +153,17 @@ class StairWBCQP:
             (_rp, _tng, _dhv, _top) = _best
             _z_bot = float(_top - _dhv)
             _d_w = float(np.dot(_ax_xy - _rp, _tng))
-            # v920/v924: 贴面轮廓（同 StairWBC）——抬升窗 [0.15,-0.05]
-            _lift_hi = float(os.environ.get("S10_STAIR_LIFT_HI", "0.15"))
-            _lift_lo = -0.05
-            if _d_w >= _lift_hi:
-                _z_face = _z_bot + _r
-            elif _d_w >= _lift_lo:
-                _t = float(np.clip(
-                    (_lift_hi - _d_w) / max(_lift_hi - _lift_lo, 1e-6),
-                    0.0, 1.0))
-                _ss = _t * _t * (3.0 - 2.0 * _t)
-                _z_face = min(_z_bot + _r + _dhv * _ss, _top + _r + 0.005)
+            # v928: 贴面轮廓（v901 同款，符号修正）——d<0=棱前：
+            # d∈[-cl,0] 平滑 ramp flat→top（d=0 到台面顶），d>0 台面顶+r。
+            # 此前 v920/v924 把符号写反（d>0 过棱给平地，d<-0.05 反而给
+            # 台面顶），前轮抬不上去/过伸实测。
+            if _d_w <= 0.0:
+                if _d_w >= -_cl:
+                    _t = float(np.clip((_d_w + _cl) / max(_cl, 1e-6), 0.0, 1.0))
+                    _ss = _t * _t * (3.0 - 2.0 * _t)
+                    _z_face = min(_z_bot + _r + _dhv * _ss, _top + _r + 0.005)
+                else:
+                    _z_face = _z_bot + _r
             else:
                 _z_face = min(_top + _r, _top + _r + 0.005)
             pz[_leg] = _z_face - _r - _margin
@@ -189,8 +192,14 @@ class StairWBCQP:
             a_des = np.zeros(6)
             a_des[2] = float(os.environ.get("S10_QP_AZ_K", "-30.0")) * (
                 float(body["pos"][2]) - 0.78)
-            a_des[3] = float(os.environ.get("S10_QP_AR_K", "-20.0")) * body["roll"]
-            a_des[4] = float(os.environ.get("S10_QP_AP_K", "-20.0")) * body["pitch"]
+            # v933: roll/pitch 修正只在后轮爬顶期生效（2 点前支撑最需要）
+            # ——前轮爬升期启用会通过 2 后腿产生过伸/λ 爆炸（实测 0.99
+            # 过伸翻车）；后轮爬顶时前腿在台面上，修正力有支撑可作用
+            _rear_sw = float(np.max(step_lift[2:4])) > 0.5
+            _ar_k = float(os.environ.get("S10_QP_AR_K", "-20.0")) if _rear_sw else 0.0
+            _ap_k = float(os.environ.get("S10_QP_AP_K", "-20.0")) if _rear_sw else 0.0
+            a_des[3] = _ar_k * body["roll"]
+            a_des[4] = _ap_k * body["pitch"]
             # v907: yaw 率阻尼——QP 侧向力耦合出 yaw 自旋(om±2.9 实测)
             a_des[5] = float(os.environ.get("S10_QP_AY_K", "-20.0")) * getattr(self, '_yaw_rate', 0.0)
             W1 = np.diag([0.0, 0.0,
@@ -337,7 +346,8 @@ class StairWBCQP:
                     dq = np.linalg.lstsq(Jj, err, rcond=None)[0]
                     dq = np.clip(dq, -0.25, 0.25)
                     q1t += float(dq[0]); q2t += float(dq[1])
-                    q1t = float(np.clip(q1t, -0.35, 0.9))
+                    # v929: SWING 腿 q1 正常分支（防镜像折叠过伸，同 FP v925）
+                    q1t = float(np.clip(q1t, -1.1, -0.3))
                     q2t = float(np.clip(q2t, 0.5, 3.0))
                 _kps = float(os.environ.get("S10_QP_KP_SW", str(self.kp)))
                 tau[hipy_i] = (_kps * (q1t - q1)
@@ -345,12 +355,19 @@ class StairWBCQP:
                 tau[knee_i] = (_kps * (q2t - q2)
                                - self.kd * float(qvel[6 + LEG_QV_LEG[b + 2]]))
         # 轮矩：支撑前驱、抬升 0（差速冻结，hip yaw 全程）
+        _rear_swing = float(np.max(step_lift[2:4])) > 0.5
         for leg in range(4):
             _wq = float(qvel[WHEEL_QV_IDX[leg]])
             _vw = -_wq * self.fk.r
             if stance_mask[leg] > 0.5:
-                _tw = -(self.wheel_k * (self._vx_f - _vw)) - self.wheel_d * _wq
-                tau[WHEEL_Q_IDX[leg]] = float(np.clip(_tw, -13.5, 13.5))
+                if _rear_swing:
+                    # v932: 仅后轮爬顶期前轮（支撑）开环满前驱——用户 A3：
+                    # 前轮在台面上需拉力把车身拉过棱；v931 全爬升期开环在
+                    # 前轮爬升期引发自旋（实测回退）
+                    tau[WHEEL_Q_IDX[leg]] = -13.5
+                else:
+                    _tw = -(self.wheel_k * (self._vx_f - _vw)) - self.wheel_d * _wq
+                    tau[WHEEL_Q_IDX[leg]] = float(np.clip(_tw, -13.5, 13.5))
             else:
                 tau[WHEEL_Q_IDX[leg]] = -1.5
         # hip yaw（导航误差 + yaw 率阻尼）

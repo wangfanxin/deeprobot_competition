@@ -1373,7 +1373,10 @@ class FootPlaceVMC:
         v733: 加关节范围钳制——楼梯抬升目标接近工作空间边界时裸迭代会
         翻到镜像解（q1=2.7 实测）。lift=True（抬升腿）用迈步举轮姿态
         （v236 FK 验证 q1≈0.4/q2≈2.7 轮高+1.4cm）；支撑腿保持正常半蹲。"""
-        _q1_lo, _q1_hi = (-0.35, 0.9) if lift else (-1.7, -0.35)
+        # v925: SWING 腿 q1 用正常分支 [-1.1,-0.3]——原 [-0.35,0.9] 允许
+        # 镜像折叠解（q1=0.9 轮在髋上方 0.06m，贴面爬升时过伸 1.0+ 悬空
+        # 实测）。贴面爬升轮应保持在髋下方（正常分支）。
+        _q1_lo, _q1_hi = (-1.1, -0.3) if lift else (-1.7, -0.35)
         _q2_lo = 1.8 if lift else -0.2
         for _ in range(10):
             p = self.fk.wheel_pos(q1, q2)
@@ -1566,6 +1569,13 @@ class FootPlaceVMC:
                 _kpp9 = float(os.environ.get('S10_FP_KP_POS', '0'))
                 _kp_leg = (float(_kpp9) if _kpp9 > 0 else self.kp)
                 _kd_leg = self.kd
+                # v922: posmode 抬升腿单独软增益（默认 40，支撑 120）——
+                # 全增益抬升腿把 body 顶高而非抬轮（轮贴地推不动，反力顶
+                # body）；软增益让轮顺立面滚上、腿只引导不过推
+                if sl > 0.1:
+                    _kpsw = float(os.environ.get('S10_FP_KP_SW', '40'))
+                    _kp_leg = _kpsw
+                    _kd_leg = float(os.environ.get('S10_FP_KD_SW', '3'))
             else:
                 _kp_leg = self.kp * (0.10 if sl > 0.1 else 1.0)
                 _kd_leg = self.kd * (0.3 if sl > 0.1 else 1.0)
