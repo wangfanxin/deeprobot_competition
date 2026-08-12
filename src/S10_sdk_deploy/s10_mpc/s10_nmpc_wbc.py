@@ -217,7 +217,10 @@ class NmpcWbc:
                 _dd = float(np.dot(
                     np.asarray(body['pos'][:2], dtype=np.float64)
                     - _rp, _tng))
-                if _dd > 0.0:
+                # v1153: z ???? 0.4m?????? riser?_dd>0??????
+                # ????? SWING ???????79 ???????????
+                # ???? SWING ??????????????
+                if _dd > -0.4:
                     gt = max(gt, float(_top))
             _z_geo.append((gt if gt > 0.4 else float(terrain_h[leg])) + r)
         z_ref = float(np.mean(_z_geo)) + float(os.environ.get(
