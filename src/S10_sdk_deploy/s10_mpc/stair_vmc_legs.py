@@ -1497,9 +1497,10 @@ class FootPlaceVMC:
             _side = -1.0 if leg in (0, 1) else 1.0
             _front = 1.0 if leg in (0, 1) else -1.0
             _kdr = float(os.environ.get('S10_FP_ROLL_KD', '20.0'))
+            _rc_max = float(os.environ.get("S10_FP_ROLL_RC_MAX", "0.10"))
             _rc = float(np.clip((self.kp_roll * (-float(body["roll"]))
                                  - _kdr * roll_rate) * 0.0025,
-                                -0.05, 0.05))
+                                -_rc_max, _rc_max))
             wz += _side * _rc
             if sl < 0.3:
                 _pc = float(np.clip(
@@ -1578,8 +1579,15 @@ class FootPlaceVMC:
                       % (getattr(self, '_t', 0.0), sl, pz, wz,
                          float(wheel_xyz[leg, 2]), float(body["pos"][2]),
                          q1t, q2t, q1, q2), flush=True)
-            tau[hipx_i] = (self.kp * (self.pose_target[b] - qhx)
-                           - self.kd * float(qvel[6 + LEG_QV_LEG[b]]))
+            # v912: hipx 增益可调 + roll 跟随——固定 ±0.05 目标在爬升
+            # 倾斜时被 kp=220 猛拉饱和(±48 振荡 → yaw/roll 乱源实测)；降
+            # 增益并随 body roll 外展保持轮贴地
+            _kpx_h = float(os.environ.get("S10_FP_KP_HIPX", "60.0"))
+            _kdx_h = float(os.environ.get("S10_FP_KD_HIPX", "6.0"))
+            _q0h = (self.pose_target[b]
+                    - 0.15 * float(np.sign(0.5 - (leg % 2))) * float(body["roll"]))
+            tau[hipx_i] = (_kpx_h * (_q0h - qhx)
+                           - _kdx_h * float(qvel[6 + LEG_QV_LEG[b]]))
             # v828: posmode 支撑腿用单侧垂直阻抗（用户：力控只做阻抗）——
             # 轮贴地滚动，腿只下压不吸抬（位置锁定支撑腿在斜坡上过冲弹射
             # 实测）；抬升腿仍位置控制（IK 全增益）

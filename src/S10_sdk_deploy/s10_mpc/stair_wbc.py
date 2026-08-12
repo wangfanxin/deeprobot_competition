@@ -1,4 +1,4 @@
-﻿"""StairWBC：轮足狗楼梯爬升——位置基全身控制（终版 2026-08-11）。
+"""StairWBC：轮足狗楼梯爬升——位置基全身控制（终版 2026-08-11）。
 
 ModeSchedule（布尔几何相位，整轴硬切换）→ BodyIK（body 姿态闭环）
 → LegCtrl（位置 PD 拉满 + 静压 + 微阻抗）→ WheelCtrl（开环限幅：
@@ -229,10 +229,19 @@ class StairWBC(FootPlaceVMC):
                 # 0.081 内抬，狗卡在 d=-0.21 无法进窗（前轮恒 0.62 实测）；
                 # 提前抬让前轮滚 step1 时渐升到 0.747，靠动量越棱
                 _cl = float(os.environ.get("S10_STAIR_SWING_D", "0.30"))
-                if -_cl <= _d_w <= 0.0:
-                    _t = float(np.clip((_d_w + _cl) / max(_cl, 1e-6), 0.0, 1.0))
+                # v914: 真实贴面弧线（用户 A+B 公式）——
+                #   d >= R:      轮贴地 z = 底+r（不提前悬空）
+                #   R > d >= 0:  沿立面滚 z = 底 + sqrt(R^2 - d^2)
+                #   -0.06<=d<0:  过棱抬升 z: 底+R -> 顶+r（清台面 h-R 余量）
+                #   d < -0.06:   台面顶+r
+                if _d_w >= _r:
+                    _z_face = _z_bot + _r
+                elif _d_w >= 0.0:
+                    _z_face = _z_bot + float(np.sqrt(max(_r * _r - _d_w * _d_w, 0.0)))
+                elif _d_w >= -0.06:
+                    _t = float(np.clip((-_d_w) / 0.06, 0.0, 1.0))
                     _ss = _t * _t * (3.0 - 2.0 * _t)
-                    _z_face = _z_bot + _r + _dhv * _ss
+                    _z_face = _z_bot + _r + (_dhv - _r) * _ss
                 else:
                     _z_face = _top + _r
                 # A1(批准): 硬上限——body 闭环/IK 不得把抬升目标泵高
