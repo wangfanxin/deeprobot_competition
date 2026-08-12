@@ -545,11 +545,28 @@ class NmpcWbc:
                 _kd_pose = float(os.environ.get('S10_NMPC_KD_POSE', '6.0'))
                 # v1071: 对侧轴 SWING 时本轴强姿态保持（固定蹲姿）——
                 # v1076 IK 姿态版本在真原图更差（东漂+早翻），回退
+                # v1100: ???????? SWING ??????????????
+                # pz_d???????? body ??????????kp_pose 200 +
+                # ???? 300 ??????????real23 ????????
+                # 1.1 ???????????? SWING ????????????
+                # ?????????v1098 ??????? real29 ?????
                 if float(np.max(swing[2:4])) > 0.5 and leg in (0, 1):
                     _kp_pose = float(os.environ.get(
                         'S10_NMPC_KP_POSE_OPP', '200.0'))
                     _kd_pose = float(os.environ.get(
                         'S10_NMPC_KD_POSE_OPP', '20.0'))
+                    _rel3 = np.array([wheel_xyz[leg, 0] - hip_w[0],
+                                      wheel_xyz[leg, 1] - hip_w[1],
+                                      _pz_d - hip_w[2]])
+                    _cy3, _sy3 = np.cos(body['yaw']), np.sin(body['yaw'])
+                    _relb3 = np.array([_cy3 * _rel3[0] + _sy3 * _rel3[1],
+                                       -_sy3 * _rel3[0] + _cy3 * _rel3[1],
+                                       _rel3[2]])
+                    _relb3[0] = max(float(_relb3[0]), 0.0)
+                    _rz3 = float(np.clip(_relb3[2], -0.34, 0.0))
+                    _q1p, _q2p = self._ik(
+                        float(_relb3[0]), _rz3, q1, q2, leg=leg)
+                    _qp1, _qp2 = _q1p, _q2p
                 if float(np.max(swing[0:2])) > 0.5 and leg in (2, 3):
                     _kp_pose = float(os.environ.get(
                         'S10_NMPC_KP_POSE_OPP', '200.0'))
