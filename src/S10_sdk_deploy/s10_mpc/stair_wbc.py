@@ -82,7 +82,10 @@ class StairWBC(FootPlaceVMC):
         else:
             # v888: 释放符号修正——d>0.05 是"过棱后 0.05"，原 d<-0.05
             # （棱前）永远不触发，全靠超时释放（双轴同抬 sl=[1,1,1,1] 实测）
-            if _df > 0.05 and _wz_f >= self._sp_f_top + r - 0.01:
+            # v901: 释放收紧——过棱 d>0.10 且轮高≥顶+R+0.005（确保前轮
+            # 真正落到台面才释放；原 d>0.05/顶+R-0.01 在过渡期释放→前轮
+            # 折叠到 1.08 悬空→爬顶滚翻实测）
+            if _df > 0.10 and _wz_f >= self._sp_f_top + r + 0.005:
                 if self._rel_f_t is None:
                     self._rel_f_t = self._t
                 elif self._t - self._rel_f_t >= 0.05:
@@ -100,7 +103,7 @@ class StairWBC(FootPlaceVMC):
                 self._rel_r_t = None
                 self._sw_r_t0 = self._t
         else:
-            if _dr > 0.05 and _wz_r >= self._sp_r_top + r - 0.01:
+            if _dr > 0.10 and _wz_r >= self._sp_r_top + r + 0.005:
                 if self._rel_r_t is None:
                     self._rel_r_t = self._t
                 elif self._t - self._rel_r_t >= 0.05:
