@@ -146,7 +146,7 @@ class NmpcWbc:
                 self._sp_f_top = _tf
                 self._sw_f_t0 = self._t
         else:
-            if abs(_wz_f - (self._sp_f_top + r)) < 0.03:
+            if _wz_f >= self._sp_f_top + r - 0.01:
                 self._sp_f = 0.0
             elif self._t - self._sw_f_t0 > self.swing_to:
                 self._sp_f = 0.0
@@ -156,7 +156,7 @@ class NmpcWbc:
                 self._sp_r_top = _tr
                 self._sw_r_t0 = self._t
         else:
-            if abs(_wz_r - (self._sp_r_top + r)) < 0.03:
+            if _wz_r >= self._sp_r_top + r - 0.01:
                 self._sp_r = 0.0
             elif self._t - self._sw_r_t0 > self.swing_to:
                 self._sp_r = 0.0
@@ -437,9 +437,7 @@ class NmpcWbc:
                     if _dhv <= 0.085:
                         continue
                     _dd = float(np.dot(_ax_xy - _rp, _tng))
-                    # v2026(m36): window 0.05->0.20——轮刚过棱(d>0.05)仍
-                    # 保持目标（=它越过的顶），否则折叠轮无目标悬空卡死
-                    if -self.swing_d < _dd < 0.20 and abs(_dd) < abs(_best_d):
+                    if -self.swing_d < _dd < 0.05 and abs(_dd) < abs(_best_d):
                         _best_d, _best = _dd, (_rp, _tng, _dhv, _top)
                 if _best is not None:
                     (_rp, _tng, _dhv, _top) = _best
