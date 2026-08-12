@@ -358,8 +358,10 @@ class StairWBCQP:
                     pass
                 if _gt_hi > 0.4:
                     try:
+                        # v959: 支撑腿目标压入台面 2mm（原 +0.01 余量让轮
+                        # 悬空 0.01-0.06 无抓地、狗不推进实测）
                         _wzt = min(float(terrain_h[leg]) + self.fk.r,
-                                   _gt_hi + self.fk.r + 0.01)
+                                   _gt_hi + self.fk.r - 0.002)
                         _hip_w2 = body["pos"] + R @ np.array(
                             [0.2277 if leg in (0, 1) else -0.2277, 0.0, 0.0])
                         _relx = (np.cos(yaw) * (wheel_xyz[leg, 0] - _hip_w2[0])
