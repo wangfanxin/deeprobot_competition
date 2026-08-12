@@ -137,8 +137,9 @@ class StairWBC(FootPlaceVMC):
         for _leg in range(4):
             if step_lift[_leg] <= 0.02:
                 continue
-            _ax_idx = (0, 1) if _leg in (0, 1) else (2, 3)
-            _ax_xy = np.mean([wheel_xyz[_i, :2] for _i in _ax_idx], axis=0)
+            # v1033: 逐轮距离（原轴均值左右同相）——偏航时左/右轮各自按
+            # 自己的棱距抬升，避免轴均值让先到棱的轮被单侧顶起 0.2m 侧翻
+            _ax_xy = wheel_xyz[_leg, :2]
             _best_d = 1e9
             _best = None
             for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:

@@ -612,6 +612,29 @@ def main():
                         and next_idx <= 6):
                     print('[MPPI] g_om=%.2f out=(%.2f,%.2f) vref=%.2f'
                           % (_g_om, vx_c, om_c, v_ref), flush=True)
+            # v1034: stair 区航向锁定——楼梯是直道（首级 riser 切线方向），
+            # pursuit 瞄准 wp7 造成 10-30° 偏航残留→SWING 不对称侧翻。
+            # 直接锁切线方向+率阻尼，横偏 0.3-0.5m 在 3m 宽楼梯内可接受。
+            if fol.mode == 'STAIR' and stair_world:
+                try:
+                    _stair_hdg = float(np.arctan2(
+                        stair_world[0][1][1], stair_world[0][1][0]))
+                    _ys_err = _stair_hdg - yaw
+                    while _ys_err > np.pi:
+                        _ys_err -= 2.0 * np.pi
+                    while _ys_err < -np.pi:
+                        _ys_err += 2.0 * np.pi
+                    _sh_g = float(os.environ.get('S10_STAIR_HDG_K', '1.2'))
+                    _sh_d = float(os.environ.get('S10_STAIR_HDG_D', '2.5'))
+                    om_c = float(np.clip(
+                        _sh_g * _ys_err - _sh_d * float(qvel[5]),
+                        -float(os.environ.get('S10_STAIR_HDG_OM', '0.6')),
+                        float(os.environ.get('S10_STAIR_HDG_OM', '0.6'))))
+                    if os.environ.get('S10_NAV_DEBUG', '0') == '1':
+                        print('[HDG] t=%.2f yaw=%.3f hdg=%.3f err=%.3f om=%.3f'
+                              % (t, yaw, _stair_hdg, _ys_err, om_c), flush=True)
+                except Exception:
+                    pass
             # v218p: omega 上限匹配 VMC yaw 能力（防指令远超执行导致振荡）
             # v245: speed-dependent cap - lateral accel envelope a_lat=w*v
             # （实测 YAW_TMAX 滑移权威下 ω 可达 3.6+，v=1.9 时 a_lat 7m/s2 翻车）
