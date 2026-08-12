@@ -34,7 +34,8 @@ class StairWBC(FootPlaceVMC):
         self.stair_world = []      # [(pt, tng, arc, dh, top)] 世界坐标
         self.stair = None          # AutoNavFollower 引用（stair_terrain）
         # ---- 参数（终版固定值，收敛为类属性） ----
-        self.swing_d = 0.30        # 抬升窗：棱前提前抬（靠动量越棱，v899）
+        self.swing_d = 0.15        # 抬升窗：与 ModeSchedule 触发窗对齐（v1008）
+        # 0.30 提前预拉腿目标 → body 塌陷(0.63 实测)；0.15 保持 body 0.77
         self.swing_to = 1.5        # SWING 绝对超时兜底
         self.lift_margin = 0.04    # place_z -> 轮心目标 的余量
         self.qp_mu = 0.6           # QP Checker 摩擦系数
