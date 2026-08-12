@@ -119,8 +119,22 @@ class NmpcWbc:
         轴内左右同步（v1040 结论），过棱且轮高≥台面顶+半径-0.01 释放。"""
         _fax = body_pos[:2] + fwd * 0.228
         _rax = body_pos[:2] - fwd * 0.228
-        _df, _tf = self._nearest_riser(_fax)
-        _dr, _tr = self._nearest_riser(_rax)
+        _perp = np.array([-fwd[1], fwd[0]])
+        # v1117: ??????????yaw ????????????????
+        # ?????????????????????? yaw ???real43/47
+        # riser2 ?? SWING ? om 1.5-3 ????
+        _dfl, _tfl = self._nearest_riser(_fax + _perp * 0.181)
+        _dfr, _tfr = self._nearest_riser(_fax - _perp * 0.181)
+        if _dfl <= _dfr:
+            _df, _tf = _dfl, _tfl
+        else:
+            _df, _tf = _dfr, _tfr
+        _drl, _trl = self._nearest_riser(_rax + _perp * 0.181)
+        _drr, _trr = self._nearest_riser(_rax - _perp * 0.181)
+        if _drl <= _drr:
+            _dr, _tr = _drl, _trl
+        else:
+            _dr, _tr = _drr, _trr
         _wz_f = float(np.mean([wheel_xyz[i, 2] for i in (0, 1)]))
         _wz_r = float(np.mean([wheel_xyz[i, 2] for i in (2, 3)]))
         r = self.fk.r
