@@ -331,6 +331,37 @@ class StairWBC(FootPlaceVMC):
                 tau[WHEEL_Q_IDX[_leg]] = float(np.clip(_tw, -13.5, 13.5))
         except Exception:
             pass
+        # 阶段 A：位形恢复（终版批准）——前腿 relx<0（后折）或垂距<3cm
+        # （近水平）时，关节空间直接加恢复矩（不经过 J^T，奇异区不被
+        # 吃掉），把腿掰回前伸位形；同时后轮满驱推身、前轮微正转。
+        # 退出条件：relx>0 且垂距>5cm 持续 0.1s（阶段 B 几何举身接管）。
+        try:
+            _recov_k = float(os.environ.get("S10_FP_RECOV_K", "15.0"))
+            _recov_on = False
+            for _leg in (0, 1):
+                _hip_r = body["pos"] + body["R"] @ np.array(
+                    [0.2277, 0.0, 0.0])
+                _relx_r = (np.cos(body["yaw"])
+                           * (wheel_xyz[_leg, 0] - _hip_r[0])
+                           + np.sin(body["yaw"])
+                           * (wheel_xyz[_leg, 1] - _hip_r[1]))
+                _drop_r = float(_hip_r[2] - wheel_xyz[_leg, 2])
+                if _relx_r < 0.0 or _drop_r < 0.03:
+                    _recov_on = True
+                    _q1 = float(qpos[6 + _leg * 3 + 1])
+                    _tau_r = _recov_k * max(0.05 - _relx_r, 0.0)
+                    # 终版公式：K_recov=15 Nm/m * relx 误差，温和恢复
+                    _tau_r = float(np.clip(_tau_r, -48.0, 48.0))
+                    tau[LEG_CTRL_IDX[_leg * 3 + 1]] += _tau_r
+            if _recov_on:
+                _rdrive = -float(os.environ.get("S10_FP_RECOV_DRIVE", "8.0"))
+                for _leg in (2, 3):
+                    tau[WHEEL_Q_IDX[_leg]] = _rdrive
+                for _leg in (0, 1):
+                    if float(step_lift[_leg]) <= 0.5:
+                        tau[WHEEL_Q_IDX[_leg]] = -3.0
+        except Exception:
+            pass
         # 腿控 Yaw：HipX 外展/内收修正航向（导航 yaw 误差 + yaw 率阻尼）
         try:
             _kp_y = float(os.environ.get("S10_FP_YAW_KP", "2.0"))
