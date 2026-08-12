@@ -1,4 +1,4 @@
-﻿"""StairWBC-QP：位置基 + QP 力分配主环（v906，终版核心）。
+"""StairWBC-QP：位置基 + QP 力分配主环（v906，终版核心）。
 
 解决位置基 FP 在爬顶的结构性失败（body 高度与后轮行程矛盾）：
 - ModeSchedule 布尔相位（同 StairWBC）；
@@ -35,6 +35,12 @@ class StairWBCQP:
         self.I_body = np.diag([0.15, 0.25, 0.15])
         self.stair_world = []
         self.stair = None
+        # v910: 支撑腿位置保持目标（STAND 半蹲，与主脚本 STAND_TARGET 一致）
+        self.pose_target = np.array([-0.05, -1.10, 1.90,
+                                      0.05, -1.10, 1.90,
+                                     -0.05,  1.10, -1.90,
+                                      0.05,  1.10, -1.90],
+                                    dtype=np.float64)
         # ModeSchedule 状态
         self._sp_f = 0.0
         self._sp_r = 0.0
@@ -144,8 +150,12 @@ class StairWBCQP:
             (_rp, _tng, _dhv, _top) = _best
             _z_bot = float(_top - _dhv)
             _d_w = float(np.dot(_ax_xy - _rp, _tng))
-            if -_cl <= _d_w <= 0.0:
-                _t = float(np.clip((_d_w + _cl) / max(_cl, 1e-6), 0.0, 1.0))
+            # v911: 贴面 ramp 覆盖棱前窗 [0, cl]——原版 d>0 直接给台面顶
+            # 目标，一进 SWING 窗就猛抬轮 0.13m（台架 front wz 0.62→1.0
+            # 过冲、pitch/roll 级联实测）。改为棱前 cl 内从地面平滑 ramp
+            # 到台面顶（d=cl 时=地面+r，d=0 时=台面顶+r），棱后保持台面顶。
+            if 0.0 <= _d_w <= _cl:
+                _t = float(np.clip(1.0 - _d_w / max(_cl, 1e-6), 0.0, 1.0))
                 _ss = _t * _t * (3.0 - 2.0 * _t)
                 _z_face = min(_z_bot + _r + _dhv * _ss, _top + _r + 0.005)
             else:
@@ -176,13 +186,17 @@ class StairWBCQP:
             a_des = np.zeros(6)
             a_des[2] = float(os.environ.get("S10_QP_AZ_K", "-30.0")) * (
                 float(body["pos"][2]) - 0.78)
-            a_des[3] = float(os.environ.get("S10_QP_AR_K", "-50.0")) * body["roll"]
-            a_des[4] = float(os.environ.get("S10_QP_AP_K", "-50.0")) * body["pitch"]
+            a_des[3] = float(os.environ.get("S10_QP_AR_K", "-20.0")) * body["roll"]
+            a_des[4] = float(os.environ.get("S10_QP_AP_K", "-20.0")) * body["pitch"]
             # v907: yaw 率阻尼——QP 侧向力耦合出 yaw 自旋(om±2.9 实测)
-            a_des[5] = float(os.environ.get("S10_QP_AY_K", "-20.0")) * qvel[5]
-            W1 = np.diag([0.0, 0.0, 400.0, 50.0, 50.0, 20.0])
+            a_des[5] = float(os.environ.get("S10_QP_AY_K", "-20.0")) * getattr(self, '_yaw_rate', 0.0)
+            W1 = np.diag([0.0, 0.0,
+                          float(os.environ.get("S10_QP_W_Z", "400.0")),
+                          float(os.environ.get("S10_QP_W_R", "20.0")),
+                          float(os.environ.get("S10_QP_W_P", "20.0")),
+                          float(os.environ.get("S10_QP_W_Y", "10.0"))])
             P = A.T @ W1 @ A + 1e-2 * np.eye(n)
-            q = -A.T @ W1 @ (a_des - b0) - 1e-2 * lam_ref
+            q = -A.T @ W1 @ (a_des - b0) - 1e-2 * lam_ref.reshape(-1)
             rows, cols, vals, lo, hi = [], [], [], [], []
             mus = float(os.environ.get("S10_QP_MU", "0.6"))
             nmin = float(os.environ.get("S10_QP_NMIN", "10.0"))
@@ -190,18 +204,26 @@ class StairWBCQP:
                 base = i * 3
                 if stance_mask[i] <= 0.5:
                     for k in range(3):
-                        rows.append(0); cols.append(base + k); vals.append(1.0)
+                        rows.append(len(lo)); cols.append(base + k); vals.append(1.0)
                         lo.append(0.0); hi.append(0.0)
                 else:
-                    rows.append(0); cols.append(base + 2); vals.append(-1.0)
+                    rows.append(len(lo)); cols.append(base + 2); vals.append(-1.0)
                     lo.append(-np.inf); hi.append(-nmin)
                     for k in (0, 1):
-                        rows.append(0); cols.append(base + k); vals.append(1.0)
-                        rows.append(0); cols.append(base + 2); vals.append(-mus)
+                        rows.append(len(lo)); cols.append(base + k); vals.append(1.0)
+                        rows.append(len(lo)); cols.append(base + 2); vals.append(-mus)
                         lo.append(-np.inf); hi.append(0.0)
-                        rows.append(0); cols.append(base + k); vals.append(-1.0)
-                        rows.append(0); cols.append(base + 2); vals.append(-mus)
+                        rows.append(len(lo)); cols.append(base + k); vals.append(-1.0)
+                        rows.append(len(lo)); cols.append(base + 2); vals.append(-mus)
                         lo.append(-np.inf); hi.append(0.0)
+            # v909: 总法向力支撑约束——QP 若只追姿态会把 λ_z 压到下限
+            # 10N，狗失支撑坠落翻车（台架实测 λ_z=10 全轮）。硬约束
+            # Σ λ_z(stance) ≥ 0.92mg，姿态修正只能在保支撑前提下做。
+            for i in range(4):
+                if stance_mask[i] > 0.5:
+                    rows.append(len(lo)); cols.append(i * 3 + 2); vals.append(1.0)
+            lo.append(self.m * self.g * 0.92)
+            hi.append(np.inf)
             A_sp = sparse.csc_matrix(
                 (np.asarray(vals, dtype=np.float64),
                  (np.asarray(rows, dtype=np.int64),
@@ -213,6 +235,14 @@ class StairWBCQP:
                        verbose=False, time_limit=0.002, eps_abs=1e-3,
                        eps_rel=1e-3, max_iter=400, polish=False)
             res = prob.solve()
+            if float(os.environ.get('S10_QP_DEBUG', '0')) > 0:
+                _st_ok = res.info.status in ('solved', 'solved inaccurate')
+                _lam_s = (np.round(np.asarray(res.x, dtype=np.float64).reshape(4, 3), 2)
+                          if _st_ok else np.zeros((4, 3)))
+                print('[QP] t=%.2f st=%s ad=[%.2f %.2f %.2f %.2f %.2f %.2f] lam=%s st=%s'
+                      % (self._t, str(stance_mask), a_des[0], a_des[1], a_des[2],
+                         a_des[3], a_des[4], a_des[5], np.round(_lam_s, 2).tolist(),
+                         res.info.status), flush=True)
             if res.info.status in ("solved", "solved inaccurate"):
                 return np.asarray(res.x, dtype=np.float64).reshape(4, 3)
             return lam_ref
@@ -249,6 +279,7 @@ class StairWBCQP:
         for i in range(4):
             if stance_mask[i] > 0.5:
                 lam_ref[i, 2] = self.m * self.g / 4.0
+        self._yaw_rate = float(qvel[5])
         lam = self._qp_solve(body, wheel_xyz, stance_mask, lam_ref)
         # 腿力矩：支撑 Jᵀλ（世界→body→矢状面），抬升 IK 位置 PD
         for leg in range(4):
@@ -262,13 +293,23 @@ class StairWBCQP:
             knee_i = LEG_CTRL_IDX[b + 2]
             # hipx 姿态保持（roll 修正）
             _q0_tgt = -0.05 if leg in (0, 1) else 0.05
-            tau[hipx_i] = self.kp * (_q0_tgt - qhx) - self.kd * float(qvel[6 + LEG_QV_LEG[b]])
+            _kpx = float(os.environ.get("S10_QP_KP_HIPX", str(self.kp)))
+            tau[hipx_i] = _kpx * (_q0_tgt - qhx) - self.kd * float(qvel[6 + LEG_QV_LEG[b]])
             if stance_mask[leg] > 0.5:
                 # 接触力 λ（世界）→ body 系 → 矢状面 → Jᵀ
                 f_w = lam[leg]
                 f_b = R.T @ f_w
                 f_s = np.array([float(f_b[0]), -float(f_b[2])])
                 th, tk = J.T @ f_s
+                # v910: 位置保持 PD——纯力控在直腿位形 Jᵀ≈0 无法锁腿构型
+                # （台架后腿折叠 body 0.81→0.62 实测）；低增益锁姿势，
+                # 力控保持接触力/姿态
+                _kpp = float(os.environ.get("S10_QP_KP_POS", "80.0"))
+                _kdp = float(os.environ.get("S10_QP_KD_POS", "6.0"))
+                th += (_kpp * (self.pose_target[b + 1] - q1)
+                       - _kdp * float(qvel[6 + LEG_QV_LEG[b + 1]]))
+                tk += (_kpp * (self.pose_target[b + 2] - q2)
+                       - _kdp * float(qvel[6 + LEG_QV_LEG[b + 2]]))
                 tau[hipy_i] = float(np.clip(th, -48, 48))
                 tau[knee_i] = float(np.clip(tk, -48, 48))
             else:
@@ -295,9 +336,10 @@ class StairWBCQP:
                     q1t += float(dq[0]); q2t += float(dq[1])
                     q1t = float(np.clip(q1t, -0.35, 0.9))
                     q2t = float(np.clip(q2t, 0.5, 3.0))
-                tau[hipy_i] = (self.kp * (q1t - q1)
+                _kps = float(os.environ.get("S10_QP_KP_SW", str(self.kp)))
+                tau[hipy_i] = (_kps * (q1t - q1)
                                - self.kd * float(qvel[6 + LEG_QV_LEG[b + 1]]))
-                tau[knee_i] = (self.kp * (q2t - q2)
+                tau[knee_i] = (_kps * (q2t - q2)
                                - self.kd * float(qvel[6 + LEG_QV_LEG[b + 2]]))
         # 轮矩：支撑前驱、抬升 0（差速冻结，hip yaw 全程）
         for leg in range(4):

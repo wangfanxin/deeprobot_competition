@@ -26,8 +26,12 @@ DT = 0.005
 MAX_SIM = float(os.environ.get('S10_TEST_MAX_SIM', '90'))
 MAX_WP = int(os.environ.get('S10_AUTO_MAX_WP', '8'))
 STOP_AT = int(os.environ.get('S10_STOP_AT_WP', '0'))
-XML = os.environ.get('S10_XML',
-    f'{PKG}/S10_description/s10_mjcf/mjcf/S10_track.xml')
+XML = os.environ.get('S10_XML', '')
+if not XML:
+    _bf = os.environ.get('S10_STAIR_BENCH', '0')
+    XML = (f'{PKG}/S10_description/s10_mjcf/mjcf/S10_track_bench.xml'
+           if float(_bf) > 0
+           else f'{PKG}/S10_description/s10_mjcf/mjcf/S10_track.xml')
 
 # v862: ????=CarVMC ???????knee 1.90/hipy 1.10?S10_CAR_SQUAT=1??
 # ????(??2.30)->???(??1.90)?????0.5s ??? body ???
@@ -104,7 +108,7 @@ def main():
             # 出生在走廊 x=-14.5（wp6.x=-15.12 在 x=-15.0 柱子上）
             # v894: riser2(38.34)前 1.2m 平地(y37.14)——riser1 已抹平，
             # 地面 0.479 一直平到 riser2 单阶
-            d.qpos[0:3] = [-14.50, 37.14, 0.72]
+            d.qpos[0:3] = [-14.50, 37.34, 0.78]
             _iy = 1.5708
         elif _sbk <= 0.0:
             d.qpos[0:3] = [float(wp[START_WP][0]),
@@ -654,6 +658,13 @@ def main():
         else:
             terr = np.array([terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
                              for i in range(4)])
+            # v908: KIN fallback 在 LOOKAHEAD=0 时也生效（台架出生 lidar
+            # 地图为空→后轮格 0.0→ground_f=0 轮矩全灭实测）
+            if (os.environ.get('S10_VMC_TERRAIN_KIN', '0') == '1'
+                    and os.environ.get('S10_VMC_TERRAIN', 'ray') == 'lidar'):
+                for _i in range(4):
+                    if not lterr.has(wheel_xyz[_i, 0], wheel_xyz[_i, 1]):
+                        terr[_i] = float(wheel_xyz[_i, 2] - 0.081)
         # v223b: 地形低通（lidar 栅格稀疏/噪声，防腿抖）
         _tlp = float(os.environ.get('S10_VMC_TERRAIN_LP', '0.0'))
         if _tlp > 0.0:
@@ -684,6 +695,13 @@ def main():
                 terr = np.array(
                     [terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
                      for i in range(4)], dtype=np.float64)
+                # v908: stair 覆盖分支同样启用 KIN fallback（台架出生 lidar
+                # 空图 → 后轮格 0.0 → ground_f=0 轮矩全灭实测）
+                if (os.environ.get('S10_VMC_TERRAIN_KIN', '0') == '1'
+                        and os.environ.get('S10_VMC_TERRAIN', 'ray') == 'lidar'):
+                    for _i in range(4):
+                        if not lterr.has(wheel_xyz[_i, 0], wheel_xyz[_i, 1]):
+                            terr[_i] = float(wheel_xyz[_i, 2] - 0.081)
             except Exception:
                 pass
         elif _iszn9:
