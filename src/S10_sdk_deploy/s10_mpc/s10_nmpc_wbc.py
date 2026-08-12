@@ -126,9 +126,14 @@ class NmpcWbc:
         r = self.fk.r
         if self._sp_f <= 0.0:
             if -self.swing_d < _df < 0.05 and self._sp_r <= 0.0:
-                self._sp_f = 1.0
-                self._sp_f_top = _tf
-                self._sw_f_t0 = self._t
+                # v1110: ??????????? SWING ??????????
+                # ????? z >= ???-0.125+??-0.02?????????
+                # ?????????????????????real42 ????
+                # ?? riser1 ??y ? 38.0?28s ????????
+                if _wz_r >= _tf - 0.125 + r - 0.02:
+                    self._sp_f = 1.0
+                    self._sp_f_top = _tf
+                    self._sw_f_t0 = self._t
         else:
             # v1079(方向1): 前轮过棱后进 HOVER——保持正 drop（body 相对
             # 目标，非台面+R）随 body 平移，平移 hover_len 后 STANCE。
@@ -271,6 +276,8 @@ class NmpcWbc:
         if float(np.max(swing)) > 0.5:
             _al_lim = float(os.environ.get('S10_NMPC_AL_LIM', '6.0'))
             al_des[1] = float(np.clip(al_des[1], -_al_lim, _al_lim))
+            # v1083/v1113: SWING ? yaw ???????real13/46 ?????
+            # ????+???????????+hipx ?????
             al_des[2] = 0.0
             _fwd2 = fwd_w[0:2]
             _n2 = float(np.dot(_fwd2, _fwd2))
@@ -314,12 +321,8 @@ class NmpcWbc:
         # ?/???WBC ????? PD???? F_des?????????
         # SWING ? F_z ? ????????????? ? ???????
         # ?????real14-18 ?? bz 0.70?fn ????
-        for i in (0, 1):
-            if swing[i] > 0.5:
-                A_m[:, 3 * i:3 * i + 3] = 0.0
-                Ae[0, 3 * i + 0] = 0.0
-                Ae[1, 3 * i + 1] = 0.0
-                Ae[2, 3 * i + 2] = 0.0
+        # v1109: ??????/?? SWING ??"????"?????????
+        # ?? F_z>=20 ??????????? F_z>=46?v1070??
         be = np.array([0.0, 0.0, -m * g])
         # 不等式（固定结构）：每轮 6 行
         rows = []
@@ -349,17 +352,14 @@ class NmpcWbc:
                 # v1081: 前轴 SWING F=0（滚动越阶，v1080 实测前轮能滚过
                 # riser2 y=38.3）、后轴 SWING F_z≥46（滚爬，v1070 实测后轮
                 # 需要力才能爬）——不对称接触界
+                # v1109: ?? SWING F_z>=20??????????? F_z>=46
+                _fz_min_sw = float(os.environ.get(
+                    'S10_NMPC_SWING_FZ_MIN', '46.0'))
                 if i in (0, 1):
-                    l[3 + len(rows) + 3*i + 0] = 0.0
-                    u[3 + len(rows) + 3*i + 0] = 0.0
-                    l[3 + len(rows) + 3*i + 1] = 0.0
-                    u[3 + len(rows) + 3*i + 1] = 0.0
-                    l[3 + len(rows) + 3*i + 2] = 0.0
-                    u[3 + len(rows) + 3*i + 2] = 0.0
-                else:
-                    l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
-                        'S10_NMPC_SWING_FZ_MIN', '46.0'))
-                    u[3 + len(rows) + 3*i + 2] = self.fz_max
+                    _fz_min_sw = float(os.environ.get(
+                        'S10_NMPC_FRONT_SWING_FZ_MIN', '20.0'))
+                l[3 + len(rows) + 3*i + 2] = _fz_min_sw
+                u[3 + len(rows) + 3*i + 2] = self.fz_max
             elif float(np.max(swing[0:2])) > 0.5 and i in (2, 3):
                 # v1082: ?? SWING/HOVER ????????????46N??
                 l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
@@ -496,13 +496,14 @@ class NmpcWbc:
                 # ?? + F_y ????????????v1081 ??????
                 # v1092: ?? SWING = ??????????????? PD ??
                 # ?? J^T?F_des ????? NMPC ?????????????
-                if leg in (2, 3):
-                    _fb2 = R.T @ F_w
-                    _fs2 = np.array([float(_fb2[0]), -float(_fb2[2])])
-                    _J2 = self.fk.jac(q1, q2)
-                    _th1f, _th2f = _J2.T @ _fs2
-                    tau[LEG_CTRL_IDX[b + 1]] += float(_th1f)
-                    tau[LEG_CTRL_IDX[b + 2]] += float(_th2f)
+                # v1109: ?/?? SWING ??? J^T?F_des ???????? F_z
+                # 20N ???????????==????
+                _fb2 = R.T @ F_w
+                _fs2 = np.array([float(_fb2[0]), -float(_fb2[2])])
+                _J2 = self.fk.jac(q1, q2)
+                _th1f, _th2f = _J2.T @ _fs2
+                tau[LEG_CTRL_IDX[b + 1]] += float(_th1f)
+                tau[LEG_CTRL_IDX[b + 2]] += float(_th2f)
                 tau[LEG_CTRL_IDX[b]] = float(
                     0.30 * F_w[1] + 80.0 * (
                         -0.05 if leg in (0, 1) else 0.05))
