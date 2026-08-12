@@ -126,7 +126,9 @@ class NmpcWbc:
                 self._sp_f_top = _tf
                 self._sw_f_t0 = self._t
         else:
-            if _df > 0.10 and _wz_f >= self._sp_f_top + r - 0.01:
+            # v1066: 释放条件改为"轮高达台面顶+半径"（原还要 d>0.10，
+            # 横向偏 0.35m 使 d 投影永不过 → 轮悬 1.11 发射实测）
+            if _wz_f >= self._sp_f_top + r - 0.01:
                 self._sp_f = 0.0
             elif self._t - self._sw_f_t0 > self.swing_to:
                 self._sp_f = 0.0
@@ -136,7 +138,7 @@ class NmpcWbc:
                 self._sp_r_top = _tr
                 self._sw_r_t0 = self._t
         else:
-            if _dr > 0.10 and _wz_r >= self._sp_r_top + r - 0.01:
+            if _wz_r >= self._sp_r_top + r - 0.01:
                 self._sp_r = 0.0
             elif self._t - self._sw_r_t0 > self.swing_to:
                 self._sp_r = 0.0
@@ -180,7 +182,7 @@ class NmpcWbc:
         R = body['R']
         kp_z = float(os.environ.get('S10_NMPC_KP_Z', '200.0'))
         kd_z = float(os.environ.get('S10_NMPC_KD_Z', '30.0'))
-        kp_vx = float(os.environ.get('S10_NMPC_KP_VX', '2.0'))
+        kp_vx = float(os.environ.get('S10_NMPC_KP_VX', '10.0'))
         kp_p = float(os.environ.get('S10_NMPC_KP_PITCH', '300.0'))
         kd_p = float(os.environ.get('S10_NMPC_KD_PITCH', '30.0'))
         kp_y = float(os.environ.get('S10_NMPC_KP_YAW', '2.0'))
@@ -370,6 +372,15 @@ class NmpcWbc:
                 kd = float(os.environ.get('S10_NMPC_KD_SW', '6.0'))
                 tau[LEG_CTRL_IDX[b + 1]] = kp * (q1t - q1) - kd * dq1
                 tau[LEG_CTRL_IDX[b + 2]] = kp * (q2t - q2) - kd * dq2
+                # v1067: 过伸回压——轮高于目标时经 J^T 直接下压
+                # （位置基 v1017 同款；否则轮悬 1.1 泵高发射实测）
+                _dz_ov = float(wheel_xyz[leg, 2] - wz_t - 0.02)
+                if _dz_ov > 0.0:
+                    _fs_ov = np.array([0.0, _dz_ov * 300.0])
+                    _J = self.fk.jac(q1, q2)
+                    _th1o, _th2o = _J.T @ _fs_ov
+                    tau[LEG_CTRL_IDX[b + 1]] += float(_th1o)
+                    tau[LEG_CTRL_IDX[b + 2]] += float(_th2o)
                 # 贴面：摆腿轮保留小前驱（滚上立面），非自由
                 F_w = np.asarray(F_des[leg], dtype=np.float64)
                 fwd_w = R @ np.array([1.0, 0.0, 0.0])
@@ -379,19 +390,35 @@ class NmpcWbc:
             else:
                 # 支撑腿：J^T·(R^T·F_des) 力分配——F_des 是作用在 body 的
                 # 接触力（向上），与 VMC 约定一致（f_b=R^T·F，f_sag=[fx,-fz]）
+                _qp1 = -1.16 if leg in (0, 1) else 1.16
+                _qp2 = 2.30 if leg in (0, 1) else -2.30
                 F_w = np.asarray(F_des[leg], dtype=np.float64)
                 f_b = R.T @ F_w
                 fx, fy, fz_up = float(f_b[0]), float(f_b[1]), float(f_b[2])
                 f_s = np.array([fx, -fz_up])   # 矢状面 (x, z_down)
+                # v1068: 地形阻抗（VMC 同款 kp_h=300）——NMPC F 在过渡态
+                # 太小、姿态正则被压过 → 腿泵高发射；阻抗按轮高误差强压
+                _pz_d = float(terrain_h[leg]) + r - float(os.environ.get(
+                    'S10_NMPC_PRESS', '0.005'))
+                _dz_h = _pz_d - float(wheel_xyz[leg, 2])
+                _fz_imp = float(os.environ.get(
+                    'S10_NMPC_KPH', '300.0')) * _dz_h
+                f_s = f_s + np.array([0.0, _fz_imp])
                 J = self.fk.jac(q1, q2)
+                # v1069: 过伸强位置保持——轮高于地形目标时，J^T 在上折位形
+                # 失去权威（轮 1.09/body 0.85 实测），改用关节空间高增益
+                # PD 把腿拉回标称弯曲位形（防上折，v1014 思路）
+                if float(wheel_xyz[leg, 2]) > _pz_d + 0.02:
+                    _kpo = float(os.environ.get('S10_NMPC_KP_OVR', '300.0'))
+                    _kdo = float(os.environ.get('S10_NMPC_KD_OVR', '30.0'))
+                    tau[LEG_CTRL_IDX[b + 1]] += _kpo * (_qp1 - q1) - _kdo * dq1
+                    tau[LEG_CTRL_IDX[b + 2]] += _kpo * (_qp2 - q2) - _kdo * dq2
                 th1, th2 = J.T @ f_s
                 # v1056: 姿态正则（零空间 PD 拉回蹲姿，VMC 同款）——力控在
                 # 近奇异位形失去权威，腿漂到折叠上伸（轮 1.02/body 0.64
                 # 卡死实测）；正则把腿拉回标称蹲姿，防奇异漂移
                 _kp_pose = float(os.environ.get('S10_NMPC_KP_POSE', '20.0'))
                 _kd_pose = float(os.environ.get('S10_NMPC_KD_POSE', '6.0'))
-                _qp1 = -1.16 if leg in (0, 1) else 1.16
-                _qp2 = 2.30 if leg in (0, 1) else -2.30
                 tau[LEG_CTRL_IDX[b + 1]] = float(
                     th1 + _kp_pose * (_qp1 - q1) - _kd_pose * dq1)
                 tau[LEG_CTRL_IDX[b + 2]] = float(
@@ -399,34 +426,35 @@ class NmpcWbc:
                 # hipx 侧向力（VMC 同款固定 0.30 杠杆）+ 标称外展
                 tau[LEG_CTRL_IDX[b]] = float(0.30 * fy + 80.0 * (
                     -0.05 if leg in (0, 1) else 0.05))
-        # 轮：Pfaffian 驱动（前向力→轮矩）+ yaw 差速 + 前驱下限
-        _dfx = -float(os.environ.get('S10_NMPC_DRIVE_FLOOR', '5.0'))
+        # 轮：Pfaffian 驱动——τ 跟随 NMPC 接触力前向分量（受摩擦锥约束），
+        # vx PID 只做微调，下限仅防倒转。v1065: 前驱下限-5×4=247N 前向力
+        # 作用在轮心（CoM 下方）→ 50Nm 俯仰 → 翘起发射（台架实测）；
+        # F_des 前馈的推力受摩擦锥/规划约束，不会发射。
+        _dfx = -float(os.environ.get('S10_NMPC_DRIVE_FLOOR', '2.0'))
         _om_cmd = float(cmd.get('omega', 0.0))
         _any_sw = float(np.max(swing)) > 0.5
+        fwd_w = R @ np.array([1.0, 0.0, 0.0])
         for leg in range(4):
             wq = float(qvel[WHEEL_QV_IDX[leg]])
             v_wheel = -wq * r
             _sd = -1.0 if leg in (0, 2) else 1.0
-            # 前向力前馈（支撑轮）：τ = R·F_x_world（沿前向投影）
             F_w = np.asarray(F_des[leg], dtype=np.float64)
-            fwd_w = R @ np.array([1.0, 0.0, 0.0])
             fx_fb = float(np.dot(F_w, fwd_w))
-            _tw = float(np.clip(-r * fx_fb, -13.5, 13.5))
+            _tw = -r * fx_fb
             if swing[leg] > 0.5:
-                _tw = 0.0
+                # 摆腿（贴面滚爬）：保留前向微驱
+                _tw += -0.5 * float(os.environ.get(
+                    'S10_NMPC_WHEEL_K', '4.0')) * (self._vx_f - v_wheel)
             else:
-                # 速度环补充 + 差速 + 前驱下限
                 _vref = self._vx_f
                 if not _any_sw:
                     _vref = self._vx_f + _sd * _om_cmd * self.track_half
-                _tw_pid = -(float(os.environ.get('S10_NMPC_WHEEL_K', '4.0'))
-                            * (_vref - v_wheel))
-                # v1064: 前驱下限无条件启用（min≤-5）——条件化在轮打滑
-                # （v_wheel>vx_f）时取消推力 → 狗卡死（台架 tauW>0 实测）。
-                # 乱跑问题由 yaw 误差增益收敛解决。
-                _tw = min(float(_tw_pid), _dfx)
-                # v1062: 轮差速 yaw 误差项——NMPC 力矩弱、慢漂移（yaw 1.4→3.0
-                # 东爬 17m 实测）；航向误差经轮差速直接修正
+                # vx PID 微调（权重 0.3）
+                _tw += -0.3 * float(os.environ.get(
+                    'S10_NMPC_WHEEL_K', '4.0')) * (_vref - v_wheel)
+                # 防倒转下限（小）
+                _tw = min(float(_tw), _dfx)
+                # yaw 率阻尼 + 航向误差（轮差速）
                 _tw += _sd * float(qvel[5]) * float(os.environ.get(
                     'S10_NMPC_YAW_DIFF', '2.0')) * self.track_half
                 try:
