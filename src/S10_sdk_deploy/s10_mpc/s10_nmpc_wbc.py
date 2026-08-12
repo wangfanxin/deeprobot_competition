@@ -209,7 +209,7 @@ class NmpcWbc:
         return dict(vx=vx_cmd, z=z_ref, pitch=_pitch_ref, hdg=hdg)
 
     # ---------------- NMPC：SRBD 接触力优化（20Hz）----------------
-    def _nmpc(self, body, ref, swing, wheel_xyz, dt_nmpc):
+    def _nmpc(self, body, ref, swing, wheel_xyz, dt_nmpc, terrain_h=None):
         """SRBD QP：变量 [F(12), a(3)]，等式 m·a=ΣF+mg，
         代价跟踪 a_des 与角动量 M_des=Σr×F，摩擦锥/法向/抬升轮 F=0。
         osqp 问题固定结构，每解只 update 数据（<2ms）。"""
@@ -704,7 +704,7 @@ class NmpcWbc:
             _t0n = _tm2.perf_counter()
             self._last_nmpc_t = self._t
             self._F_des, self._a_des = self._nmpc(
-                body, ref, swing, wheel_xyz, _nmpc_dt)
+                body, ref, swing, wheel_xyz, _nmpc_dt, terrain_h)
             self._nmpc_ms = 1e3 * (_tm2.perf_counter() - _t0n)
             self._dbg_fdes = np.asarray(self._F_des).reshape(12)
         else:
