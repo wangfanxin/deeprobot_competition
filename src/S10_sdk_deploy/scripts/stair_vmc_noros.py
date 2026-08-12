@@ -1609,14 +1609,21 @@ def main():
                     1.0 - 2.0 * (_stq[1] ** 2 + _stq[2] ** 2)))
                 _fn9 = [float(d.cfrc_ext[_gb][2]) for _gb in WHEEL_BODY]
                 if t - _last_dbg_t >= 0.5:
+                    _dbgd = getattr(vmc, "_dbg_d", None)
+                    _dbgdn = getattr(vmc, "_dbg_done", None)
+                    _dbgs = ''
+                    if _dbgd is not None:
+                        _dbgs = ' d=%s dn=%s' % (
+                            np.round(np.asarray(_dbgd), 2).tolist(),
+                            np.round(np.asarray(_dbgdn), 0).tolist())
                     print('[STAIRDBG] t=%.1f pos=(%.2f,%.2f) pitch=%.2f roll=%.2f '
                           'bz=%.3f wz=%s sl=%s terrF=%.3f terrR=%.3f fn=%s '
-                          'cmd=(%.2f,%.2f)' % (t, body_pos[0], body_pos[1],
+                          'cmd=(%.2f,%.2f)%s' % (t, body_pos[0], body_pos[1],
                              _stpitch, _stroll, body_pos[2],
                              np.round([d.xpos[WHEEL_BODY[i], 2]
                                        for i in range(4)], 2),
                              np.round(step_lift, 1), terr[0], terr[2],
-                             np.round(_fn9, 0), vx_c, om_c), flush=True)
+                             np.round(_fn9, 0), vx_c, om_c, _dbgs), flush=True)
                     _last_dbg_t = t
             traj.append([t, body_pos[0], body_pos[1], float(d.cvel[1][3])])
             if _stuck_timeout > 0.0 and t - _last_adv_t > _stuck_timeout:
