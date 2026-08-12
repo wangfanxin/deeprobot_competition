@@ -136,9 +136,12 @@ class NmpcWbc:
         r = self.fk.r
         # G1 ?? 0.80->0.72????? riser1 ??? 0.698??? 0.061 ??
         # ???0.80 ???????SWING ??????0.72 ??????? #1?
-        _bz_ok = float(body_pos[2]) > 0.62   # G1: body_z ??????? riser1 ? 0.66?
+        # G1 geometry-scaled: swing only triggers when body is high enough
+        # for the wheel target cap (body_z - 0.02 >= riser_top + r).
+        _bz_ok_f = float(body_pos[2]) > float(_tf) + r + 0.02
+        _bz_ok_r = float(body_pos[2]) > float(_tr) + r + 0.02
         if self._sp_f <= 0.0:
-            if -self.swing_d < _df < 0.05 and _bz_ok:
+            if -self.swing_d < _df < 0.05 and _bz_ok_f:
                 self._sp_f = 1.0
                 self._sp_f_top = _tf
                 self._sw_f_t0 = self._t
@@ -148,7 +151,7 @@ class NmpcWbc:
             elif self._t - self._sw_f_t0 > self.swing_to:
                 self._sp_f = 0.0
         if self._sp_r <= 0.0:
-            if -self.swing_d < _dr < 0.05 and _bz_ok:
+            if -self.swing_d < _dr < 0.05 and _bz_ok_r:
                 self._sp_r = 1.0
                 self._sp_r_top = _tr
                 self._sw_r_t0 = self._t
@@ -268,9 +271,10 @@ class NmpcWbc:
             # 1.35 ????????????????????????
             if float(body['pitch']) < -0.55:
                 al_des[1] += 20.0 * (-0.55 - float(body['pitch']))
-            # v1083/v1113: SWING ? yaw ???????real13/46 ?????
-            # ????+???????????+hipx ?????
-            al_des[2] = 0.0
+            # v1083/v1113: SWING ? yaw ???? ????real13/46 ?????
+            # v2026(m12): ?? SWING ? yaw ???? —— y=38.0-38.3 ????
+            # ???(2.15->2.65)??? al_des[2]=0 ????????????
+            # wheel yaw 4.0/4.0 ?????????? ??????????
             _fwd2 = fwd_w[0:2]
             _n2 = float(np.dot(_fwd2, _fwd2))
             if _n2 > 1e-6:
@@ -319,7 +323,10 @@ class NmpcWbc:
         # ??????????????????? ????????????
         # ???osqp ???????????????????????
         for i in range(4):
-            if swing[i] > 0.5:
+            if swing[i] > 0.5 and i in (0, 1):
+                # v1081 asymmetric contact: front swing wheels are airborne
+                # (F=0, removed from SRBD). Rear swing wheels ROLL/CLIMB the
+                # face -> keep them in dynamics with Fz>=REAR_SWING_FZ_MIN.
                 A_m[:, 3 * i:3 * i + 3] = 0.0
                 Ae[0, 3 * i + 0] = 0.0
                 Ae[1, 3 * i + 1] = 0.0
@@ -350,17 +357,19 @@ class NmpcWbc:
         u = np.hstack([be] + ub + [1e9] * 12)
         for i in range(4):
             if swing[i] > 0.5:
-                # v1081: 前轴 SWING F=0（滚动越阶，v1080 实测前轮能滚过
-                # riser2 y=38.3）、后轴 SWING F_z≥46（滚爬，v1070 实测后轮
-                # 需要力才能爬）——不对称接触界
-                # v1109: ?? SWING F_z>=20??????????? F_z>=46
-                # #1: SWING ? F ???=0???????????==???
-                l[3 + len(rows) + 3*i + 0] = 0.0
-                u[3 + len(rows) + 3*i + 0] = 0.0
-                l[3 + len(rows) + 3*i + 1] = 0.0
-                u[3 + len(rows) + 3*i + 1] = 0.0
-                l[3 + len(rows) + 3*i + 2] = 0.0
-                u[3 + len(rows) + 3*i + 2] = 0.0
+                if i in (0, 1):
+                    # 前轴 SWING：轮离地 -> F=0（模型==执行）
+                    l[3 + len(rows) + 3*i + 0] = 0.0
+                    u[3 + len(rows) + 3*i + 0] = 0.0
+                    l[3 + len(rows) + 3*i + 1] = 0.0
+                    u[3 + len(rows) + 3*i + 1] = 0.0
+                    l[3 + len(rows) + 3*i + 2] = 0.0
+                    u[3 + len(rows) + 3*i + 2] = 0.0
+                else:
+                    # 后轴 SWING：轮贴面滚爬，需 Fz 下限保牵引（v1070 实测）
+                    l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
+                        'S10_NMPC_REAR_SWING_FZ_MIN', '46.0'))
+                    u[3 + len(rows) + 3*i + 2] = self.fz_max
             elif float(np.max(swing[0:2])) > 0.5 and i in (2, 3):
                 # v1159: ?? SWING ???????F_z >= ??? 95N??85 ?
                 # ?????????????????????? 124N<186N??
@@ -542,11 +551,24 @@ class NmpcWbc:
                 # v1069: 过伸强位置保持——轮高于地形目标时，J^T 在上折位形
                 # 失去权威（轮 1.09/body 0.85 实测），改用关节空间高增益
                 # PD 把腿拉回标称弯曲位形（防上折，v1014 思路）
+                # v2026: geometry-aware return——固定蹲姿(q1=-1.16,q2=2.30)
+                # 在台阶顶会把轮往台面里压（目标 0.633 vs 顶 0.747）→ 反作用
+                # 发射 body（1.28/轮 1.6 实测）；改 IK 目标=实际台面顶，轮
+                # 保持贴顶不穿顶
                 if float(wheel_xyz[leg, 2]) > _pz_d + 0.02:
                     _kpo = 300.0
                     _kdo = 30.0
-                    tau[LEG_CTRL_IDX[b + 1]] += _kpo * (_qp1 - q1) - _kdo * dq1
-                    tau[LEG_CTRL_IDX[b + 2]] += _kpo * (_qp2 - q2) - _kdo * dq2
+                    _rel_o = np.array([
+                        wheel_xyz[leg, 0] - hip_w[0],
+                        wheel_xyz[leg, 1] - hip_w[1],
+                        _pz_d - hip_w[2]])
+                    _relb_o = R.T @ _rel_o
+                    _relb_o[0] = max(float(_relb_o[0]), 0.0)
+                    _rz_o = float(np.clip(_relb_o[2], -0.34, 0.0))
+                    _q1o, _q2o = self._ik(
+                        float(_relb_o[0]), _rz_o, q1, q2, leg=leg)
+                    tau[LEG_CTRL_IDX[b + 1]] += _kpo * (_q1o - q1) - _kdo * dq1
+                    tau[LEG_CTRL_IDX[b + 2]] += _kpo * (_q2o - q2) - _kdo * dq2
                 th1, th2 = J.T @ f_s
                 # v1056: 姿态正则（零空间 PD 拉回蹲姿，VMC 同款）——力控在
                 # 近奇异位形失去权威，腿漂到折叠上伸（轮 1.02/body 0.64
