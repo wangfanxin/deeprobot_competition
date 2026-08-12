@@ -380,6 +380,9 @@ class StairWBC(FootPlaceVMC):
             tau[LEG_CTRL_IDX[9]] -= 0.5 * _th_y   # RR hipx
         except Exception:
             pass
+        # 最终力矩限幅（防恢复矩/防过伸叠加超限）
+        tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
+        tau[WHEEL_Q_IDX] = np.clip(tau[WHEEL_Q_IDX], -13.5, 13.5)
         # QP Checker：用本步腿 PD 力矩反推接触力校验（下步生效）
         try:
             _q1q2 = []
