@@ -361,8 +361,7 @@ class NmpcWbc:
                         'S10_NMPC_SWING_FZ_MIN', '46.0'))
                     u[3 + len(rows) + 3*i + 2] = self.fz_max
             elif float(np.max(swing[0:2])) > 0.5 and i in (2, 3):
-                # v1082: ?? SWING/HOVER ????????????? QP ?
-                # ?? F ??? 0?v1081 ???????????
+                # v1082: ?? SWING/HOVER ????????????46N??
                 l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
                     'S10_NMPC_SWING_FZ_MIN', '46.0'))
                 u[3 + len(rows) + 3*i + 2] = self.fz_max
