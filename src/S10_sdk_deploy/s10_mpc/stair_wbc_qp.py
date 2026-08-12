@@ -88,10 +88,10 @@ class StairWBCQP:
                 self._rel_f_t = None
                 self._sw_f_t0 = self._t
         else:
-            # v930: 前轮释放阈值 0.10→0.05——d∈(0.05,0.10) 带里前轮反复
-            # 重触发阻塞后轮 SWING（QP 台架 y38.6 前轮上台面但后轮不爬
-            # 实测）；放宽后前轮早释放、后轮可触发
-            if _df > 0.05 and _wz_f >= self._sp_f_top + r + 0.005:
+            # v935: 释放阈值恢复 0.10（滞回）——v930 改 0.05 与触发上限
+            # 相同 → 无滞回 swing 反复翻动 → 前轮过伸 1.12 实测。触发
+            # <-0.30..0.05，释放 >0.10，中间带稳定
+            if _df > 0.10 and _wz_f >= self._sp_f_top + r + 0.005:
                 if self._rel_f_t is None:
                     self._rel_f_t = self._t
                 elif self._t - self._rel_f_t >= 0.05:
@@ -355,10 +355,13 @@ class StairWBCQP:
                 if leg in (2, 3):
                     _kps_d = float(os.environ.get("S10_QP_KP_SW_REAR",
                                                   str(self.kp)))
+                # v935: swing kd 默认 30（原 8 阻尼比 ~0.25 欠阻尼，轮离地
+                # 后自由过冲到 1.1 悬空实测）
+                _kds_d = float(os.environ.get("S10_QP_KD_SW", "30.0"))
                 tau[hipy_i] = (_kps_d * (q1t - q1)
-                               - self.kd * float(qvel[6 + LEG_QV_LEG[b + 1]]))
+                               - _kds_d * float(qvel[6 + LEG_QV_LEG[b + 1]]))
                 tau[knee_i] = (_kps_d * (q2t - q2)
-                               - self.kd * float(qvel[6 + LEG_QV_LEG[b + 2]]))
+                               - _kds_d * float(qvel[6 + LEG_QV_LEG[b + 2]]))
         # 轮矩：支撑前驱、抬升 0（差速冻结，hip yaw 全程）
         _rear_swing = float(np.max(step_lift[2:4])) > 0.5
         for leg in range(4):
