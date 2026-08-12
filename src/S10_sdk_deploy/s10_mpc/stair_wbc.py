@@ -76,9 +76,10 @@ class StairWBC(FootPlaceVMC):
         前轴优先：后轴在前轴 SWING 期间不允许进入（永不双轴同抬）。"""
         _fax = body_pos[:2] + fwd * 0.228
         _rax = body_pos[:2] - fwd * 0.228
-        # v1043: 前轴含 riser1(0.050，抬轮避角)，后轴纯滚 riser1(0.085)
-        # ——后轴 SWING 小台阶时轮泵到 1.09 翻车实测；后轮 0.061 纯滚即可
-        _df, _tf = self._nearest_riser(_fax, 0.050)
+        # v1050: 前/后轴都纯滚 riser1(0.085)——yaw 已稳定(1.2-1.5)后 0.061
+        # 台阶滚动即可；SWING 抬轮有拖拽/自旋/泵高问题，只留给 riser2+
+        # (0.125m 必须抬)。v1027 的 0.050 阈值是 yaw 乱时的权宜。
+        _df, _tf = self._nearest_riser(_fax, 0.085)
         _dr, _tr = self._nearest_riser(_rax, 0.085)
         _wz_f = float(np.mean([wheel_xyz[i, 2] for i in (0, 1)]))
         _wz_r = float(np.mean([wheel_xyz[i, 2] for i in (2, 3)]))
@@ -163,7 +164,7 @@ class StairWBC(FootPlaceVMC):
                 # 才抬 75%，拖角激起 yaw 自旋（om 4.09 实测）。提前离地
                 # 完全避开棱角接触。
                 _t = float(np.clip(
-                    (_d_w + self.swing_d) / (0.6 * self.swing_d),
+                    (_d_w + self.swing_d) / (0.7 * self.swing_d),
                     0.0, 1.0))
                 _ss = _t * _t * (3.0 - 2.0 * _t)
                 _z_face = _z_bot + _r + _dhv * _ss
@@ -410,6 +411,7 @@ class StairWBC(FootPlaceVMC):
             # 钳 -6，差速=0），航向锁定在 WBC 期毫无作用、狗持续东漂。
             # 结构：公共速度 PID→前驱下限→叠加 nav om 差速→yaw 率阻尼→硬刹。
             _om_cmd = float(cmd.get("omega", 0.0))
+            _any_swg = float(np.max(step_lift)) > 0.5
             for _leg in range(4):
                 if step_lift[_leg] <= 0.5:
                     # 左轮(0,2)=-1 右轮(1,3)=+1（CarVMC 约定）
@@ -419,20 +421,24 @@ class StairWBC(FootPlaceVMC):
                     _tw = -(self.wheel_k * (self._vx_f - _vw)
                             - self.wheel_d * _wq)
                     _tw = max(float(_tw), _dfx)      # 前驱下限（公共项）
-                    # 导航 om>0=左转：左轮减载/右轮加载（-wheel_k·sd·om·t）
-                    _tw -= self.wheel_k * _sd * _om_cmd * self.track_half
-                    # yaw 率阻尼：左自旋(om_yx>0)→左轮加载/右轮减载
-                    _tw += _sd * _om_yx * _kd_yx * self.track_half
-                    # v1041: 200Hz 航向误差项——20Hz 导航采样滞后是 yaw
-                    # 极限环根源；高频误差直驱轮差速，消除相位滞后
-                    try:
-                        _hdg_e = float(getattr(self.stair, "_hdg_err", 0.0))
-                        _kyw = float(os.environ.get("S10_FP_YAW_ERR_K", "10.0"))
-                        _tw -= _sd * _hdg_e * _kyw * self.track_half
-                    except Exception:
-                        pass
-                    if _brake_w > 0.0:
-                        _tw += _sd * _om_yx * _brake_k * self.track_half * _brake_w
+                    # v1052: SWING 期冻结轮层 yaw 修正（用户终版方案）——
+                    # 前轮离地后只剩后轮有抓地，轮差速激振自旋（om 2-4 实测）；
+                    # 航向全交 HipX（kp12/kd6）。非 SWING 期保持差速控制。
+                    if not _any_swg:
+                        # 导航 om>0=左转：左轮减载/右轮加载
+                        _tw -= self.wheel_k * _sd * _om_cmd * self.track_half
+                        # yaw 率阻尼
+                        _tw += _sd * _om_yx * _kd_yx * self.track_half
+                        try:
+                            _hdg_e = float(getattr(
+                                self.stair, "_hdg_err", 0.0))
+                            _kyw = float(os.environ.get(
+                                "S10_FP_YAW_ERR_K", "10.0"))
+                            _tw -= _sd * _hdg_e * _kyw * self.track_half
+                        except Exception:
+                            pass
+                        if _brake_w > 0.0:
+                            _tw += _sd * _om_yx * _brake_k * self.track_half * _brake_w
                     tau[WHEEL_Q_IDX[_leg]] = _tw
         except Exception:
             pass

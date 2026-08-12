@@ -810,7 +810,7 @@ def main():
                 _d_crest = 1e9
                 _fax_c = body_pos[:2] + np.array([_fx_p * 0.228, _fy_p * 0.228])
                 for (_rp, _tng, _sr, _dhv, _top) in stair_world:
-                    if _dhv <= 0.050:
+                    if _dhv <= 0.085:
                         continue
                     _ddc = float(np.dot(_fax_c - _rp, _tng))
                     if abs(_ddc) < abs(_d_crest):
@@ -841,7 +841,7 @@ def main():
                 # (0.125m)才切 StairWBC 贴面爬升
                 _d_first = 1e9
                 for (_rp0, _tng0, _sr0, _dh0, _top0) in stair_world:
-                    if _dh0 <= 0.050:
+                    if _dh0 <= 0.085:
                         continue
                     _dd0 = float(np.dot(body_pos[:2] - _rp0, _tng0))
                     if abs(_dd0) < abs(_d_first):
@@ -888,7 +888,7 @@ def main():
             _df_p = 1e9; _dr_p = 1e9; _tf_p = 0.0; _tr_p = 0.0
             for (_rp, _tng, _sr, _dhv, _top) in stair_world:
                 # 只对高 riser（>轮半径 0.085）触发抬升，小台阶纯滚
-                if _dhv <= 0.050:
+                if _dhv <= 0.085:
                     continue
                 _dd_f = float(np.dot(_fax_p - _rp, _tng))
                 _dd_r = float(np.dot(_rax_p - _rp, _tng))
@@ -1351,7 +1351,7 @@ def main():
                         # v769: 台阶高 ≤ 轮半径(0.081) 的 riser 不抬轮——
                         # 纯滚动可过，提前抬轮反而让前轮离地失牵引卡死实测
                         # （首级 0.063m 小台阶 < r，历史上是第一个卡点）。
-                        if _dhv <= 0.050:
+                        if _dhv <= 0.085:
                             continue
                         _df8 = float(np.dot(_fax8 - _rp, _tng))
                         _dr8 = float(np.dot(_rax8 - _rp, _tng))
