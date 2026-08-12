@@ -1374,7 +1374,10 @@ class FootPlaceVMC:
         翻到镜像解（q1=2.7 实测）。lift=True（抬升腿）用迈步举轮姿态
         （v236 FK 验证 q1≈0.4/q2≈2.7 轮高+1.4cm）；支撑腿保持正常半蹲。"""
         _q1_lo, _q1_hi = (-0.35, 0.9) if lift else (-1.7, -0.35)
-        _q2_lo = 1.8 if lift else -0.2
+        # v904: SWING 腿膝角范围放宽(1.8->0.5)——爬顶时髋较高，原折叠姿态
+        # (q2>=1.8)够不到台面顶，前轮被抬到1.07悬空翻车；放宽后腿可伸到
+        # 0.747 落台面
+        _q2_lo = 0.5 if lift else -0.2
         for _ in range(10):
             p = self.fk.wheel_pos(q1, q2)
             err = np.array([xd - p[0], zd + p[1]])
