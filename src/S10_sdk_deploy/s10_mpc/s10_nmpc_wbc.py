@@ -211,6 +211,15 @@ class NmpcWbc:
         al_des = np.zeros(3)
         al_des[1] = kp_p * (ref['pitch'] - body['pitch']) \
             - kd_p * float(np.dot(R[:, 1], body['omega']))
+        # v1072: 轴抬升 pitch 前馈——后轴 SWING 减载反作用使 body 翘头
+        # （~21Nm），前腿强保持饱和仍上折；前馈主动低头抵消（F_z_min=46
+        # 后后轮能出力执行）
+        _ff_sw = float(os.environ.get('S10_NMPC_PITCH_FF_SW', '0.0'))
+        if _ff_sw > 0.0:
+            if float(np.max(swing[2:4])) > 0.5:
+                al_des[1] -= _ff_sw
+            elif float(np.max(swing[0:2])) > 0.5:
+                al_des[1] += _ff_sw
         al_des[2] = kp_y * (ref['hdg'] - body['yaw']) \
             - kd_y * float(np.dot(R[:, 2], body['omega']))
         al_des[0] = -3.0 * body['roll']
