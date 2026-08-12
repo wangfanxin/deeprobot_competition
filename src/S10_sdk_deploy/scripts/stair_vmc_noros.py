@@ -346,6 +346,11 @@ def main():
         vmc_car = CarVMC()
         vmc = vmc_car
         print('[VMC] 双技能：CRUISE=CarVMC, STAIR=StairWBC(终版)', flush=True)
+    elif _vmode == 'stairwbcqp':
+        # v906: StairWBC-QP（位置基+QP力分配）——巡航用 CarVMC
+        vmc_car = CarVMC()
+        vmc = vmc_car
+        print('[VMC] 双技能：CRUISE=CarVMC, STAIR=StairWBC-QP(v906)', flush=True)
     else:
         vmc = VMCController()
 
