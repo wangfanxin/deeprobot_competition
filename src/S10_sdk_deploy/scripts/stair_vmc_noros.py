@@ -711,6 +711,23 @@ def main():
                 (2.0 + _sramp - _d_out) / max(_sramp, 1e-6), 0.0, 1.0))
             _f = min(_f_in, _f_out)
             vx_c = _win_vx * _f + vx_c * (1.0 - _f)
+            # v903: 爬顶减速——前轴已过最近高 riser(d>0.10)后，后轮爬顶
+            # 冲击是 roll 主因（台架 roll-1.08 实测）；动量已够过棱，vx
+            # 目标降到 1.2 减后轮爬顶冲击
+            try:
+                _d_crest = 1e9
+                _fax_c = body_pos[:2] + np.array([_fx_p * 0.228, _fy_p * 0.228])
+                for (_rp, _tng, _sr, _dhv, _top) in stair_world:
+                    if _dhv <= 0.085:
+                        continue
+                    _ddc = float(np.dot(_fax_c - _rp, _tng))
+                    if abs(_ddc) < abs(_d_crest):
+                        _d_crest = _ddc
+                if _d_crest > 0.10:
+                    vx_c = min(vx_c, float(os.environ.get(
+                        'S10_STAIR_CREST_VX', '1.2')))
+            except Exception:
+                pass
 
         # v236: 台阶相位步态——按弧长对每级 riser 调度前轴/后轴抬放
         # （几何已知，无硬模式：仅当台阶 riser 在前方窗口内才产生抬放量）。
