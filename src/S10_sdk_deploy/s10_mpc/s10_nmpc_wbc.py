@@ -437,8 +437,8 @@ class NmpcWbc:
                 # 卡死实测）；正则把腿拉回标称蹲姿，防奇异漂移
                 _kp_pose = float(os.environ.get('S10_NMPC_KP_POSE', '20.0'))
                 _kd_pose = float(os.environ.get('S10_NMPC_KD_POSE', '6.0'))
-                # v1071: 对侧轴 SWING 时本轴强姿态保持——后轴抬升反作用
-                # 使前腿上折泵高（轮 1.09 实测）；前腿钉在弯曲位形防折叠
+                # v1071: 对侧轴 SWING 时本轴强姿态保持（固定蹲姿）——
+                # v1076 IK 姿态版本在真原图更差（东漂+早翻），回退
                 if float(np.max(swing[2:4])) > 0.5 and leg in (0, 1):
                     _kp_pose = float(os.environ.get(
                         'S10_NMPC_KP_POSE_OPP', '200.0'))
