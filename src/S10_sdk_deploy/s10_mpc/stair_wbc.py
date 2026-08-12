@@ -346,7 +346,10 @@ class StairWBC(FootPlaceVMC):
                            + np.sin(body["yaw"])
                            * (wheel_xyz[_leg, 1] - _hip_r[1]))
                 _drop_r = float(_hip_r[2] - wheel_xyz[_leg, 2])
-                if _relx_r < 0.0 or _drop_r < 0.03:
+                # v1011: 仅当前腿未 SWING 时触发——SWING 期轮在髋附近
+                # (垂距<3cm 正常)，恢复矩误触发 + 后轮前驱 → 弹射
+                if (step_lift[_leg] <= 0.5
+                        and (_relx_r < 0.0 or _drop_r < 0.03)):
                     _recov_on = True
                     _q1 = float(qpos[6 + _leg * 3 + 1])
                     _tau_r = _recov_k * max(0.05 - _relx_r, 0.0)
