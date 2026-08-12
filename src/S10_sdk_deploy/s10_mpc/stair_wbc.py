@@ -222,8 +222,12 @@ class StairWBC(FootPlaceVMC):
                 (_rp, _tng, _dhv, _top) = _best
                 _z_bot = float(_top - _dhv)
                 _d_w = float(np.dot(_ax_xy - _rp, _tng))
-                if -_r <= _d_w <= 0.0:
-                    _t = float(np.clip((_d_w + _r) / max(_r, 1e-6), 0.0, 1.0))
+                # v899: 抬升窗提前到 SWING 触发点(0.30)——原只在轮半径
+                # 0.081 内抬，狗卡在 d=-0.21 无法进窗（前轮恒 0.62 实测）；
+                # 提前抬让前轮滚 step1 时渐升到 0.747，靠动量越棱
+                _cl = float(os.environ.get("S10_STAIR_SWING_D", "0.30"))
+                if -_cl <= _d_w <= 0.0:
+                    _t = float(np.clip((_d_w + _cl) / max(_cl, 1e-6), 0.0, 1.0))
                     _ss = _t * _t * (3.0 - 2.0 * _t)
                     _z_face = _z_bot + _r + _dhv * _ss
                 else:
@@ -258,23 +262,20 @@ class StairWBC(FootPlaceVMC):
                 tau[WHEEL_Q_IDX[_leg]] = float(np.clip(_tw, -13.5, 13.5))
         except Exception:
             pass
-        # v892(方案1): 腿控 Yaw——爬升瞬态（前轴 SWING 且 vx>0.5）用
-        # Hip X 外展/内收修正航向（导航 yaw 误差 + yaw 率阻尼）
+        # v892/v894(方案1): 腿控 Yaw——StairWBC 窗口全程激活（不只 SWING），
+        # Hip X 外展/内收修正航向（导航 yaw 误差 + yaw 率阻尼）；轮差速已冻结
         try:
-            _climbing = (float(np.max(step_lift[0:2])) > 0.5
-                         and abs(float(getattr(self, "_vx_f", 0.0))) > 0.5)
-            if _climbing:
-                _kp_y = float(os.environ.get("S10_FP_YAW_KP", "2.0"))
-                _kd_y = float(os.environ.get("S10_FP_YAW_KD", "0.5"))
-                _yerr = 0.0
-                if self.stair is not None:
-                    _yerr = float(getattr(self.stair, "_last_err", 0.0))
-                _yr = float(body["omega"])
-                _th_y = _kp_y * _yerr - _kd_y * _yr
-                tau[LEG_CTRL_IDX[0]] += _th_y     # FL hipx
-                tau[LEG_CTRL_IDX[3]] -= _th_y     # FR hipx
-                tau[LEG_CTRL_IDX[6]] += 0.5 * _th_y   # RL hipx
-                tau[LEG_CTRL_IDX[9]] -= 0.5 * _th_y   # RR hipx
+            _kp_y = float(os.environ.get("S10_FP_YAW_KP", "2.0"))
+            _kd_y = float(os.environ.get("S10_FP_YAW_KD", "0.5"))
+            _yerr = 0.0
+            if self.stair is not None:
+                _yerr = float(getattr(self.stair, "_last_err", 0.0))
+            _yr = float(body["omega"])
+            _th_y = _kp_y * _yerr - _kd_y * _yr
+            tau[LEG_CTRL_IDX[0]] += _th_y     # FL hipx
+            tau[LEG_CTRL_IDX[3]] -= _th_y     # FR hipx
+            tau[LEG_CTRL_IDX[6]] += 0.5 * _th_y   # RL hipx
+            tau[LEG_CTRL_IDX[9]] -= 0.5 * _th_y   # RR hipx
         except Exception:
             pass
         # QP Checker：用本步腿 PD 力矩反推接触力校验（下步生效）

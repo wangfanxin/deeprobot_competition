@@ -784,7 +784,8 @@ def main():
             # 过棱且前轮落台面顶+r 释放
             _sw_d = float(os.environ.get('S10_STAIR_SWING_D', '0.15'))
             if _sp_f <= 0.0:
-                if -_sw_d < _df_p < 0.05:
+                # v900: 前轴进入也加防双抬守卫（与后轴一致）
+                if -_sw_d < _df_p < 0.05 and _sp_r <= 0.0:
                     _sp_f = 1.0; _sp_f_top = _tf_p
                     _sp_f_t0 = t
             elif (_df_p > 0.05
