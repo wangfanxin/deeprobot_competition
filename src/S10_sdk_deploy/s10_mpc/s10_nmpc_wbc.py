@@ -396,9 +396,15 @@ class NmpcWbc:
                 l[3 + len(rows) + 3*i + 2] = _fz_min_sw
                 u[3 + len(rows) + 3*i + 2] = self.fz_max
             elif float(np.max(swing[0:2])) > 0.5 and i in (2, 3):
-                # v1082: ?? SWING/HOVER ????????????46N??
+                # v1159: ?? SWING ???????F_z >= ??? 95N??85 ?
+                # ?????????????????????? 124N<186N??
                 l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
-                    'S10_NMPC_SWING_FZ_MIN', '46.0'))
+                    'S10_NMPC_STANCE_FZ_MIN', '95.0'))
+                u[3 + len(rows) + 3*i + 2] = self.fz_max
+            elif float(np.max(swing[2:4])) > 0.5 and i in (0, 1):
+                # v1159: ?? SWING ????????? F_z >= 95N?
+                l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
+                    'S10_NMPC_STANCE_FZ_MIN', '95.0'))
                 u[3 + len(rows) + 3*i + 2] = self.fz_max
         import osqp
         from scipy import sparse
