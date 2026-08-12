@@ -82,7 +82,15 @@ class StairWBCQP:
         _swd = float(os.environ.get("S10_STAIR_SWING_D", "0.30"))
         _to = float(os.environ.get("S10_STAIR_SWING_TO", "1.5"))
         if self._sp_f <= 0.0:
-            if -_swd < _df < 0.05 and self._sp_r <= 0.0:
+            # v946: 爬完锁存——前轮一旦成功到台面高度(top+r+0.005)且过棱，
+            # 该 riser 不再重触发 SWING（狗在棱口晃动 d 振荡反复重触发、
+            # 轮一直悬空不推进实测）；远离该 riser(d<-0.5)才复位
+            if not hasattr(self, "_sp_f_done"):
+                self._sp_f_done = False
+            if _df < -0.5:
+                self._sp_f_done = False
+            if (not self._sp_f_done and -_swd < _df < 0.05
+                    and self._sp_r <= 0.0):
                 self._sp_f = 1.0
                 self._sp_f_top = _tf
                 self._rel_f_t = None
@@ -91,7 +99,9 @@ class StairWBCQP:
             # v935: 释放阈值 0.10（滞回）——触发 <-0.30..0.05，释放 >0.10。
             # v943 试 0.08 引发 yaw/roll 新级联（5s 翻车）回退；0.10 状态
             # 前轮上台面稳定 15s（roll±0.5），卡在悬空无法推进。
-            if _df > 0.10 and _wz_f >= self._sp_f_top + r + 0.005:
+            if (_df > 0.10 and _wz_f >= self._sp_f_top + r + 0.005
+                    and not getattr(self, '_sp_f_done', False)):
+                self._sp_f_done = True
                 if self._rel_f_t is None:
                     self._rel_f_t = self._t
                 elif self._t - self._rel_f_t >= 0.05:
@@ -194,6 +204,8 @@ class StairWBCQP:
             b0[2] = -self.g
             # a_des：z 高度阻尼 + roll/pitch 回零（世界系角加速度近似）
             a_des = np.zeros(6)
+            # v939 原状: z 参考固定 0.78（v944/v945 试验 z 跟随/0.88 均引发
+            # roll 崩回退）——最佳状态为前轮上台面稳定 15s 卡死。
             a_des[2] = float(os.environ.get("S10_QP_AZ_K", "-30.0")) * (
                 float(body["pos"][2]) - 0.78)
             # v933b: roll/pitch 修正只在后轮爬顶期生效（2 点前支撑最需要）
@@ -207,8 +219,14 @@ class StairWBCQP:
             _ap_k = float(os.environ.get("S10_QP_AP_K", "-20.0")) if _rear_sw else 0.0
             a_des[3] = _ar_k * body["roll"]
             a_des[4] = _ap_k * body["pitch"]
-            # v907: yaw 率阻尼——QP 侧向力耦合出 yaw 自旋(om±2.9 实测)
-            a_des[5] = float(os.environ.get("S10_QP_AY_K", "-20.0")) * getattr(self, '_yaw_rate', 0.0)
+            # v947: yaw 率阻尼只在后轮爬顶期启用——前轮 SWING 期(双后腿
+            # 支撑)QP 用侧向力阻尼 yaw 造成载荷极端不对称(RL 161N vs RR
+            # 10N, 横向到摩擦锥极限 → roll 崩实测)；后轮爬顶期(双前腿)
+            # 才有支撑做侧向力
+            _ay_k = (float(os.environ.get("S10_QP_AY_K", "-20.0"))
+                     if float(getattr(self, '_rear_swing', 0.0)) > 0.5
+                     else 0.0)
+            a_des[5] = _ay_k * getattr(self, '_yaw_rate', 0.0)
             W1 = np.diag([0.0, 0.0,
                           float(os.environ.get("S10_QP_W_Z", "400.0")),
                           float(os.environ.get("S10_QP_W_R", "20.0")),
@@ -292,6 +310,7 @@ class StairWBCQP:
         step_lift, place_z = self._update_phases(body["pos"], fwd, wheel_xyz)
         place_z = self._face_place_z(wheel_xyz, step_lift)
         self._rear_swing = float(np.max(step_lift[2:4])) > 0.5
+        self._any_swing = float(np.max(step_lift)) > 0.5
         tau = np.zeros(16, dtype=np.float64)
         # λ_ref：支撑 mg/4 均载，抬升 0
         lam_ref = np.zeros((4, 3))
