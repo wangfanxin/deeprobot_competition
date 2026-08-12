@@ -454,6 +454,7 @@ class NmpcWbc:
                 tau[LEG_CTRL_IDX[b + 2]] = float(
                     th2 + _kp_pose * (_qp2 - q2) - _kd_pose * dq2)
                 # hipx 侧向力（VMC 同款固定 0.30 杠杆）+ 标称外展
+                # v1078 回退：HipX 直接 yaw 误差项过冲（t=9 翻），v1075 基线最优
                 tau[LEG_CTRL_IDX[b]] = float(0.30 * fy + 80.0 * (
                     -0.05 if leg in (0, 1) else 0.05))
         # 轮：Pfaffian 驱动——τ 跟随 NMPC 接触力前向分量（受摩擦锥约束），
