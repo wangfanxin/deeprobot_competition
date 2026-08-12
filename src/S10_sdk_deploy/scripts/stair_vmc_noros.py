@@ -21,6 +21,7 @@ from s10_mpc.stair_vmc_legs import (VMCController, CarVMC, LEG_ATTACH, WHEEL_BOD
     WHEEL_Q_IDX, LidarTerrain)
 from s10_mpc.stair_wbc import StairWBC
 from s10_mpc.stair_wbc_qp import StairWBCQP
+from s10_mpc.s10_nmpc_wbc import NmpcWbc
 
 DT = 0.005
 MAX_SIM = float(os.environ.get('S10_TEST_MAX_SIM', '90'))
@@ -365,6 +366,11 @@ def main():
         vmc_car = CarVMC()
         vmc = vmc_car
         print('[VMC] 双技能：CRUISE=CarVMC, STAIR=StairWBC-QP(v906)', flush=True)
+    elif _vmode == 'nmpcwbc':
+        # v1054: NMPC+WBC 论文方案（20Hz SRBD 力优化 + 200Hz WBC）——巡航 CarVMC
+        vmc_car = CarVMC()
+        vmc = vmc_car
+        print('[VMC] 双技能：CRUISE=CarVMC, STAIR=NmpcWbc(论文方案)', flush=True)
     else:
         vmc = VMCController()
 
@@ -376,6 +382,10 @@ def main():
     vmc_qp = StairWBCQP()
     vmc_qp.stair_world = stair_world
     vmc_qp.stair = fol
+    # v1054: NmpcWbc（S10_VMC_MODE=nmpcwbc 时 STAIR 区启用）
+    vmc_nmpc = NmpcWbc()
+    vmc_nmpc.stair_world = stair_world
+    vmc_nmpc.stair = fol
 
     # 站起
     t = 0.0
@@ -1567,6 +1577,8 @@ def main():
             vmc = vmc_stw if _stair_exec else vmc_car
         if os.environ.get('S10_VMC_MODE', 'wbc') == 'stairwbcqp':
             vmc = vmc_qp if _stair_exec else vmc_car
+        if os.environ.get('S10_VMC_MODE', 'wbc') == 'nmpcwbc':
+            vmc = vmc_nmpc if _stair_exec else vmc_car
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         _tleg = float(np.abs(tau[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]]).max())
         _twh = float(np.abs(tau[[3, 7, 11, 15]]).max())
