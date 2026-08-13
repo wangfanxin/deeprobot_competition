@@ -283,7 +283,7 @@ class NmpcWbc:
         a_des = np.zeros(3)
         a_des[2] = float(np.clip(kp_z * (ref['z'] - pos0[2])
                                 - kd_z * float(np.dot(R[:, 2], body['omega'])),
-                                _zlo, 6.0))
+                                _zlo, 8.0))
         v_w0 = fwd_w * body['vx']
         a_des[0:2] = kp_vx * (ref['vx'] * fwd_w[0:2] - v_w0[0:2])
         if _any_sw:
@@ -369,7 +369,7 @@ class NmpcWbc:
                 rows.append(e); ub.append(1e9)
             e = np.zeros(n)
             e[f0+14] = 1.0
-            rows.append(e); ub.append(6.0)
+            rows.append(e); ub.append(8.0)
             e = np.zeros(n)
             e[f0+14] = -1.0
             rows.append(e); ub.append(-_zlo)
