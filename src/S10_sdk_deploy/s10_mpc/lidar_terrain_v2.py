@@ -111,7 +111,7 @@ class LidarTerrainV2:
             return float(self.hmax[iy, ix])
         return None
 
-    def stair_confirmed(self, robot_xy, yaw, rise=0.06, need=2, span=2.0):
+    def stair_confirmed(self, robot_xy, yaw, rise=0.06, need=2, span=4.0):
         fx = float(np.cos(yaw))
         fy = float(np.sin(yaw))
         hs = []
