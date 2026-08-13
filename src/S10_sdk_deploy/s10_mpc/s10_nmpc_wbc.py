@@ -789,8 +789,9 @@ class NmpcWbc:
                     _zr = min(float(ref.get('z', 0.8)), 0.94)
                     _drop = float(np.clip(_zr - float(wheel_xyz[leg, 2]), 0.10, 0.30))
                     _q1t, _q2t = self._ik(0.0, -_drop, q1, q2, leg=leg)
-                    tau[LEG_CTRL_IDX[b+1]] = 120.0 * (_q1t - q1) - 20.0 * dq1
-                    tau[LEG_CTRL_IDX[b+2]] = 120.0 * (_q2t - q2) - 20.0 * dq2
+                    # M1zzz4: 抬升腿 kd 20->40（衰减 body 过冲发射）
+                    tau[LEG_CTRL_IDX[b+1]] = 120.0 * (_q1t - q1) - 40.0 * dq1
+                    tau[LEG_CTRL_IDX[b+2]] = 120.0 * (_q2t - q2) - 40.0 * dq2
                     tau[LEG_CTRL_IDX[b]] = 0.0
         # 轮：Pfaffian 驱动——τ 跟随 NMPC 接触力前向分量（受摩擦锥约束），
         # vx PID 只做微调，下限仅防倒转。v1065: 前驱下限-5×4=247N 前向力
