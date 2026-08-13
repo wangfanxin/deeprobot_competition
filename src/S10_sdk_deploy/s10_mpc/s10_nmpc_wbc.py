@@ -11,9 +11,18 @@
 import os
 import numpy as np
 
+# M1leg (2026-08-13): LEG_ATTACH must match the XML joint/body order
+# fl, fr, hl, hr (S10.xml: fl_hipx, fr_hipx, hl_hipx, hr_hipx). The old
+# table assumed fl, rl, fr, rr -> legs 1 (fr) and 2 (hl) had swapped
+# attachment positions (fr placed 0.456m behind at rear-left, hl placed
+# 0.456m ahead at front-right). Consequences: front-right swing trigger /
+# hip_w 0.45m late -> one-sided front lift -> roll -> launch; rear axle
+# targets mirrored -> L/R asymmetry (the whole 155-run wall).
 LEG_ATTACH = np.array([
-    [0.2277, 0.181191], [-0.2277, 0.181191],  # fl, rl (body y+)
-    [0.2277, -0.181191], [-0.2277, -0.181191],  # fr, rr
+    [0.2277, 0.181191],   # 0 fl: front-left  (+x, +y)
+    [0.2277, -0.181191],  # 1 fr: front-right (+x, -y)
+    [-0.2277, 0.181191],  # 2 hl: rear-left   (-x, +y)
+    [-0.2277, -0.181191], # 3 hr: rear-right  (-x, -y)
 ], dtype=np.float64)
 LEG_Q_IDX = [7, 8, 9, 11, 12, 13, 15, 16, 17, 19, 20, 21]
 LEG_CTRL_IDX = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]
@@ -504,7 +513,9 @@ class NmpcWbc:
             e[f0+14] = 1.0
             # M1www: 快速上升时上界设 0（原恒 8，
             # QP 满足上推力→腿泵高实测）
-            _az_max = 0.0 if _vz_b > 0.5 else 8.0
+            # M1soft: no body-z slam while wheels are swinging (was the
+            # launch driver: 8 m/s2 up + swing lift + pos_lift -> airborne)
+            _az_max = 0.0 if _vz_b > 0.5 else (3.0 if _any_sw else 8.0)
             rows.append(e); ub.append(_az_max)
             e = np.zeros(n)
             e[f0+14] = -1.0
@@ -708,7 +719,11 @@ class NmpcWbc:
                 _wz_e = float(wheel_xyz[leg, 2]) - wz_t
                 _wz_dot = float(_Jf[1, 0] * dq1 + _Jf[1, 1] * dq2) if hasattr(self, '_Jf') else 0.0
                 _wz_dot = float(self.fk.jac(q1, q2)[1, 0] * dq1 + self.fk.jac(q1, q2)[1, 1] * dq2)
-                _fs = np.array([0.0, _wz_e * 300.0 - 25.0 * _wz_dot])
+                # M1soft (2026-08-13): lift force 300->100. The saturated
+                # body-z push + swing lift launches the whole robot airborne
+                # (fn=[0,0,0,0], wheels 0.80-0.87). Gentler lift avoids the
+                # impulse; speed damping retained.
+                _fs = np.array([0.0, _wz_e * 100.0 - 25.0 * _wz_dot])
                 _Jf = self.fk.jac(q1, q2)
                 _th1f, _th2f = _Jf.T @ _fs
                 tau[LEG_CTRL_IDX[b + 1]] = float(_th1f) - 8.0 * dq1
@@ -758,10 +773,16 @@ class NmpcWbc:
                 # stair braking -> body collapses 0.78->0.64 -> G1 gate marginal
                 # -> single-leg swing -> saturated a_z=8 -> launch. Fire the
                 # position-lift branch whenever the body is below its ref.
+                # M1gnd (2026-08-13): pos_lift is a pure IK push that bypasses
+                # the _hover unload -> airborne wheels get whipped upward ->
+                # whole robot launches (t=8.5 fn=[0,0,0,0], wheels 0.80 in
+                # air). Only lift legs whose wheel is still near its terrain.
                 _pos_lift = (_fr_sw or _wz_f > 0.75
                              or float(body['pos'][2])
                              < float(ref.get('z', 0.8)) - 0.06) \
-                    and swing[leg] <= 0.5
+                    and swing[leg] <= 0.5 \
+                    and float(wheel_xyz[leg, 2]) \
+                    <= float(terrain_h[leg]) + r + 0.05
                 # 支撑腿：J^T·(R^T·F_des) 力分配——F_des 是作用在 body 的
                 # 接触力（向上），与 VMC 约定一致（f_b=R^T·F，f_sag=[fx,-fz]）
                 _qp1 = -1.16 if leg in (0, 1) else 1.16
@@ -821,9 +842,14 @@ class NmpcWbc:
                 # ???? 300 ??????????real23 ????????
                 # 1.1 ???????????? SWING ????????????
                 # ?????????v1098 ??????? real29 ?????
+                # M1post (2026-08-13): opposite-axle swing -> this axle
+                # carries full load (F_z up to 170N). An extended-forward leg
+                # maps that force into a knee torque >48Nm -> wheel thrown up
+                # (L3 pz -0.3). Strong posture hold (200) beats the
+                # force-induced extension; the force then pushes the BODY.
                 if float(np.max(swing[2:4])) > 0.5 and leg in (0, 1):
-                    _kp_pose = 20.0
-                    _kd_pose = 6.0
+                    _kp_pose = 200.0
+                    _kd_pose = 30.0
                     _rel3 = np.array([wheel_xyz[leg, 0] - hip_w[0],
                                       wheel_xyz[leg, 1] - hip_w[1],
                                       _pz_d - hip_w[2]])
@@ -837,8 +863,8 @@ class NmpcWbc:
                         float(_relb3[0]), _rz3, q1, q2, leg=leg)
                     _qp1, _qp2 = _q1p, _q2p
                 if float(np.max(swing[0:2])) > 0.5 and leg in (2, 3):
-                    _kp_pose = 20.0
-                    _kd_pose = 6.0
+                    _kp_pose = 200.0
+                    _kd_pose = 30.0
                 tau[LEG_CTRL_IDX[b + 1]] = float(
                     th1 + _kp_pose * (_qp1 - q1) - _kd_pose * dq1)
                 tau[LEG_CTRL_IDX[b + 2]] = float(
