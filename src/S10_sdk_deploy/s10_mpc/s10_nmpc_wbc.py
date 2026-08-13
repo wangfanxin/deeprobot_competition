@@ -133,7 +133,10 @@ class NmpcWbc:
                     self._sp_top[leg] = float(_top)
                     self._sw_t0[leg] = self._t
             else:
-                if _wz >= self._sp_top[leg] + r - 0.01:
+                # M1ddd4: 摆动退出加'轮已过棱(d>0.05)'——
+                # 原轮达 riser2 顶即退出→落 stance 被顶骑上
+                # 棱面过冲实测；悬空期保持摆动铉住计划高度
+                if _d > 0.05 and _wz >= self._sp_top[leg] + r - 0.01:
                     self._sp[leg] = 0.0
                 elif self._t - self._sw_t0[leg] > self.swing_to:
                     self._sp[leg] = 0.0
