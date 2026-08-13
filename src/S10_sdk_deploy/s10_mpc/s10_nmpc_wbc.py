@@ -724,6 +724,17 @@ class NmpcWbc:
                 # 摆腿（贴面爬升）：位置 PD + 小支撑力（F_des 的 F_z 部分）
                 _wzs = getattr(self, '_wz_sw_des', None)
                 wz_t = float(_wzs[leg]) if (_wzs is not None) else swing_tgt_z[leg]
+                # M1cat (2026-08-13): front-axle catch-up. The axle-mean
+                # engagement kept both wheels in swing but their heights
+                # diverged (L0 0.77 / L1 0.65 at t=7) -> roll -3.13 tip.
+                # The lagging front wheel's target is raised toward the
+                # leader; the leader stays on the face arc (the overshoot
+                # damping returns it). Rear stays per-leg.
+                if leg in (0, 1) and sl > 0.5:
+                    _wz_max_f = float(np.max(wheel_xyz[0:2, 2]))
+                    if float(wheel_xyz[leg, 2]) < _wz_max_f - 0.01:
+                        wz_t = wz_t + 0.5 * (
+                            _wz_max_f - float(wheel_xyz[leg, 2]))
                 # v1079(方向1): HOVER 期前轮目标 = body 相对 drop（正 drop
                 # 恒定，轮随 body 平移），钳在台面顶+半径以上不插台面
                 # v1089: ???????????????????-2cm?????
