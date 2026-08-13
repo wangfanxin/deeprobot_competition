@@ -68,6 +68,7 @@ class NmpcWbc:
         self._sp = [0.0, 0.0, 0.0, 0.0]
         self._sp_top = [0.0, 0.0, 0.0, 0.0]
         self._sw_t0 = [-1e9, -1e9, -1e9, -1e9]
+        self._sp_tgt = [-1, -1, -1, -1]
         self._nmpc_prob = None
         try:
             import osqp
@@ -98,48 +99,76 @@ class NmpcWbc:
                     vel=np.asarray(qvel[0:3], dtype=np.float64),
                     omega=np.asarray(qvel[3:6], dtype=np.float64))
 
-    # ---------------- ModeSequence：抬升轮（F=0）----------------
-    def _nearest_riser(self, ax):
-        dmin, top = 1e9, 0.0
+    # ---------------- ModeSequence: lifted wheels (F=0) ----------------
+    # M1step (2026-08-13): step-number based swing triggers replace the fixed
+    # distance windows. Target riser is explicit: front wheel = next swingable
+    # riser (dh>0.085, riser1 pure-roll), rear wheel = current front-axle step.
+    # Swing exit uses THIS leg's target riser (wheel past edge + height OK),
+    # fixing the old 'nearest-riser switches to next riser after crossing ->
+    # geometric exit never fires -> swing drops mid-face -> body collapse' bug.
+    # Kept: per-leg independence (diagonal support), G1 body_z gate.
+    def _step_of(self, ax_xy):
+        """Step number: risers already crossed (tangent d>0.05), incl. riser1."""
+        _cur = 0
         for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
-            if _dhv <= 0.085:      # riser1 纯滚（与 v1050 一致）
-                continue
-            _dd = float(np.dot(np.asarray(ax, dtype=np.float64) - _rp, _tng))
-            if abs(_dd) < abs(dmin):
-                dmin, top = _dd, float(_top)
-        return dmin, top
+            _dd = float(np.dot(
+                np.asarray(ax_xy, dtype=np.float64) - _rp[:2], _tng))
+            if _dd > 0.05:
+                _cur += 1
+        return _cur
+
+    def _tgt_riser(self, idx):
+        if 0 <= int(idx) < len(self.stair_world):
+            return self.stair_world[int(idx)]
+        return None
 
     def _mode_sequence(self, body_pos, fwd, wheel_xyz):
-        """??????/?????????? SWING???????????
-        ??????+??-0.01 ???G1?SWING ???? = ??? d<0.35 ?
-        body_z>0.80???????? dh>0.085?????? _nearest_riser ??
-        ????????????? d????/???/????? 6?2 ??????"""
-        # M1mmm3: 轮级独立 swing——每轮用自己位置判距触发
-        # （左右天然交错，保持对角线支撑，解决轴
-        # 同步抬导致前支撑全失折叠实测）
-        _perp = np.array([-fwd[1], fwd[0]])
+        """Per-leg SWING via step-number trigger.
+        Windows: front 0.35 (keeps -0.40 riser1-face boundary clear),
+        rear 0.75 (rear hip to front's riser = axle 0.456 + reach 0.15-0.25)."""
         r = self.fk.r
+        _perp = np.array([-fwd[1], fwd[0]])
+        _steps = [self._step_of(wheel_xyz[leg, :2]) for leg in range(4)]
+        _front_step = int(np.min(_steps[0:2]))   # trailing side of front axle
         for leg in range(4):
-            _hip_xy = body_pos[:2] + fwd * LEG_ATTACH[leg][0] + _perp * LEG_ATTACH[leg][1]
-            _d, _top = self._nearest_riser(_hip_xy)
+            # trigger distance from HIP (same convention as M1eee4/M1mmm3:
+            # wheel-based distances fire 0.15-0.25 m early -> front F=0 too
+            # long -> NMPC primal infeasible -> garbage F -> leg throw)
+            _hip_xy = (body_pos[:2] + fwd * LEG_ATTACH[leg][0]
+                       + _perp * LEG_ATTACH[leg][1])
+            _wxy = wheel_xyz[leg, :2]
+            _cur = _steps[leg]
+            if leg in (2, 3):
+                _tgt_idx = _front_step - 1       # rear target = front axle step
+            else:
+                _tgt_idx = _cur                  # front target = next swingable
+                while (_tgt_idx < len(self.stair_world)
+                       and float(self.stair_world[_tgt_idx][3]) <= 0.085):
+                    _tgt_idx += 1
+            _tgt = self._tgt_riser(_tgt_idx)
+            _d, _top = 1e9, 0.0
+            if _tgt is not None and float(_tgt[3]) > 0.085:
+                _d = float(np.dot(_hip_xy - _tgt[0], _tgt[1]))
+                _top = float(_tgt[4])
             _wz = float(wheel_xyz[leg, 2])
-            # M1aaa4: G1 门控 -0.10（原 -0.05：riser3 需 0.822 而 body 0.81
-            # 不过→ riser3 摆动不触发→前轮碰棱弹起折叠实测）
+            # G1 gate -0.10 (riser3 needs body 0.822; 0.81 fails -> no swing)
             _bz_ok = float(body_pos[2]) > float(_top) + r - 0.10
             if self._sp[leg] <= 0.0:
                 _below_top = _wz < float(_top) + r - 0.02
-                # M1eee4: 前后轴独立摆动窗（前 0.35 防过冲，
-                # 后 0.50 防折叠；共用 0.42 双败实测）
-                _sw_win = 0.50 if leg in (2, 3) else 0.35
+                _sw_win = 0.75 if leg in (2, 3) else 0.35
                 if -_sw_win < _d < 0.05 and _bz_ok and _below_top:
                     self._sp[leg] = 1.0
                     self._sp_top[leg] = float(_top)
+                    self._sp_tgt[leg] = int(_tgt_idx)
                     self._sw_t0[leg] = self._t
             else:
-                # M1ddd4: 摆动退出加'轮已过棱(d>0.05)'——
-                # 原轮达 riser2 顶即退出→落 stance 被顶骑上
-                # 棱面过冲实测；悬空期保持摆动铉住计划高度
-                if _d > 0.05 and _wz >= self._sp_top[leg] + r - 0.01:
+                # exit: this leg's target riser crossed (wheel past edge)
+                # and wheel height reached; use wheel xy (physical contact).
+                _tt = self._tgt_riser(self._sp_tgt[leg])
+                _wd = 1e9
+                if _tt is not None:
+                    _wd = float(np.dot(_wxy - _tt[0], _tt[1]))
+                if _wd > 0.05 and _wz >= self._sp_top[leg] + r - 0.01:
                     self._sp[leg] = 0.0
                 elif self._t - self._sw_t0[leg] > self.swing_to:
                     self._sp[leg] = 0.0
@@ -147,7 +176,6 @@ class NmpcWbc:
         self._dbg_phases = (float(np.max(swing[0:2])), float(np.max(swing[2:4])))
         return swing
 
-    # ---------------- 轨迹层：body 参考 ----------------
     def _ref_traj(self, body, vx_cmd, om_cmd, terrain_h):
         """台阶推进参考：vx 插值、body z 跟轮下地形均值+偏移、pitch 随坡度、
         heading 锁楼梯切线（v1034 思路）。"""
@@ -310,7 +338,8 @@ class NmpcWbc:
                 if _dhv <= 0.085:
                     continue
                 _dd = float(np.dot(_ax_xy - _rp, _tng))
-                if -0.45 < _dd < 0.05 and abs(_dd) < abs(_best_d):
+                _sw_win_t = 0.75 if leg in (2, 3) else 0.45
+                if -_sw_win_t < _dd < 0.05 and abs(_dd) < abs(_best_d):
                     _best_d, _best = _dd, (_rp, _tng, _dhv, _top)
             if _best is not None:
                 (_rp, _tng, _dhv, _top) = _best
@@ -519,13 +548,22 @@ class NmpcWbc:
                     u[base+2] = self.fz_max
         import osqp
         from scipy import sparse
-        if self._nmpc_prob is None:
+        # M1step2: rows/knot varies with swing pattern (_same_pairs) ->
+        # osqp.update() rejects row-count changes and leaves stale mixed
+        # data -> primal infeasible -> garbage F -> leg throw. Rebuild the
+        # problem whenever n or the constraint-row count changes.
+        _nrows = len(rows)
+        if (self._nmpc_prob is None
+                or getattr(self, '_nmpc_nrows', -1) != _nrows
+                or getattr(self, '_nmpc_nvars', -1) != n):
             prob = osqp.OSQP()
             prob.setup(P=sparse.csc_matrix(P), q=q,
                        A=sparse.csc_matrix(A), l=l, u=u,
                        verbose=False, eps_abs=1e-3, eps_rel=1e-3,
                        max_iter=800, polish=False)
             self._nmpc_prob = prob
+            self._nmpc_nrows = _nrows
+            self._nmpc_nvars = n
         else:
             prob = self._nmpc_prob
             prob.update(P=sparse.csc_matrix(P), q=q,
@@ -577,7 +615,8 @@ class NmpcWbc:
                     # v2026(M1u): 目标窗负侧 -0.35->-0.45——触发用前导轮
                     # (±0.181 偏移)，目标用轴均值，均值常比前导轮远 0.1m；
                     # 窗不匹配→swing 有标志无目标→腿悬空无控制→登顶发射
-                    if -0.45 < _dd < 0.05 and abs(_dd) < abs(_best_d):
+                    _sw_win_t = 0.75 if leg in (2, 3) else 0.45
+                    if -_sw_win_t < _dd < 0.05 and abs(_dd) < abs(_best_d):
                         _best_d, _best = _dd, (_rp, _tng, _dhv, _top)
                 if _best is not None:
                     (_rp, _tng, _dhv, _top) = _best
@@ -615,7 +654,8 @@ class NmpcWbc:
             hip_w = body['pos'] + R @ np.array(
                 [LEG_ATTACH[leg][0], LEG_ATTACH[leg][1], 0.0])
             sl = swing[leg]
-            if sl > 0.5 and leg in swing_tgt_z:
+            if sl > 0.5 and leg in swing_tgt_z and \
+                    float(swing_tgt_z[leg]) > float(wheel_xyz[leg, 2]) + 0.005:
                 # 摆腿（贴面爬升）：位置 PD + 小支撑力（F_des 的 F_z 部分）
                 _wzs = getattr(self, '_wz_sw_des', None)
                 wz_t = float(_wzs[leg]) if (_wzs is not None) else swing_tgt_z[leg]
@@ -816,8 +856,10 @@ class NmpcWbc:
             # 与 WBC 200Hz 的 swing 状态不一致时，全支撑
             # 解的后退 F_x 会通过 -r*fx_fb 进入摆腿轮
             # → 剑至滑退实测；摆腿轮只留微驱）
-            if swing[leg] > 0.5:
-                # 摆腿（贴面滚爬）：保留前向微驱
+            _on_ground = float(wheel_xyz[leg, 2]) <= \
+                float(terrain_h[leg]) + r + 0.02
+            if swing[leg] > 0.5 and not _on_ground:
+                # swing (lifted): keep forward micro-drive
                 _tw = -0.5 * 12.0 * (self._vx_f - v_wheel)
             else:
                 _tw = -r * fx_fb
