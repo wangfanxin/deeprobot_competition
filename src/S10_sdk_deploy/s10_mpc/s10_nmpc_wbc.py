@@ -159,7 +159,14 @@ class NmpcWbc:
             _wxy = wheel_xyz[leg, :2]
             _cur = _steps[leg]
             if leg in (2, 3):
-                _tgt_idx = _front_step - 1       # rear target = front axle step
+                # M1ph2 (2026-08-13): rear arms only after the front-axle
+                # swing EXITS. Arming at front_step>=2 while the front legs
+                # are still swinging gave sp=[1,1] -> zero support -> body
+                # sags 0.73->0.68 -> front legs flip -> pos_lift throw.
+                if float(np.max(self._sp[0:2])) <= 0.5:
+                    _tgt_idx = _front_step - 1   # rear target = front axle step
+                else:
+                    _tgt_idx = -9                # wait for the front axle
             else:
                 _tgt_idx = _cur                  # front target = next swingable
                 while (_tgt_idx < len(self.stair_world)
@@ -891,9 +898,20 @@ class NmpcWbc:
                 if _pos_lift:
                     # 位置控制抬 body：目标钳到 0.94（后腿可达 0.96）
                     # + kp 120 防过冲（body 过冲 1.12 > 0.96 后轮折叠实测）
+                    # M1ph2c: front legs on the riser top keep their forward
+                    # reach (xd=0 pulls the wheel back under the hip from the
+                    # climb posture -> closed-form IK branch jump -> front
+                    # wheel whipped 0.78->0.98). Approach (front not up)
+                    # keeps xd=0 (vertical lift, validated).
                     _zr = min(float(ref.get('z', 0.8)), 0.94)
                     _drop = float(np.clip(_zr - float(wheel_xyz[leg, 2]), 0.10, 0.30))
-                    _q1t, _q2t = self._ik(0.0, -_drop, q1, q2, leg=leg)
+                    if _wz_f > 0.72 and leg in (0, 1):
+                        _relx_l = float(np.dot(
+                            wheel_xyz[leg, :2] - hip_w[:2], R[:, 0][:2]))
+                        _q1t, _q2t = self._ik(
+                            max(_relx_l, 0.0), -_drop, q1, q2, leg=leg)
+                    else:
+                        _q1t, _q2t = self._ik(0.0, -_drop, q1, q2, leg=leg)
                     # M1zzz4: 抬升腿 kd 20->40（衰减 body 过冲发射）
                     tau[LEG_CTRL_IDX[b+1]] = 120.0 * (_q1t - q1) - 60.0 * dq1
                     tau[LEG_CTRL_IDX[b+2]] = 120.0 * (_q2t - q2) - 60.0 * dq2
