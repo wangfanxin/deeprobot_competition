@@ -514,9 +514,11 @@ class NmpcWbc:
         for leg in range(4):
             sl = swing[leg]
             if sl > 0.5:
-                # M1mmm3: 摆腿目标用单轮位置（轮级独立
-                # swing 后各轮各自对棱）
-                _ax_xy = np.array([wheel_xyz[leg, 0], wheel_xyz[leg, 1]], dtype=np.float64)
+                # M1vvv3: 触发用单轮（对角支撑），目标用轴均值
+                # （左右同目标防 roll；单轮目标在左右独立
+                # swing 时目标不同→侧翻实测）
+                _ax_idx = (0, 1) if leg in (0, 1) else (2, 3)
+                _ax_xy = np.mean([wheel_xyz[_i, :2] for _i in _ax_idx], axis=0)
                 _best_d, _best = 1e9, None
                 for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
                     if _dhv <= 0.085:
