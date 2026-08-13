@@ -963,7 +963,13 @@ class NmpcWbc:
                 # M1yyy4: 摆动期 stance 轮恢复导航 om 差速（登顶
                 # 停滞时 yaw 权威优先于推力；原冻结→
                 # yaw 缓慢漂移 1.25→2.87 实测）
-                _vref += _sd * _om_cmd * self.track_half
+                # M1spin (2026-08-13): scale the differential by forward
+                # speed — at the stall (vx~0.1, front wheels held in the
+                # air before the edge) the saturated om +-0.5 rotated the
+                # robot in place (yaw 1.3rad -> spin -> L3 flail). No
+                # forward speed, no in-place yaw rotation.
+                _vref += _sd * _om_cmd * self.track_half * float(
+                    np.clip(body['vx'] / 1.0, 0.0, 1.0))
                 # vx PID 微调（参考=NMPC Pfaffian 轮速）
                 _tw += -0.3 * 12.0 * (_vref - v_wheel)
                 # 防倒转下限（小）
