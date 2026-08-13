@@ -143,7 +143,11 @@ class NmpcWbc:
         _bz_ok_f = float(body_pos[2]) > float(_tf) + r + 0.02
         _bz_ok_r = float(body_pos[2]) > float(_tr) + r + 0.02
         if self._sp_f <= 0.0:
-            if -self.swing_d < _df < 0.05 and _bz_ok_f:
+            # M1ppp: 轮已在台面顶上时不重触 SWING
+            # （两级台阶之间前轴 d<0.05 但轮已过棱→
+            # 重触引发泵高折叠实测）
+            _below_top_f = _wz_f < _tf + r - 0.02
+            if -self.swing_d < _df < 0.05 and _bz_ok_f and _below_top_f:
                 self._sp_f = 1.0
                 self._sp_f_top = _tf
                 self._sw_f_t0 = self._t
@@ -153,7 +157,8 @@ class NmpcWbc:
             elif self._t - self._sw_f_t0 > self.swing_to:
                 self._sp_f = 0.0
         if self._sp_r <= 0.0:
-            if -self.swing_d < _dr < 0.05 and _bz_ok_r:
+            _below_top_r = _wz_r < _tr + r - 0.02
+            if -self.swing_d < _dr < 0.05 and _bz_ok_r and _below_top_r:
                 self._sp_r = 1.0
                 self._sp_r_top = _tr
                 self._sw_r_t0 = self._t
@@ -173,18 +178,26 @@ class NmpcWbc:
         heading 锁楼梯切线（v1034 思路）。"""
         r = self.fk.r
         _z_geo = []
+        _sw_d = max(self.swing_d, 0.15)
         for leg in range(4):
-            gt = 0.0
+            gt = float(terrain_h[leg])
             for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
+                if _dhv <= 0.085:
+                    continue
                 _dd = float(np.dot(
                     np.asarray(body['pos'][:2], dtype=np.float64)
                     - _rp, _tng))
-                # v1153: z ???? 0.4m?????? riser?_dd>0??????
-                # ????? SWING ???????79 ???????????
-                # ???? SWING ??????????????
-                if _dd > -0.4:
+                # M1sss: z 参考沿摆动窗 smoothstep 爬升（原 0.4m
+                # 提前跳到台面顶→body z 过早抬 0.125m→
+                # 摆腿期泵高/发射实测）
+                if _dd > 0.05:
                     gt = max(gt, float(_top))
-            _z_geo.append((gt if gt > 0.4 else float(terrain_h[leg])) + r)
+                elif _dd > -_sw_d:
+                    _zbt = float(_top - _dhv)
+                    _t = float(np.clip((_dd + _sw_d) / max(_sw_d, 1e-3), 0.0, 1.0))
+                    _ss = _t * _t * (3.0 - 2.0 * _t)
+                    gt = max(gt, _zbt + _dhv * _ss)
+            _z_geo.append(gt + r)
         # #4(???): body z ????????lerp(??????)+?????
         # ?? 0.25??? 0.22 ?????body ? 0.66??? drop<0.1 ????
         # 0.25 ?? body 0.80+?drop>=0.15??Z_OFF ???????????
@@ -208,7 +221,8 @@ class NmpcWbc:
         hdg = float(np.arctan2(self.stair_world[0][1][1],
                                self.stair_world[0][1][0])) \
             if self.stair_world else float(body['yaw'])
-        return dict(vx=vx_cmd, z=z_ref, pitch=_pitch_ref, hdg=hdg)
+        return dict(vx=vx_cmd, z=z_ref, pitch=_pitch_ref, hdg=hdg,
+                    wz_geo=np.array(_z_geo, dtype=np.float64))
 
     # ---------------- NMPC：SRBD 接触力优化（20Hz）----------------
     def _nmpc(self, body, ref, swing, wheel_xyz, dt_nmpc, terrain_h=None):
@@ -283,18 +297,20 @@ class NmpcWbc:
         for i in range(4):
             if swing[i] > 0.5 and i in (0, 1):
                 A_m[:, 3*i:3*i+3] = 0.0
-        nk = 30  # M1ggg: [F(12),a(3),p(3),v(3),alpha(3),omega(3),theta(3)]
+        nk = 34  # M1ggg+ooo: [F(12),a(3),p(3),v(3),alpha(3),omega(3),theta(3),wv(4)]
         n = nk * K
         P = np.zeros((n, n))
         q = np.zeros(n)
         pos0 = np.asarray(body['pos'], dtype=np.float64)
         vel0 = np.asarray(body['vel'], dtype=np.float64)
-        _vz_b = float(np.dot(R[:, 2], body['omega']))
+        # M1www: 抗发射用线性垂直速度（原用角速度
+        # =yaw 率，z 阻尼和抗发射全部错位）
+        _vz_b = float(np.dot(R[:, 2], body['vel']))
         _zlo = -10.0 if _vz_b > 0.5 else -4.0
         _any_sw = float(np.max(swing)) > 0.5
         a_des = np.zeros(3)
         a_des[2] = float(np.clip(kp_z * (ref['z'] - pos0[2])
-                                - kd_z * float(np.dot(R[:, 2], body['omega'])),
+                                - kd_z * _vz_b,
                                 _zlo, 8.0))
         v_w0 = fwd_w * body['vx']
         a_des[0:2] = kp_vx * (ref['vx'] * fwd_w[0:2] - v_w0[0:2])
@@ -322,6 +338,28 @@ class NmpcWbc:
             q[p_idx] += -2.0 * w_p * p_free
             P[np.ix_(v_idx, v_idx)] += 2.0 * w_v * np.eye(3)
             q[v_idx] += -2.0 * w_v * vel0
+            # M1ooo: wheel Pfaffian - wv(4) linear wheel speed per knot
+            # stance: (wv_i - fwd_w.v)^2 rolling consistency; swing: light
+            # tracking of commanded vx; result feeds WBC wheel PID ref
+            w_wheel = float(os.environ.get('S10_NMPC_WWHEEL', '30.0'))
+            _wv_idx = [f0+30, f0+31, f0+32, f0+33]
+            for _wi in range(4):
+                if swing[_wi] > 0.5:
+                    P[_wv_idx[_wi], _wv_idx[_wi]] += 2.0 * 0.1 * w_wheel
+                    q[_wv_idx[_wi]] += -2.0 * 0.1 * w_wheel * ref['vx']
+                else:
+                    P[_wv_idx[_wi], _wv_idx[_wi]] += 2.0 * w_wheel * 1.02
+                    P[np.ix_(v_idx, v_idx)] += 2.0 * w_wheel * (np.outer(fwd_w, fwd_w) + 0.02 * np.eye(3))
+                    for _j in range(3):
+                        P[_wv_idx[_wi], f0+18+_j] -= 2.0 * w_wheel * fwd_w[_j]
+                        P[f0+18+_j, _wv_idx[_wi]] -= 2.0 * w_wheel * fwd_w[_j]
+            if k >= 1:
+                f1w = nk * (k-1)
+                for _wi in range(4):
+                    P[_wv_idx[_wi], _wv_idx[_wi]] += 2.0 * 0.2 * w_wheel
+                    P[f1w+30+_wi, f1w+30+_wi] += 2.0 * 0.2 * w_wheel
+                    P[f1w+30+_wi, _wv_idx[_wi]] -= 2.0 * 0.2 * w_wheel
+                    P[_wv_idx[_wi], f1w+30+_wi] -= 2.0 * 0.2 * w_wheel
             if k >= 1:
                 f1 = nk * (k-1)
                 P[np.ix_(Fs, Fs)] += 2.0 * w_s * np.eye(12)
@@ -402,17 +440,27 @@ class NmpcWbc:
                 rows.append(e); ub.append(1e9)
             e = np.zeros(n)
             e[f0+14] = 1.0
-            rows.append(e); ub.append(8.0)
+            # M1www: 快速上升时上界设 0（原恒 8，
+            # QP 满足上推力→腿泵高实测）
+            _az_max = 0.0 if _vz_b > 0.5 else 8.0
+            rows.append(e); ub.append(_az_max)
             e = np.zeros(n)
             e[f0+14] = -1.0
             rows.append(e); ub.append(-_zlo)
+            for _wi in range(4):
+                e = np.zeros(n)
+                e[f0+30+_wi] = 1.0
+                rows.append(e); ub.append(12.0)
+                e = np.zeros(n)
+                e[f0+30+_wi] = -1.0
+                rows.append(e); ub.append(12.0)
         A = np.vstack([Ae] + rows)
         l = np.hstack([be] + [-1e9] * len(rows))
         u = np.hstack([be] + ub)
         for k in range(K):
             f0 = nk * k
             for i in range(4):
-                base = neq + 38 * k + 24 + 3 * i
+                base = neq + 46 * k + 24 + 3 * i
                 if swing[i] > 0.5:
                     if i in (0, 1):
                         l[base+0] = 0.0; u[base+0] = 0.0
@@ -450,12 +498,14 @@ class NmpcWbc:
             x = np.asarray(res.x).reshape(n)
             F = x[0:12].reshape(4, 3)
             a = x[12:15]
+            self._wv_des = np.clip(x[30:34], -12.0, 12.0)
             if os.environ.get('S10_NMPC_DEBUG', '0') == '1':
-                print('[NMPC] t=%.2f F=%s a=%s ades=%s Mdes=%s st=%s dt=%.1fms K=%d'
+                print('[NMPC] t=%.2f F=%s a=%s ades=%s Mdes=%s wv=%s st=%s dt=%.1fms K=%d'
                       % (self._t, np.round(F, 1).tolist(),
                          np.round(a, 2).tolist(),
                          np.round(a_des, 2).tolist(),
                          np.round(M_des, 1).tolist(),
+                         np.round(self._wv_des, 2).tolist(),
                          res.info.status,
                          1e3 * (_t.perf_counter() - _t0), K), flush=True)
             return F, a
@@ -615,8 +665,12 @@ class NmpcWbc:
                 f_s = np.array([fx, -fz_up])   # 矢状面 (x, z_down)
                 # v1068: 地形阻抗（VMC 同款 kp_h=300）——NMPC F 在过渡态
                 # 太小、姿态正则被压过 → 腿泵高发射；阻抗按轮高误差强压
-                _pz_d = float(terrain_h[leg]) + r - float(os.environ.get(
-                    'S10_NMPC_PRESS', '0.005'))
+                # M1yyy: 质地阻抗用几何轮心目标（原
+                # KIN_TERR 自证 terr=wheel_z-r → _pz_d≈wheel_z
+                # → 阻抗/过伸回拉全部失效→
+                # riser 棱把轮顶过髋泵高实测）
+                _pz_d = float(ref.get('wz_geo', np.zeros(4))[leg]) - float(
+                    os.environ.get('S10_NMPC_PRESS', '0.005'))
                 _dz_h = _pz_d - float(wheel_xyz[leg, 2])
                 _fz_imp = float(os.environ.get(
                     'S10_NMPC_KPH', '300.0')) * _dz_h
@@ -678,6 +732,7 @@ class NmpcWbc:
         # F_des 前馈的推力受摩擦锥/规划约束，不会发射。
         _dfx = -2.0
         _om_cmd = float(cmd.get('omega', 0.0))
+        _wv_des = getattr(self, '_wv_des', None)
         _any_sw = float(np.max(swing)) > 0.5
         fwd_w = R @ np.array([1.0, 0.0, 0.0])
         for leg in range(4):
@@ -686,15 +741,24 @@ class NmpcWbc:
             _sd = -1.0 if leg in (0, 2) else 1.0
             F_w = np.asarray(F_des[leg], dtype=np.float64)
             fx_fb = float(np.dot(F_w, fwd_w))
-            _tw = -r * fx_fb
+            # M1qqq: 摆腿轮不吃 F_des 前馈（NMPC 20Hz
+            # 与 WBC 200Hz 的 swing 状态不一致时，全支撑
+            # 解的后退 F_x 会通过 -r*fx_fb 进入摆腿轮
+            # → 剑至滑退实测；摆腿轮只留微驱）
             if swing[leg] > 0.5:
                 # 摆腿（贴面滚爬）：保留前向微驱
-                _tw += -0.5 * 12.0 * (self._vx_f - v_wheel)
+                _tw = -0.5 * 12.0 * (self._vx_f - v_wheel)
             else:
-                _vref = self._vx_f
+                _tw = -r * fx_fb
+                if _wv_des is not None:
+                    # M1qqq: 模拟模式轮速参考不可以后退
+                    # （滑退时 NMPC 规划负轮速→后轮制动→加剧滑退）
+                    _vref = max(float(_wv_des[leg]), 0.3)
+                else:
+                    _vref = self._vx_f
                 if not _any_sw:
-                    _vref = self._vx_f + _sd * _om_cmd * self.track_half
-                # vx PID 微调（权重 0.3）
+                    _vref += _sd * _om_cmd * self.track_half
+                # vx PID 微调（参考=NMPC Pfaffian 轮速）
                 _tw += -0.3 * 12.0 * (_vref - v_wheel)
                 # 防倒转下限（小）
                 _tw = min(float(_tw), _dfx)
@@ -747,6 +811,12 @@ class NmpcWbc:
         self._vx_f += (float(cmd.get('vx', 0.0)) - self._vx_f) * min(1.0, dt / _vt)
         # ModeSequence（布尔抬升轮）
         swing = self._mode_sequence(body['pos'], fwd, wheel_xyz)
+        # M1qqq: swing 状态变化时强制重解 NMPC，
+        # 避免 WBC 用旧 swing 的 F_des（前支撑解后轮
+        # F_z 无 95N 下限 → 推力弱滑退实测）
+        if not hasattr(self, '_sw_prev') or np.any(swing != self._sw_prev):
+            self._last_nmpc_t = -1e9
+            self._sw_prev = np.array(swing, dtype=np.float64)
         # 轨迹层参考
         ref = self._ref_traj(body, self._vx_f, float(cmd.get('omega', 0.0)),
                              terrain_h)
