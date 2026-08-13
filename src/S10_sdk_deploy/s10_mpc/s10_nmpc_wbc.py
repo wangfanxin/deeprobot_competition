@@ -824,8 +824,10 @@ class NmpcWbc:
                     _vref = max(float(_wv_des[leg]), 0.8 * self._vx_f)
                 else:
                     _vref = self._vx_f
-                if not _any_sw:
-                    _vref += _sd * _om_cmd * self.track_half
+                # M1yyy4: 摆动期 stance 轮恢复导航 om 差速（登顶
+                # 停滞时 yaw 权威优先于推力；原冻结→
+                # yaw 缓慢漂移 1.25→2.87 实测）
+                _vref += _sd * _om_cmd * self.track_half
                 # vx PID 微调（参考=NMPC Pfaffian 轮速）
                 _tw += -0.3 * 12.0 * (_vref - v_wheel)
                 # 防倒转下限（小）
