@@ -754,7 +754,9 @@ class NmpcWbc:
                 if _wv_des is not None:
                     # M1qqq: 模拟模式轮速参考不可以后退
                     # （滑退时 NMPC 规划负轮速→后轮制动→加剧滑退）
-                    _vref = max(float(_wv_des[leg]), 0.3)
+                    # M1lll: 下限跟进指令速度 0.8*vx_f（原固定 0.3
+                    # → 停滞时轮转 1.4 但参考 0.3 →后轮制动实测）
+                    _vref = max(float(_wv_des[leg]), 0.8 * self._vx_f)
                 else:
                     _vref = self._vx_f
                 if not _any_sw:
@@ -763,14 +765,16 @@ class NmpcWbc:
                 _tw += -0.3 * 12.0 * (_vref - v_wheel)
                 # 防倒转下限（小）
                 _tw = min(float(_tw), _dfx)
-                # yaw 率阻尼 + 航向误差（轮差速）
-                _tw += _sd * float(qvel[5]) * 8.0 * self.track_half
-                try:
-                    _hdg_e = float(getattr(self.stair, '_hdg_err', 0.0))
-                    _ky = 8.0
-                    _tw -= _sd * _hdg_e * _ky * self.track_half
-                except Exception:
-                    pass
+                # 摆动期冻结轮 yaw 修正（用户原案：
+                # 轮失权时专心推力，yaw 交给腿）
+                if not _any_sw:
+                    _tw += _sd * float(qvel[5]) * 8.0 * self.track_half
+                    try:
+                        _hdg_e = float(getattr(self.stair, '_hdg_err', 0.0))
+                        _ky = 8.0
+                        _tw -= _sd * _hdg_e * _ky * self.track_half
+                    except Exception:
+                        pass
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(_tw, -13.5, 13.5))
         tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
         tau[WHEEL_Q_IDX] = np.clip(tau[WHEEL_Q_IDX], -13.5, 13.5)
