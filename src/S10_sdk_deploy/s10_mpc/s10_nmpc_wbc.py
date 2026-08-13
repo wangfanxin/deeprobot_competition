@@ -393,11 +393,12 @@ class NmpcWbc:
                 _z_bot = float(_top - _dhv)
                 _d_w = _best_d
                 _rr = self.fk.r
-                _sw_win3 = 0.50 if leg in (2, 3) else self.swing_d
-                if leg in (2, 3):
-                    _t = float(np.clip((_d_w + _rr) / max(_rr, 1e-3), 0.0, 1.0))
-                else:
-                    _t = float(np.clip((_d_w + _sw_win3) / max(_sw_win3, 1e-3), 0.0, 1.0))
+                # M1arc2 (2026-08-13): FRONT swing-wheel target on the face
+                # arc (last R) like the rear. The window smoothstep lifted
+                # the NMPC target from -0.35 -> the WBC wheel unloaded early
+                # -> drive lost -> stall at the face (front held 0.61 for
+                # 5s). The wheel must drive until d > -R, then lift.
+                _t = float(np.clip((_d_w + _rr) / max(_rr, 1e-3), 0.0, 1.0))
                 _ss = _t * _t * (3.0 - 2.0 * _t)
                 _zc = _z_bot + _rr + _dhv * _ss
                 _wz_sw_tgt[leg] = min(_zc, _top + _rr + 0.005)
@@ -680,15 +681,16 @@ class NmpcWbc:
                     # v2026(M1t): 后轴贴面弧窗 d∈[-R,0]（原 0.3 斜坡在棱前
                     # 0.245m 完成全抬→后轮提前悬空→登顶发射；单点耦合失败，
                     # M1s 前轮已稳定，后轴独立修复）
-                    if leg in (2, 3):
-                        _t = float(np.clip(
-                            (_d_w + self.fk.r) / max(self.fk.r, 1e-3),
-                            0.0, 1.0))
-                    else:
-                        _sw_win2 = 0.50 if leg in (2, 3) else self.swing_d
-                        _t = float(np.clip(
-                            (_d_w + _sw_win2) / max(_sw_win2, 1e-3),
-                            0.0, 1.0))
+                    # M1arc2 (2026-08-13): FRONT swing target also on the
+                    # face arc (last R). The window smoothstep (from -0.35)
+                    # lifted the target while the wheel was still rolling the
+                    # riser1 top -> wheel unloaded early -> drive lost ->
+                    # stall at the face (front held 0.61 for 5s). The rear
+                    # already uses the face arc; the front must too: wheels
+                    # drive until d > -R, then lift over the face.
+                    _t = float(np.clip(
+                        (_d_w + self.fk.r) / max(self.fk.r, 1e-3),
+                        0.0, 1.0))
                     _ss = _t * _t * (3.0 - 2.0 * _t)
                     _zc = _z_bot + r + _dhv * _ss
                     swing_tgt_z[leg] = min(_zc, _top + r + 0.005)
@@ -709,9 +711,15 @@ class NmpcWbc:
             # to the stance branch, the force-based hold never pulled it
             # back to the target -> front leg flipped up (L0 0.90/pz -0.28)
             # and the front swing never exited -> both axles swung.
+            # M1axl (2026-08-13): the FRONT swing control engages BOTH front
+            # legs together (axle-mean wheel z). Per-leg engagement lifted
+            # one wheel first (L0 0.73 / L1 0.62) -> roll -1.48. The rear
+            # stays per-leg (its wheels are farther apart in phase).
+            _wz_ctl = (float(np.mean(wheel_xyz[0:2, 2]))
+                       if leg in (0, 1) else float(wheel_xyz[leg, 2]))
             if sl > 0.5 and leg in swing_tgt_z and (
-                    float(swing_tgt_z[leg]) > float(wheel_xyz[leg, 2]) + 0.005
-                    or float(wheel_xyz[leg, 2])
+                    float(swing_tgt_z[leg]) > _wz_ctl + 0.005
+                    or _wz_ctl
                     > float(terrain_h[leg]) + r + 0.005):
                 # 摆腿（贴面爬升）：位置 PD + 小支撑力（F_des 的 F_z 部分）
                 _wzs = getattr(self, '_wz_sw_des', None)
