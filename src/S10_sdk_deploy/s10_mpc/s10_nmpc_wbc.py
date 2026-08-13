@@ -249,8 +249,8 @@ class NmpcWbc:
                 al_des[1] += _ff_sw
         al_des[2] = kp_y * (ref['hdg'] - body['yaw']) \
             - kd_y * float(np.dot(R[:, 2], body['omega']))
-        al_des[0] = -8.0 * body['roll']
-        al_des[0] -= 6.0 * float(np.dot(R[:, 0], body['omega']))
+        al_des[0] = -15.0 * body['roll']
+        al_des[0] -= 10.0 * float(np.dot(R[:, 0], body['omega']))
         if float(np.max(swing)) > 0.5:
             _al_lim = 30.0
             al_des[1] = float(np.clip(al_des[1], -_al_lim, _al_lim))
@@ -448,7 +448,10 @@ class NmpcWbc:
                     if _dhv <= 0.085:
                         continue
                     _dd = float(np.dot(_ax_xy - _rp, _tng))
-                    if -self.swing_d < _dd < 0.05 and abs(_dd) < abs(_best_d):
+                    # v2026(M1u): 目标窗负侧 -0.35->-0.45——触发用前导轮
+                    # (±0.181 偏移)，目标用轴均值，均值常比前导轮远 0.1m；
+                    # 窗不匹配→swing 有标志无目标→腿悬空无控制→登顶发射
+                    if -0.45 < _dd < 0.05 and abs(_dd) < abs(_best_d):
                         _best_d, _best = _dd, (_rp, _tng, _dhv, _top)
                 if _best is not None:
                     (_rp, _tng, _dhv, _top) = _best
@@ -460,9 +463,17 @@ class NmpcWbc:
                     # v1165: ???? 0.3??? 10cm ?????0.15 ?????
                     # ?????0.7 ???body ? 0.75??0.3 ?? v1159 ?
                     # body 0.86 ???????
-                    _t = float(np.clip(
-                        (_d_w + self.swing_d) / (0.3 * self.swing_d),
-                        0.0, 1.0))
+                    # v2026(M1t): 后轴贴面弧窗 d∈[-R,0]（原 0.3 斜坡在棱前
+                    # 0.245m 完成全抬→后轮提前悬空→登顶发射；单点耦合失败，
+                    # M1s 前轮已稳定，后轴独立修复）
+                    if leg in (2, 3):
+                        _t = float(np.clip(
+                            (_d_w + self.fk.r) / max(self.fk.r, 1e-3),
+                            0.0, 1.0))
+                    else:
+                        _t = float(np.clip(
+                            (_d_w + self.swing_d) / (0.3 * self.swing_d),
+                            0.0, 1.0))
                     _ss = _t * _t * (3.0 - 2.0 * _t)
                     _zc = _z_bot + r + _dhv * _ss
                     swing_tgt_z[leg] = min(_zc, _top + r + 0.005)
