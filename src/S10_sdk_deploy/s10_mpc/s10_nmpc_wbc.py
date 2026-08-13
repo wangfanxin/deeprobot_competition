@@ -984,11 +984,18 @@ class NmpcWbc:
         r2 = min(xd * xd + zd_d * zd_d, (L1 + L2) ** 2 - 1e-6)
         c2 = float(np.clip((r2 - L1 * L1 - L2 * L2) / (2.0 * L1 * L2),
                            -1.0, 1.0))
-        q2n = float(np.arccos(c2))
-        # v1059: 按腿分镜像分支（后腿 q2 负）——原恒正，后腿 IK 解错
-        # 位形、摆腿把轮甩过头（轮 0.99 vs 目标 0.75 实测）
+        _q2p = float(np.arccos(c2))
+        _q2m = -_q2p
+        # M1ik (2026-08-13): pick the branch nearest to the current q2
+        # (continuous). The old fixed branch (positive, mirrored negative for
+        # rear) jumped 1.5+ rad when the leg was in the other branch ->
+        # saturated torque -> wheel whip (L3 q2 -0.14 -> -1.90, t2 -207).
+        # Nearest-branch keeps the target continuous; mirror preference
+        # (front +, rear -) only breaks ties.
         if leg is not None and leg in (2, 3):
-            q2n = -q2n
+            q2n = _q2m if abs(_q2m - q2) <= abs(_q2p - q2) else _q2p
+        else:
+            q2n = _q2p if abs(_q2p - q2) <= abs(_q2m - q2) else _q2m
         q1n = float(np.arctan2(xd, zd_d) - np.arctan2(
             L2 * np.sin(q2n), L1 + L2 * np.cos(q2n)))
         return q1n, q2n
