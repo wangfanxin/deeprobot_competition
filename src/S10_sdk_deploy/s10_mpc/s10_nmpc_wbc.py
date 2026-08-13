@@ -677,8 +677,16 @@ class NmpcWbc:
             hip_w = body['pos'] + R @ np.array(
                 [LEG_ATTACH[leg][0], LEG_ATTACH[leg][1], 0.0])
             sl = swing[leg]
-            if sl > 0.5 and leg in swing_tgt_z and \
-                    float(swing_tgt_z[leg]) > float(wheel_xyz[leg, 2]) + 0.005:
+            # M1hold2: swing control also engages when the wheel is
+            # AIRBORNE above its terrain (overshoot case). The old
+            # target>wheel clause skipped it -> an overshooting wheel fell
+            # to the stance branch, the force-based hold never pulled it
+            # back to the target -> front leg flipped up (L0 0.90/pz -0.28)
+            # and the front swing never exited -> both axles swung.
+            if sl > 0.5 and leg in swing_tgt_z and (
+                    float(swing_tgt_z[leg]) > float(wheel_xyz[leg, 2]) + 0.005
+                    or float(wheel_xyz[leg, 2])
+                    > float(terrain_h[leg]) + r + 0.005):
                 # 摆腿（贴面爬升）：位置 PD + 小支撑力（F_des 的 F_z 部分）
                 _wzs = getattr(self, '_wz_sw_des', None)
                 wz_t = float(_wzs[leg]) if (_wzs is not None) else swing_tgt_z[leg]
@@ -777,9 +785,16 @@ class NmpcWbc:
                 # the _hover unload -> airborne wheels get whipped upward ->
                 # whole robot launches (t=8.5 fn=[0,0,0,0], wheels 0.80 in
                 # air). Only lift legs whose wheel is still near its terrain.
-                _pos_lift = (_fr_sw or _wz_f > 0.75
-                             or float(body['pos'][2])
-                             < float(ref.get('z', 0.8)) - 0.06) \
+                # M1seq (2026-08-13): while any wheel swings, the stance axle
+                # must stay FIRM and drive (pos_lift on folded rear legs hops
+                # them -> no traction -> robot pinned at the riser face, front
+                # 4cm short of the edge). Lift only once the front wheels are
+                # actually near the top (_wz_f > 0.72); the body-low clause
+                # applies only with no swing active (approach phase).
+                _pos_lift = (_wz_f > 0.72
+                             or (float(np.max(swing)) <= 0.5
+                                 and float(body['pos'][2])
+                                 < float(ref.get('z', 0.8)) - 0.06)) \
                     and swing[leg] <= 0.5 \
                     and float(wheel_xyz[leg, 2]) \
                     <= float(terrain_h[leg]) + r + 0.05
