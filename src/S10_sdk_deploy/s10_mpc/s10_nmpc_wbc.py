@@ -199,7 +199,7 @@ class NmpcWbc:
             _bz_ok = float(body_pos[2]) > float(_top) + r - 0.10
             if self._sp[leg] <= 0.0:
                 _below_top = _wz < float(_top) + r - 0.02
-                _sw_win = 0.75 if leg in (2, 3) else 0.35
+                _sw_win = 0.75 if leg in (2, 3) else 0.50
                 _d_use = (0.5 * (_front_d[0] + _front_d[1])
                           if leg in (0, 1) else _d)
                 if -_sw_win < _d_use < 0.05 and _bz_ok and _below_top:
@@ -761,8 +761,15 @@ class NmpcWbc:
                 # legs sit at px~0.3 (horizontal) -> J^T maps the vertical
                 # lift into a whip (L3 0.87 overshoot, side lean -0.6).
                 # Gentler rear lift; the wheels climb by rolling + assist.
-                _klift = 50.0 if leg in (2, 3) else 100.0
-                _fs = np.array([0.0, _wz_e * _klift - 25.0 * _wz_dot])
+                # M1osd (2026-08-13): overshoot damping. kf 300 lifts fast
+                # but the wheel crosses the target with momentum -> over-
+                # extend (L0 0.90) -> launch; kf 100 lifts too slow -> the
+                # wheel hits the riser face under-lifted -> contact spin.
+                # Strong damping when the wheel is ABOVE the target stops
+                # the overshoot, so kf 300 becomes self-stabilizing.
+                _klift = 50.0 if leg in (2, 3) else 300.0
+                _kd_lift = 25.0 + 120.0 * float(_wz_e > 0.005)
+                _fs = np.array([0.0, _wz_e * _klift - _kd_lift * _wz_dot])
                 _Jf = self.fk.jac(q1, q2)
                 _th1f, _th2f = _Jf.T @ _fs
                 tau[LEG_CTRL_IDX[b + 1]] = float(_th1f) - 8.0 * dq1
