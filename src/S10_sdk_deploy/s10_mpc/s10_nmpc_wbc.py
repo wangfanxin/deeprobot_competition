@@ -827,13 +827,7 @@ class NmpcWbc:
                     F_w = np.zeros(3)
                 f_b = R.T @ F_w
                 fx, fy, fz_up = float(f_b[0]), float(f_b[1]), float(f_b[2])
-                # M1dec (2026-08-13): legs transmit VERTICAL load only.
-                # Feeding the horizontal traction through J^T kept extending
-                # every leg forward (px->0.3, horizontal posture) where any
-                # force control whips the wheels (throw migrated L3->L0->L1).
-                # The wheels deliver fx via the Pfaffian drive; the legs keep
-                # the squat posture and hold the body.
-                f_s = np.array([0.0, -fz_up])   # 矢状面 (x, z_down)
+                f_s = np.array([fx, -fz_up])   # 矢状面 (x, z_down)
                 # v1068: 地形阻抗（VMC 同款 kp_h=300）——NMPC F 在过渡态
                 # 太小、姿态正则被压过 → 腿泵高发射；阻抗按轮高误差强压
                 # M1yyy: 质地阻抗用几何轮心目标（原
