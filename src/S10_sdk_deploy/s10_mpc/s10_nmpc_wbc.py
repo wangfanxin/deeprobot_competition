@@ -652,7 +652,10 @@ class NmpcWbc:
                 _rr_sw = float(np.max(swing[2:4])) > 0.5
                 _wz_f = float(np.mean(wheel_xyz[0:2, 2]))
                 # M1qqq3: 逐腿判断（该后腿不摆动且前轮登顶）
-                _pos_lift = (_fr_sw or _wz_f > 0.75) and swing[leg] <= 0.5 and leg in (2, 3)
+                # M1uuu3: 所有 stance 腿参与抬 body（前腿在 riser2 顶
+                # drop 0.19 可达，能撑 body 到 0.94+；原只后腿抬→
+                # 后腿 drop 0.28+ 时 J^T 变弱推不动停滞实测）
+                _pos_lift = (_fr_sw or _wz_f > 0.75) and swing[leg] <= 0.5
                 # 支撑腿：J^T·(R^T·F_des) 力分配——F_des 是作用在 body 的
                 # 接触力（向上），与 VMC 约定一致（f_b=R^T·F，f_sag=[fx,-fz]）
                 _qp1 = -1.16 if leg in (0, 1) else 1.16
