@@ -647,22 +647,14 @@ class NmpcWbc:
                 # v1075: 后轴 SWING 低增益（少抬多滚）——前轮已证明贴面滚爬
                 # 能越阶；后轴强位置引导会把 body 顶起俯仰 → 前腿上折。
                 # 后轴 KP 40 让轮主要靠 F_z≥46 滚上立面，俯仰小
-                _kp_sw = float(os.environ.get('S10_NMPC_KP_SW', '120.0'))
-                if leg in (2, 3):
-                    _kp_sw = float(os.environ.get('S10_NMPC_KP_SW_R', '40.0'))
-                kp = _kp_sw
-                kd = float(os.environ.get('S10_NMPC_KD_SW', '6.0'))
-                tau[LEG_CTRL_IDX[b + 1]] = kp * (q1t - q1) - kd * dq1
-                tau[LEG_CTRL_IDX[b + 2]] = kp * (q2t - q2) - kd * dq2
-                # v1067: 过伸回压——轮高于目标时经 J^T 直接下压
-                # （位置基 v1017 同款；否则轮悬 1.1 泵高发射实测）
-                _dz_ov = float(wheel_xyz[leg, 2] - wz_t - 0.02)
-                if _dz_ov > 0.0:
-                    _fs_ov = np.array([0.0, _dz_ov * 300.0])
-                    _J = self.fk.jac(q1, q2)
-                    _th1o, _th2o = _J.T @ _fs_ov
-                    tau[LEG_CTRL_IDX[b + 1]] += float(_th1o)
-                    tau[LEG_CTRL_IDX[b + 2]] += float(_th2o)
+                # M1fff4: 力基摆动保持——轮在计划高度由 J^T 力钉住
+                # （位置 PD 欠阻尼过冲；力控只在轮高偏离计划时作用）
+                _wz_e = float(wheel_xyz[leg, 2]) - wz_t
+                _fs = np.array([0.0, _wz_e * 200.0])
+                _Jf = self.fk.jac(q1, q2)
+                _th1f, _th2f = _Jf.T @ _fs
+                tau[LEG_CTRL_IDX[b + 1]] = float(_th1f) - 8.0 * dq1
+                tau[LEG_CTRL_IDX[b + 2]] = float(_th2f) - 8.0 * dq2
                 # 贴面：摆腿轮保留小前驱（滚上立面），非自由
                 F_w = np.asarray(F_des[leg], dtype=np.float64)
                 # v1082: ??/HOVER ? hipx ?? 0?????????????
