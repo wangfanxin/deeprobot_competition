@@ -638,8 +638,17 @@ class NmpcWbc:
             import time as _t
             _t0 = _t.perf_counter()
             res = prob.solve()
+            if res.info.status in ('primal infeasible',
+                                   'dual infeasible'):
+                _Ffb = getattr(self, '_F_last_ok', None)
+                if _Ffb is None:
+                    _Ffb = np.array([[0.0, 0.0, self.m * self.g / 4.0]] * 4)
+                self._wv_des = getattr(self, '_wv_des', np.zeros(4))
+                self._wz_sw_des = getattr(self, '_wz_sw_des', np.zeros(4))
+                return _Ffb, a_des
             x = np.asarray(res.x).reshape(n)
             F = x[0:12].reshape(4, 3)
+            self._F_last_ok = F.copy()
             a = x[12:15]
             self._wv_des = np.clip(x[30:34], -12.0, 12.0)
             self._wz_sw_des = np.clip(x[34:38], 0.0, 2.5)
