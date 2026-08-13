@@ -529,6 +529,16 @@ class NmpcWbc:
                 e = np.zeros(n)
                 e[f0+3*i+2] = -1.0
                 rows.append(e); ub.append(0.0)
+                if swing[i] <= 0.5:
+                    # M1fwd2 (2026-08-13): stance legs plan NO backward
+                    # F_x (>=0). The QP realized the pitch moment with the
+                    # rear backward F_x, the WBC drops it (max(fx,0)) ->
+                    # plan/execution mismatch -> roll/yaw uncontrolled ->
+                    # right wheels thrown. Planning F_x>=0 keeps the plan
+                    # consistent; the pitch moment comes from the F_z.
+                    e = np.zeros(n)
+                    e[f0+3*i+0] = -1.0
+                    rows.append(e); ub.append(0.0)
                 for j in range(2):
                     e = np.zeros(n)
                     e[f0+3*i+j] = 1.0; e[f0+3*i+2] = -self.mu
