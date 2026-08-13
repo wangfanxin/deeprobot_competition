@@ -903,20 +903,25 @@ class NmpcWbc:
                 if _pos_lift:
                     # 位置控制抬 body：目标钳到 0.94（后腿可达 0.96）
                     # + kp 120 防过冲（body 过冲 1.12 > 0.96 后轮折叠实测）
-                    # M1ph2c: front legs on the riser top keep their forward
-                    # reach (xd=0 pulls the wheel back under the hip from the
-                    # climb posture -> closed-form IK branch jump -> front
-                    # wheel whipped 0.78->0.98). Approach (front not up)
-                    # keeps xd=0 (vertical lift, validated).
+                    # M1reach (2026-08-13): keep the wheel's forward reach
+                    # and clamp the drop to the REACHABLE range
+                    # sqrt(L^2 - px^2). xd=0 pulled the wheels back (robot
+                    # stalled at the riser face); drop 0.30 at px 0.3 is
+                    # unreachable (0.42 > leg 0.36) -> saturated bang-bang,
+                    # body rise 3.5cm/s too slow. Continuous IK (M1ik)
+                    # keeps the target smooth.
                     _zr = min(float(ref.get('z', 0.8)), 0.94)
-                    _drop = float(np.clip(_zr - float(wheel_xyz[leg, 2]), 0.10, 0.30))
-                    if _wz_f > 0.72 and leg in (0, 1):
-                        _relx_l = float(np.dot(
-                            wheel_xyz[leg, :2] - hip_w[:2], R[:, 0][:2]))
-                        _q1t, _q2t = self._ik(
-                            max(_relx_l, 0.0), -_drop, q1, q2, leg=leg)
-                    else:
-                        _q1t, _q2t = self._ik(0.0, -_drop, q1, q2, leg=leg)
+                    _relx_l = float(np.dot(
+                        wheel_xyz[leg, :2] - hip_w[:2], R[:, 0][:2]))
+                    _relx_l = float(np.clip(_relx_l, 0.0, 0.26))
+                    _drop = float(np.clip(
+                        _zr - float(wheel_xyz[leg, 2]), 0.10, 0.30))
+                    _reach = float(np.sqrt(max(
+                        (self.fk.L1 + self.fk.L2) ** 2
+                        - _relx_l ** 2 - 1e-3, 0.03)))
+                    _drop = float(min(_drop, _reach - 0.01))
+                    _q1t, _q2t = self._ik(
+                        _relx_l, -_drop, q1, q2, leg=leg)
                     # M1zzz4: 抬升腿 kd 20->40（衰减 body 过冲发射）
                     tau[LEG_CTRL_IDX[b+1]] = 120.0 * (_q1t - q1) - 60.0 * dq1
                     tau[LEG_CTRL_IDX[b+2]] = 120.0 * (_q2t - q2) - 60.0 * dq2
