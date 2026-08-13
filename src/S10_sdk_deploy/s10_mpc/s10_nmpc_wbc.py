@@ -128,7 +128,10 @@ class NmpcWbc:
             _bz_ok = float(body_pos[2]) > float(_top) + r - 0.10
             if self._sp[leg] <= 0.0:
                 _below_top = _wz < float(_top) + r - 0.02
-                if -self.swing_d < _d < 0.05 and _bz_ok and _below_top:
+                # M1eee4: 前后轴独立摆动窗（前 0.35 防过冲，
+                # 后 0.50 防折叠；共用 0.42 双败实测）
+                _sw_win = 0.50 if leg in (2, 3) else 0.35
+                if -_sw_win < _d < 0.05 and _bz_ok and _below_top:
                     self._sp[leg] = 1.0
                     self._sp_top[leg] = float(_top)
                     self._sw_t0[leg] = self._t
@@ -314,10 +317,11 @@ class NmpcWbc:
                 _z_bot = float(_top - _dhv)
                 _d_w = _best_d
                 _rr = self.fk.r
+                _sw_win3 = 0.50 if leg in (2, 3) else self.swing_d
                 if leg in (2, 3):
                     _t = float(np.clip((_d_w + _rr) / max(_rr, 1e-3), 0.0, 1.0))
                 else:
-                    _t = float(np.clip((_d_w + self.swing_d) / max(self.swing_d, 1e-3), 0.0, 1.0))
+                    _t = float(np.clip((_d_w + _sw_win3) / max(_sw_win3, 1e-3), 0.0, 1.0))
                 _ss = _t * _t * (3.0 - 2.0 * _t)
                 _zc = _z_bot + _rr + _dhv * _ss
                 _wz_sw_tgt[leg] = min(_zc, _top + _rr + 0.005)
@@ -591,12 +595,9 @@ class NmpcWbc:
                             (_d_w + self.fk.r) / max(self.fk.r, 1e-3),
                             0.0, 1.0))
                     else:
-                        # M1lll3: 前轮摆腿全窗贴面弧（原 0.3
-                        # 斜坡提前 0.245m 抬升→轮在台面顶悬空
-                        # 失去牵引→无法推进停滞实测；全窗
-                        # d=0 才到顶，轮贴面滚到棱前才抬）
+                        _sw_win2 = 0.50 if leg in (2, 3) else self.swing_d
                         _t = float(np.clip(
-                            (_d_w + self.swing_d) / max(self.swing_d, 1e-3),
+                            (_d_w + _sw_win2) / max(_sw_win2, 1e-3),
                             0.0, 1.0))
                     _ss = _t * _t * (3.0 - 2.0 * _t)
                     _zc = _z_bot + r + _dhv * _ss
