@@ -750,6 +750,15 @@ class NmpcWbc:
                 relb[0] = max(float(relb[0]), 0.0)
                 _lo = float(os.environ.get('S10_NMPC_REACH', '-0.34'))
                 _rz = float(np.clip(relb[2], _lo, -0.02))
+                # M1rch (2026-08-13): clamp the swing drop to the reach at
+                # the current forward reach. (px 0.3, drop 0.34) is
+                # unreachable (0.45 > leg 0.36) -> saturated PD -> rear
+                # throw (L2 1.26). The wheel must come back under the hip as
+                # the target rises.
+                _Lmx = self.fk.L1 + self.fk.L2
+                _pz_mx = float(np.sqrt(max(
+                    _Lmx ** 2 - float(relb[0]) ** 2 - 1e-3, 0.02)))
+                _rz = float(max(_rz, -(_pz_mx - 0.01)))
                 q1t, q2t = self._ik(float(relb[0]), _rz, q1, q2, leg=leg)
                 # v1075: 后轴 SWING 低增益（少抬多滚）——前轮已证明贴面滚爬
                 # 能越阶；后轴强位置引导会把 body 顶起俯仰 → 前腿上折。
@@ -769,19 +778,16 @@ class NmpcWbc:
                 # legs sit at px~0.3 (horizontal) -> J^T maps the vertical
                 # lift into a whip (L3 0.87 overshoot, side lean -0.6).
                 # Gentler rear lift; the wheels climb by rolling + assist.
-                # M1osd (2026-08-13): overshoot damping. kf 300 lifts fast
-                # but the wheel crosses the target with momentum -> over-
-                # extend (L0 0.90) -> launch; kf 100 lifts too slow -> the
-                # wheel hits the riser face under-lifted -> contact spin.
-                # Strong damping when the wheel is ABOVE the target stops
-                # the overshoot, so kf 300 becomes self-stabilizing.
-                _klift = 50.0 if leg in (2, 3) else 300.0
-                _kd_lift = 25.0 + 120.0 * float(_wz_e > 0.005)
-                _fs = np.array([0.0, _wz_e * _klift - _kd_lift * _wz_dot])
-                _Jf = self.fk.jac(q1, q2)
-                _th1f, _th2f = _Jf.T @ _fs
-                tau[LEG_CTRL_IDX[b + 1]] = float(_th1f) - 8.0 * dq1
-                tau[LEG_CTRL_IDX[b + 2]] = float(_th2f) - 8.0 * dq2
+                # M1psw (2026-08-13): swing execution via POSITION PD on the
+                # continuous IK target (the literature ETH/IIT approach).
+                # The force-based hold (J^T of the height error) whips the
+                # extended leg (L3 -> 1.0) because the force maps through the
+                # near-horizontal Jacobian. q1t/q2t preserve the forward
+                # reach and M1ik keeps the branch continuous; the PD tracks
+                # the QP's face-arc z target without the J^T amplification.
+                _kd_sw = 15.0 + 80.0 * float(_wz_e > 0.005)
+                tau[LEG_CTRL_IDX[b + 1]] = 80.0 * (q1t - q1) - _kd_sw * dq1
+                tau[LEG_CTRL_IDX[b + 2]] = 80.0 * (q2t - q2) - _kd_sw * dq2
                 # 贴面：摆腿轮保留小前驱（滚上立面），非自由
                 F_w = np.asarray(F_des[leg], dtype=np.float64)
                 # v1082: ??/HOVER ? hipx ?? 0?????????????
