@@ -490,7 +490,9 @@ class NmpcWbc:
                         e = np.zeros(n)
                         e[f0+3*_pr[0]+2] = _sgn
                         e[f0+3*_pr[1]+2] = -_sgn
-                        rows.append(e); ub.append(30.0)
+                        # M1mmm4: F_z 对称松宽到 ±80（原 ±30 限制
+                        # roll 修正→roll 增长→后轮折叠实测）
+                        rows.append(e); ub.append(80.0)
         A = np.vstack([Ae] + rows)
         l = np.hstack([be] + [-1e9] * len(rows))
         u = np.hstack([be] + ub)
@@ -792,8 +794,8 @@ class NmpcWbc:
                     _drop = float(np.clip(_zr - float(wheel_xyz[leg, 2]), 0.10, 0.30))
                     _q1t, _q2t = self._ik(0.0, -_drop, q1, q2, leg=leg)
                     # M1zzz4: 抬升腿 kd 20->40（衰减 body 过冲发射）
-                    tau[LEG_CTRL_IDX[b+1]] = 120.0 * (_q1t - q1) - 40.0 * dq1
-                    tau[LEG_CTRL_IDX[b+2]] = 120.0 * (_q2t - q2) - 40.0 * dq2
+                    tau[LEG_CTRL_IDX[b+1]] = 120.0 * (_q1t - q1) - 60.0 * dq1
+                    tau[LEG_CTRL_IDX[b+2]] = 120.0 * (_q2t - q2) - 60.0 * dq2
                     tau[LEG_CTRL_IDX[b]] = 0.0
         # 轮：Pfaffian 驱动——τ 跟随 NMPC 接触力前向分量（受摩擦锥约束），
         # vx PID 只做微调，下限仅防倒转。v1065: 前驱下限-5×4=247N 前向力
