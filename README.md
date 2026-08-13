@@ -4,6 +4,7 @@
 导航（平滑路径/速度剖面）→ **CarVMC 车化控制**（轮驱动/差速 + 腿=主动悬架）的
 层级方案，在 MuJoCo 仿真中完成 33 航点全程巡检（历史 dial-mpc 方案已归档）。
 
+> **总方案主文档（维护入口）：[doc/方案总纲_MASTER.md](doc/方案总纲_MASTER.md)**；
 > 完整工程文档见 [doc/0808.md](doc/0808.md)；参数唯一来源为
 > [doc/s10_mpc_deploy.yaml](doc/s10_mpc_deploy.yaml)。
 
@@ -54,7 +55,7 @@ DR_competition/
 │   ├── src/S10_sdk_deploy/      # 仿真节点/感知/导航/控制器/模型
 │   ├── doc/                     # 0808.md + requirements.md + 部署 yaml + 官方材料
 │   └── tmp/                     # 核心测试入口与结果分析脚本
-└── refs/                        # 参考仓库（go2w_rl_gym、unitree_mujoco）
+（refs/ 参考仓库与 _archive_* / backups 旧归档已于 2026-08-13 清理，参考仓库可从 GitHub 重新 clone）
 ```
 
 ## 环境与快速开始
@@ -138,6 +139,7 @@ S10_MUJOCO_XML=/absolute/path/to/model.xml \
 
 ## 相关文档
 
+- **[doc/方案总纲_MASTER.md](doc/方案总纲_MASTER.md) —— 总方案主文档（方案/数据管线/控制频率/参数表/维护日志）**
 - [doc/0808.md](doc/0808.md) —— 工程总文档（环境配置/架构/参数/进度/待办）
 - [doc/s10_mpc_deploy.yaml](doc/s10_mpc_deploy.yaml) —— 部署配置
 - [doc/requirements.md](doc/requirements.md) —— Ubuntu 22.04（非 WSL）安装要求

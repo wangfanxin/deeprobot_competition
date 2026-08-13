@@ -12,3 +12,5 @@ reasonix.toml
 *.egg-info/
 *.egg-link
 .pytest_cache/
+MUJOCO_LOG.TXT
+*.log
