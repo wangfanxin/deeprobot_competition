@@ -579,7 +579,10 @@ class NmpcWbc:
                 # ?? SWING ? body ??????? 0.64??? 0.747 ???
                 # ? ????????real78 ?? 0.91 ???????????
                 # ??????? J^T ???????
-                wz_t = min(wz_t, float(hip_w[2]) - 0.02)
+                # M1nnn3: 摆腿目标距髋 0.12m（原 0.02→轮目标
+                # 贴髋时 IK 必须折叠；0.12 保持腿伸展，
+                # body 由支撑轮推升，摆腿轮随之升高）
+                wz_t = min(wz_t, float(hip_w[2]) - 0.12)
 
                 rel = np.array([
                     wheel_xyz[leg, 0] - hip_w[0],
