@@ -65,12 +65,9 @@ class NmpcWbc:
         self._vx_f = 0.0
         self._om_f = 0.0
         self._t = 0.0
-        self._sp_f = 0.0
-        self._sp_r = 0.0
-        self._sp_f_top = 0.0
-        self._sp_r_top = 0.0
-        self._sw_f_t0 = -1e9
-        self._sw_r_t0 = -1e9
+        self._sp = [0.0, 0.0, 0.0, 0.0]
+        self._sp_top = [0.0, 0.0, 0.0, 0.0]
+        self._sw_t0 = [-1e9, -1e9, -1e9, -1e9]
         self._nmpc_prob = None
         try:
             import osqp
@@ -117,61 +114,29 @@ class NmpcWbc:
         ??????+??-0.01 ???G1?SWING ???? = ??? d<0.35 ?
         body_z>0.80???????? dh>0.085?????? _nearest_riser ??
         ????????????? d????/???/????? 6?2 ??????"""
-        _fax = body_pos[:2] + fwd * 0.228
-        _rax = body_pos[:2] - fwd * 0.228
+        # M1mmm3: 轮级独立 swing——每轮用自己位置判距触发
+        # （左右天然交错，保持对角线支撑，解决轴
+        # 同步抬导致前支撑全失折叠实测）
         _perp = np.array([-fwd[1], fwd[0]])
-        # v1117: ??????yaw ????????????
-        _dfl, _tfl = self._nearest_riser(_fax + _perp * 0.181)
-        _dfr, _tfr = self._nearest_riser(_fax - _perp * 0.181)
-        if _dfl <= _dfr:
-            _df, _tf = _dfl, _tfl
-        else:
-            _df, _tf = _dfr, _tfr
-        _drl, _trl = self._nearest_riser(_rax + _perp * 0.181)
-        _drr, _trr = self._nearest_riser(_rax - _perp * 0.181)
-        if _drl <= _drr:
-            _dr, _tr = _drl, _trl
-        else:
-            _dr, _tr = _drr, _trr
-        _wz_f = float(np.mean([wheel_xyz[i, 2] for i in (0, 1)]))
-        _wz_r = float(np.mean([wheel_xyz[i, 2] for i in (2, 3)]))
         r = self.fk.r
-        # G1 ?? 0.80->0.72????? riser1 ??? 0.698??? 0.061 ??
-        # ???0.80 ???????SWING ??????0.72 ??????? #1?
-        # G1 geometry-scaled: swing only triggers when body is high enough
-        # for the wheel target cap (body_z - 0.02 >= riser_top + r).
-        # M1ccc3: G1 门控适中化 top+r-0.05（原 +0.02=0.767 从不满足
-        # →swing 惰性；-0.05=0.697 登顶时短暂激活，位置控制抬轮过棱面）
-        _bz_ok_f = float(body_pos[2]) > float(_tf) + r - 0.05
-        _bz_ok_r = float(body_pos[2]) > float(_tr) + r - 0.05
-        if self._sp_f <= 0.0:
-            # M1ppp: 轮已在台面顶上时不重触 SWING
-            # （两级台阶之间前轴 d<0.05 但轮已过棱→
-            # 重触引发泵高折叠实测）
-            _below_top_f = _wz_f < _tf + r - 0.02
-            if -self.swing_d < _df < 0.05 and _bz_ok_f and _below_top_f:
-                self._sp_f = 1.0
-                self._sp_f_top = _tf
-                self._sw_f_t0 = self._t
-        else:
-            if _wz_f >= self._sp_f_top + r - 0.01:
-                self._sp_f = 0.0
-            elif self._t - self._sw_f_t0 > self.swing_to:
-                self._sp_f = 0.0
-        if self._sp_r <= 0.0:
-            _below_top_r = _wz_r < _tr + r - 0.02
-            if -self.swing_d < _dr < 0.05 and _bz_ok_r and _below_top_r:
-                self._sp_r = 1.0
-                self._sp_r_top = _tr
-                self._sw_r_t0 = self._t
-        else:
-            if _wz_r >= self._sp_r_top + r - 0.01:
-                self._sp_r = 0.0
-            elif self._t - self._sw_r_t0 > self.swing_to:
-                self._sp_r = 0.0
-        swing = np.array([self._sp_f, self._sp_f,
-                          self._sp_r, self._sp_r], dtype=np.float64)
-        self._dbg_phases = (self._sp_f, self._sp_r)
+        for leg in range(4):
+            _hip_xy = body_pos[:2] + fwd * LEG_ATTACH[leg][0] + _perp * LEG_ATTACH[leg][1]
+            _d, _top = self._nearest_riser(_hip_xy)
+            _wz = float(wheel_xyz[leg, 2])
+            _bz_ok = float(body_pos[2]) > float(_top) + r - 0.05
+            if self._sp[leg] <= 0.0:
+                _below_top = _wz < float(_top) + r - 0.02
+                if -self.swing_d < _d < 0.05 and _bz_ok and _below_top:
+                    self._sp[leg] = 1.0
+                    self._sp_top[leg] = float(_top)
+                    self._sw_t0[leg] = self._t
+            else:
+                if _wz >= self._sp_top[leg] + r - 0.01:
+                    self._sp[leg] = 0.0
+                elif self._t - self._sw_t0[leg] > self.swing_to:
+                    self._sp[leg] = 0.0
+        swing = np.array(self._sp, dtype=np.float64)
+        self._dbg_phases = (float(np.max(swing[0:2])), float(np.max(swing[2:4])))
         return swing
 
     # ---------------- 轨迹层：body 参考 ----------------
@@ -430,7 +395,10 @@ class NmpcWbc:
         # M1yyy2: 左右 F_z 差异绑定 ±30N（原 QP 极端分配
         # 一侧 170-180N/另侧 12-28N→低支撑侧轮抬起→
         # 单侧泵高实测；±30N 允许正常 roll 修正）
-        _rpk = 50
+        # M1mmm3: rows/knot 随同态对数变化（F_z 对称约束条件化）
+        _same_pairs = sum(1 for _pr in ((0, 1), (2, 3))
+                         if (swing[_pr[0]] > 0.5) == (swing[_pr[1]] > 0.5))
+        _rpk = 46 + 4 * _same_pairs
         for k in range(K):
             f0 = nk * k
             for i in range(4):
@@ -467,19 +435,22 @@ class NmpcWbc:
                 e = np.zeros(n)
                 e[f0+30+_wi] = -1.0
                 rows.append(e); ub.append(12.0)
+            # M1mmm3: F_z 对称只在左右同态时生效（轮级
+            # swing 后单轮摆动时不能强迫支撑轮 F_z=0）
             for _pr in ((0, 1), (2, 3)):
-                for _sgn in (1.0, -1.0):
-                    e = np.zeros(n)
-                    e[f0+3*_pr[0]+2] = _sgn
-                    e[f0+3*_pr[1]+2] = -_sgn
-                    rows.append(e); ub.append(30.0)
+                if (swing[_pr[0]] > 0.5) == (swing[_pr[1]] > 0.5):
+                    for _sgn in (1.0, -1.0):
+                        e = np.zeros(n)
+                        e[f0+3*_pr[0]+2] = _sgn
+                        e[f0+3*_pr[1]+2] = -_sgn
+                        rows.append(e); ub.append(30.0)
         A = np.vstack([Ae] + rows)
         l = np.hstack([be] + [-1e9] * len(rows))
         u = np.hstack([be] + ub)
         for k in range(K):
             f0 = nk * k
             for i in range(4):
-                base = neq + _rpk * k + 24 + 3 * i
+                base = neq + (len(rows) // K) * k + 24 + 3 * i
                 if swing[i] > 0.5:
                     if i in (0, 1):
                         l[base+0] = 0.0; u[base+0] = 0.0
@@ -543,8 +514,9 @@ class NmpcWbc:
         for leg in range(4):
             sl = swing[leg]
             if sl > 0.5:
-                _ax_idx = (0, 1) if leg in (0, 1) else (2, 3)
-                _ax_xy = np.mean([wheel_xyz[_i, :2] for _i in _ax_idx], axis=0)
+                # M1mmm3: 摆腿目标用单轮位置（轮级独立
+                # swing 后各轮各自对棱）
+                _ax_xy = np.array([wheel_xyz[leg, 0], wheel_xyz[leg, 1]], dtype=np.float64)
                 _best_d, _best = 1e9, None
                 for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
                     if _dhv <= 0.085:
@@ -573,8 +545,12 @@ class NmpcWbc:
                             (_d_w + self.fk.r) / max(self.fk.r, 1e-3),
                             0.0, 1.0))
                     else:
+                        # M1lll3: 前轮摆腿全窗贴面弧（原 0.3
+                        # 斜坡提前 0.245m 抬升→轮在台面顶悬空
+                        # 失去牵引→无法推进停滞实测；全窗
+                        # d=0 才到顶，轮贴面滚到棱前才抬）
                         _t = float(np.clip(
-                            (_d_w + self.swing_d) / (0.3 * self.swing_d),
+                            (_d_w + self.swing_d) / max(self.swing_d, 1e-3),
                             0.0, 1.0))
                     _ss = _t * _t * (3.0 - 2.0 * _t)
                     _zc = _z_bot + r + _dhv * _ss
