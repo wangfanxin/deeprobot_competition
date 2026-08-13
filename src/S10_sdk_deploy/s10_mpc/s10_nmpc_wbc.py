@@ -123,7 +123,9 @@ class NmpcWbc:
             _hip_xy = body_pos[:2] + fwd * LEG_ATTACH[leg][0] + _perp * LEG_ATTACH[leg][1]
             _d, _top = self._nearest_riser(_hip_xy)
             _wz = float(wheel_xyz[leg, 2])
-            _bz_ok = float(body_pos[2]) > float(_top) + r - 0.05
+            # M1aaa4: G1 门控 -0.10（原 -0.05：riser3 需 0.822 而 body 0.81
+            # 不过→ riser3 摆动不触发→前轮碰棱弹起折叠实测）
+            _bz_ok = float(body_pos[2]) > float(_top) + r - 0.10
             if self._sp[leg] <= 0.0:
                 _below_top = _wz < float(_top) + r - 0.02
                 if -self.swing_d < _d < 0.05 and _bz_ok and _below_top:
