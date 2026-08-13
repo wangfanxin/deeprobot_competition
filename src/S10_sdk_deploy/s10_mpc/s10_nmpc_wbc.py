@@ -181,16 +181,18 @@ class NmpcWbc:
         _sw_d = max(self.swing_d, 0.15)
         for leg in range(4):
             gt = float(terrain_h[leg])
-            # M1ooo2: 每腿用自己髋位置定斜坡相位
-            # （原用 body 位置→后轮被前轮相位提前
-            # 抬目标→早悬空泵高实测）
-            _hip_xy = body['pos'][:2] + (
-                body['R'] @ np.array([LEG_ATTACH[leg][0], LEG_ATTACH[leg][1], 0.0]))[:2]
+            # M1ooo2: 每轴（前/后轴）用轴位置定斜坡相位
+            # （每腿髋位在 yaw 偏差下左右相位不同
+            # →左右目标不对称→单侧泵高实测；
+            # 轴位置左右对称、前后正确）
+            _ax_off = 0.2277 if leg in (0, 1) else -0.2277
+            _ax_xy = body['pos'][:2] + (
+                body['R'] @ np.array([_ax_off, 0.0, 0.0]))[:2]
             for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
                 if _dhv <= 0.085:
                     continue
                 _dd = float(np.dot(
-                    _hip_xy - _rp[:2], _tng))
+                    _ax_xy - _rp[:2], _tng))
                 # M1sss: z 参考沿摆动窗 smoothstep 爬升（原 0.4m
                 # 提前跳到台面顶→body z 过早抬 0.125m→
                 # 摆腿期泵高/发射实测）
@@ -423,6 +425,10 @@ class NmpcWbc:
 
         rows = []
         ub = []
+        # M1yyy2: 左右 F_z 差异绑定 ±30N（原 QP 极端分配
+        # 一侧 170-180N/另侧 12-28N→低支撑侧轮抬起→
+        # 单侧泵高实测；±30N 允许正常 roll 修正）
+        _rpk = 50
         for k in range(K):
             f0 = nk * k
             for i in range(4):
@@ -459,13 +465,19 @@ class NmpcWbc:
                 e = np.zeros(n)
                 e[f0+30+_wi] = -1.0
                 rows.append(e); ub.append(12.0)
+            for _pr in ((0, 1), (2, 3)):
+                for _sgn in (1.0, -1.0):
+                    e = np.zeros(n)
+                    e[f0+3*_pr[0]+2] = _sgn
+                    e[f0+3*_pr[1]+2] = -_sgn
+                    rows.append(e); ub.append(30.0)
         A = np.vstack([Ae] + rows)
         l = np.hstack([be] + [-1e9] * len(rows))
         u = np.hstack([be] + ub)
         for k in range(K):
             f0 = nk * k
             for i in range(4):
-                base = neq + 46 * k + 24 + 3 * i
+                base = neq + _rpk * k + 24 + 3 * i
                 if swing[i] > 0.5:
                     if i in (0, 1):
                         l[base+0] = 0.0; u[base+0] = 0.0
