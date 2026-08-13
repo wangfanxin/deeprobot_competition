@@ -55,6 +55,7 @@ class NmpcWbc:
         self.stair = None
         self.stair_world = []
         self.swing_d = float(os.environ.get('S10_NMPC_SWING_D', '0.35'))
+        self._hover_t = [0.0]*4
         self.swing_to = 1.2
         self.mu = float(os.environ.get('S10_NMPC_MU', '0.8'))
         self.fz_max = float(os.environ.get('S10_NMPC_FZ_MAX', '180.0'))
@@ -258,6 +259,17 @@ class NmpcWbc:
                 al_des[1] += 20.0 * (-0.55 - float(body['pitch']))
         M_des = self.I_body @ al_des \
             + np.cross(body['omega'], self.I_body @ body['omega'])
+        # M1ggg: 角状态——线性化 ωxIω 于当前 ω
+        _w0 = np.asarray(body['omega'], dtype=np.float64)
+        _Ix, _Iy, _Iz = np.diag(self.I_body)
+        _Jw = np.zeros((3, 3))
+        _Jw[0, 1] = (_Iz - _Iy) * _w0[2]
+        _Jw[0, 2] = (_Iz - _Iy) * _w0[1]
+        _Jw[1, 0] = (_Ix - _Iz) * _w0[2]
+        _Jw[1, 2] = (_Ix - _Iz) * _w0[0]
+        _Jw[2, 0] = (_Iy - _Ix) * _w0[1]
+        _Jw[2, 1] = (_Iy - _Ix) * _w0[0]
+        _cw = np.cross(_w0, self.I_body @ _w0) - _Jw @ _w0
         r_w = wheel_xyz - body['pos']
         A_m = np.zeros((3, 12))
         for i in range(4):
@@ -271,7 +283,7 @@ class NmpcWbc:
         for i in range(4):
             if swing[i] > 0.5 and i in (0, 1):
                 A_m[:, 3*i:3*i+3] = 0.0
-        nk = 21
+        nk = 30  # M1ggg: [F(12),a(3),p(3),v(3),alpha(3),omega(3),theta(3)]
         n = nk * K
         P = np.zeros((n, n))
         q = np.zeros(n)
@@ -298,6 +310,11 @@ class NmpcWbc:
             P[np.ix_(Fs, Fs)] += 2.0 * (
                 w_f * np.eye(12) + w_m * (A_m.T @ A_m) + w_fr * np.eye(12))
             q[Fs] += -2.0 * (w_m * (A_m.T @ M_des) + w_fr * F_ref)
+            # M1ggg: 角跟踪代价 roll->0, pitch->ref, yaw->hdg
+            _th_ref = np.array([0.0, ref['pitch'], ref['hdg']])
+            for _j in range(3):
+                P[f0+27+_j, f0+27+_j] += 2.0 * w_m * 200.0
+                q[f0+27+_j] += -2.0 * w_m * 200.0 * _th_ref[_j]
             p_free = pos0 + vel0 * (k * dt)
             p_idx = [f0+15, f0+16, f0+17]
             v_idx = [f0+18, f0+19, f0+20]
@@ -310,33 +327,42 @@ class NmpcWbc:
                 P[np.ix_(Fs, Fs)] += 2.0 * w_s * np.eye(12)
                 P[np.ix_(np.arange(f1, f1+12), np.arange(f0, f0+12))] -= 2.0 * w_s * np.eye(12)
                 P[np.ix_(np.arange(f0, f0+12), np.arange(f1, f1+12))] -= 2.0 * w_s * np.eye(12)
-        neq = 3*K + 6*K
+        neq = 3*K + 3*K + 6 + 6*(K-1) + 6 + 6*(K-1)
         Ae = np.zeros((neq, n))
         be = np.zeros(neq)
+        r_mom = 3*K
+        r_lin_init = 6*K
+        r_lin_prop = 6*K + 6
+        r_ang_init = 6*K + 6 + 6*(K-1)
+        r_ang_prop = r_ang_init + 6
         for k in range(K):
             f0 = nk * k
-            # SRBD 三轴分行：x=Fx 行 3k, y=Fy 行 3k+1, z=Fz 行 3k+2
             Ae[3*k+0, f0+0:f0+12:3] = -1.0
             Ae[3*k+1, f0+1:f0+12:3] = -1.0
             Ae[3*k+2, f0+2:f0+12:3] = -1.0
-            for i in range(4):
-                if swing[i] > 0.5 and i in (0, 1):
-                    Ae[3*k+0, f0+3*i+0] = 0.0
-                    Ae[3*k+1, f0+3*i+1] = 0.0
-                    Ae[3*k+2, f0+3*i+2] = 0.0
             Ae[3*k+0, f0+12] = m
             Ae[3*k+1, f0+13] = m
             Ae[3*k+2, f0+14] = m
             be[3*k+2] = -m * g
+            for _j in range(3):
+                Ae[r_mom+3*k+_j, f0+21+_j] = self.I_body[_j, _j]
+                Ae[r_mom+3*k+_j, f0+0:f0+12] += -A_m[_j, :]
+                Ae[r_mom+3*k+_j, f0+24:f0+27] += -_Jw[_j, :]
+            be[r_mom+3*k:r_mom+3*k+3] = _cw
             if k == 0:
-                r0 = 3*K
                 for j in range(3):
-                    Ae[r0+j, f0+15+j] = 1.0
-                    be[r0+j] = pos0[j]
-                    Ae[r0+3+j, f0+18+j] = 1.0
-                    be[r0+3+j] = vel0[j]
+                    Ae[r_lin_init+j, f0+15+j] = 1.0
+                    be[r_lin_init+j] = pos0[j]
+                    Ae[r_lin_init+3+j, f0+18+j] = 1.0
+                    be[r_lin_init+3+j] = vel0[j]
+                    Ae[r_ang_init+j, f0+24+j] = 1.0
+                    be[r_ang_init+j] = _w0[j]
+                    Ae[r_ang_init+3+j, f0+27+j] = 1.0
+                    be[r_ang_init+3+j] = body['roll'] if j == 0 else (
+                        body['pitch'] if j == 1 else body['yaw'])
             else:
-                rp = 3*K + 6*k
+                rp = r_lin_prop + 6*(k-1)
+                ra = r_ang_prop + 6*(k-1)
                 f1 = nk * (k-1)
                 for j in range(3):
                     Ae[rp+j, f0+18+j] = 1.0
@@ -345,6 +371,13 @@ class NmpcWbc:
                     Ae[rp+3+j, f0+15+j] = 1.0
                     Ae[rp+3+j, f1+15+j] = -1.0
                     Ae[rp+3+j, f1+18+j] = -dt
+                    Ae[ra+j, f0+24+j] = 1.0
+                    Ae[ra+j, f1+24+j] = -1.0
+                    Ae[ra+j, f1+21+j] = -dt
+                    Ae[ra+3+j, f0+27+j] = 1.0
+                    Ae[ra+3+j, f1+27+j] = -1.0
+                    Ae[ra+3+j, f1+24+j] = -dt
+
         rows = []
         ub = []
         for k in range(K):
@@ -567,6 +600,16 @@ class NmpcWbc:
                 _qp1 = -1.16 if leg in (0, 1) else 1.16
                 _qp2 = 2.30 if leg in (0, 1) else -2.30
                 F_w = np.asarray(F_des[leg], dtype=np.float64)
+                _hover = False
+                if float(wheel_xyz[leg, 2]) > \
+                        float(terrain_h[leg]) + r + 0.05:
+                    self._hover_t[leg] += dt
+                    if self._hover_t[leg] > 0.5:
+                        _hover = True
+                else:
+                    self._hover_t[leg] = 0.0
+                if _hover:
+                    F_w = np.zeros(3)
                 f_b = R.T @ F_w
                 fx, fy, fz_up = float(f_b[0]), float(f_b[1]), float(f_b[2])
                 f_s = np.array([fx, -fz_up])   # 矢状面 (x, z_down)
