@@ -19,6 +19,7 @@ from s10_mpc.stair_auto_nav import AutoNavFollower
 from s10_mpc.body_mppi import BodyMPPI
 from s10_mpc.stair_vmc_legs import (VMCController, CarVMC, LEG_ATTACH, WHEEL_BODY,
     WHEEL_Q_IDX, LidarTerrain)
+from s10_mpc.lidar_terrain_v2 import LidarTerrainV2
 from s10_mpc.stair_wbc import StairWBC
 from s10_mpc.stair_wbc_qp import StairWBCQP
 from s10_mpc.s10_nmpc_wbc import NmpcWbc
@@ -417,7 +418,7 @@ def main():
     # lidar=lidar_site 扇形射线局部栅格（传感器视角，10Hz 更新，部署同款）
     # v871: 修复并发改动丢失的 if 头——恢复 lidar/ray 分支
     if os.environ.get('S10_VMC_TERRAIN', 'ray') == 'lidar':
-        lterr = LidarTerrain(m, d)
+        lterr = LidarTerrainV2(m, d)
         _lupd = -1.0
         def terrain_at(x, y):
             nonlocal _lupd
