@@ -150,6 +150,23 @@ class NmpcWbc:
         _perp = np.array([-fwd[1], fwd[0]])
         _steps = [self._step_of(wheel_xyz[leg, :2]) for leg in range(4)]
         _front_step = int(np.min(_steps[0:2]))   # trailing side of front axle
+        # M1ax (2026-08-13): front-axle SYMMETRIC trigger — both front hips'
+        # d to their target riser, triggered together. Per-leg triggers
+        # fired 0.1-0.2s apart (left/right leg reach asymmetry) -> one front
+        # wheel climbed alone (L0 0.61 / L1 0.77) -> roll -0.87 -> L3 throw.
+        # The body hold (M1reach) provides the support the old axis-sync
+        # lacked; exits stay per-leg (each wheel crosses the edge itself).
+        _front_d = [1e9, 1e9]
+        for _fl in (0, 1):
+            _fh = (body_pos[:2] + fwd * LEG_ATTACH[_fl][0]
+                   + _perp * LEG_ATTACH[_fl][1])
+            _fi = _steps[_fl]
+            while (_fi < len(self.stair_world)
+                   and float(self.stair_world[_fi][3]) <= 0.085):
+                _fi += 1
+            _ft = self._tgt_riser(_fi)
+            if _ft is not None and float(_ft[3]) > 0.085:
+                _front_d[_fl] = float(np.dot(_fh - _ft[0], _ft[1]))
         for leg in range(4):
             # trigger distance from HIP (same convention as M1eee4/M1mmm3:
             # wheel-based distances fire 0.15-0.25 m early -> front F=0 too
@@ -183,7 +200,9 @@ class NmpcWbc:
             if self._sp[leg] <= 0.0:
                 _below_top = _wz < float(_top) + r - 0.02
                 _sw_win = 0.75 if leg in (2, 3) else 0.35
-                if -_sw_win < _d < 0.05 and _bz_ok and _below_top:
+                _d_use = (0.5 * (_front_d[0] + _front_d[1])
+                          if leg in (0, 1) else _d)
+                if -_sw_win < _d_use < 0.05 and _bz_ok and _below_top:
                     self._sp[leg] = 1.0
                     self._sp_top[leg] = float(_top)
                     self._sp_tgt[leg] = int(_tgt_idx)
@@ -798,15 +817,14 @@ class NmpcWbc:
                 # whole robot launches (t=8.5 fn=[0,0,0,0], wheels 0.80 in
                 # air). Only lift legs whose wheel is still near its terrain.
                 # M1seq (2026-08-13): while any wheel swings, the stance axle
-                # must stay FIRM and drive (pos_lift on folded rear legs hops
-                # them -> no traction -> robot pinned at the riser face, front
-                # 4cm short of the edge). Lift only once the front wheels are
-                # actually near the top (_wz_f > 0.72); the body-low clause
-                # applies only with no swing active (approach phase).
+                # must stay FIRM and drive. M1reach removed the folded-leg
+                # hop (reachable drops), so the body-low clause can fire
+                # during the swing again: the rear legs hold the body up
+                # while the front lifts (without it, L3 sat under 140N in
+                # the force branch and flailed px 0.3/pz +-0.2).
                 _pos_lift = (_wz_f > 0.72
-                             or (float(np.max(swing)) <= 0.5
-                                 and float(body['pos'][2])
-                                 < float(ref.get('z', 0.8)) - 0.06)) \
+                             or float(body['pos'][2])
+                             < float(ref.get('z', 0.8)) - 0.06) \
                     and swing[leg] <= 0.5 \
                     and float(wheel_xyz[leg, 2]) \
                     <= float(terrain_h[leg]) + r + 0.05
