@@ -649,8 +649,12 @@ class NmpcWbc:
                 # 后轴 KP 40 让轮主要靠 F_z≥46 滚上立面，俯仰小
                 # M1fff4: 力基摆动保持——轮在计划高度由 J^T 力钉住
                 # （位置 PD 欠阻尼过冲；力控只在轮高偏离计划时作用）
+                # M1jjj4: 力基摆动 kf=300 + 轮垂直速度阻尼
+                # （kf 高升力快，速度阻尼衰减过冲）
                 _wz_e = float(wheel_xyz[leg, 2]) - wz_t
-                _fs = np.array([0.0, _wz_e * 200.0])
+                _wz_dot = float(_Jf[1, 0] * dq1 + _Jf[1, 1] * dq2) if hasattr(self, '_Jf') else 0.0
+                _wz_dot = float(self.fk.jac(q1, q2)[1, 0] * dq1 + self.fk.jac(q1, q2)[1, 1] * dq2)
+                _fs = np.array([0.0, _wz_e * 300.0 - 25.0 * _wz_dot])
                 _Jf = self.fk.jac(q1, q2)
                 _th1f, _th2f = _Jf.T @ _fs
                 tau[LEG_CTRL_IDX[b + 1]] = float(_th1f) - 8.0 * dq1
