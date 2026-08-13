@@ -35,7 +35,7 @@ except Exception:
 
 S10_MPC_XML = os.environ.get(
     "S10_MPC_XML",
-    "/home/wfx/DR_competition/deeprobot_competition"
+    "/home/wfx/DR_competition/0810new/deeprobot_competition"
     "/src/S10_sdk_deploy/S10_description/s10_mjcf/mjcf/s10_mpc.xml",
 )
 
@@ -154,6 +154,9 @@ class S10WheeledEnvConfig:
     terrain_w_step: float = 20.0
     terrain_w_ground: float = 120.0  # 轮-地形贴合权重（抬腿引导，m² 误差）
     terrain_w_overlift: float = 200.0  # 过抬惩罚：轮子高于目标+0.05m 重罚（防翘头）
+    overlift_band: float = 0.05     # 过抬惩罚带（m）：高于目标+此带才罚
+    w_pitch_rate_cap: float = 0.0   # 俯仰角速度上限软罚（0=关）
+    pitch_rate_cap: float = 0.35    # 俯仰角速度上限阈值（rad/s）
     terrain_w_leg: float = 2.0       # 腿默认姿态正则（保持蹲姿）
     terrain_w_upright: float = 25.0  # 地形相对直立权重（允许顺坡倾斜，罚侧倾/翘头）
     terrain_w_attdamp: float = 0.8   # 俯仰/侧倾角速度阻尼（杀爬坡俯仰振荡）
