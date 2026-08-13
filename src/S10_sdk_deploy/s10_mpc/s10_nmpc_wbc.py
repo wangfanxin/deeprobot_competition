@@ -884,7 +884,14 @@ class NmpcWbc:
                     F_w = np.zeros(3)
                 f_b = R.T @ F_w
                 fx, fy, fz_up = float(f_b[0]), float(f_b[1]), float(f_b[2])
-                f_s = np.array([fx, -fz_up])   # 矢状面 (x, z_down)
+                # M1fwd (2026-08-13): no BACKWARD force through the legs.
+                # The QP realized the nose-up pitch moment with the rear
+                # legs' backward F_x (wheel below CoM -> r_z*F_x moment),
+                # giving a_x=-10.3 (braking) despite a_des=+11.55 -> the
+                # stall at the riser face. Forward traction stays (the
+                # drive); backward braking is dropped (the wheels' anti-
+                # reverse floor handles the actual braking).
+                f_s = np.array([max(fx, 0.0), -fz_up])   # 矢状面 (x, z_down)
                 # v1068: 地形阻抗（VMC 同款 kp_h=300）——NMPC F 在过渡态
                 # 太小、姿态正则被压过 → 腿泵高发射；阻抗按轮高误差强压
                 # M1yyy: 质地阻抗用几何轮心目标（原
