@@ -738,7 +738,12 @@ class NmpcWbc:
                 # body-z push + swing lift launches the whole robot airborne
                 # (fn=[0,0,0,0], wheels 0.80-0.87). Gentler lift avoids the
                 # impulse; speed damping retained.
-                _fs = np.array([0.0, _wz_e * 100.0 - 25.0 * _wz_dot])
+                # M1rlift (2026-08-13): rear swing lift 100->50. The rear
+                # legs sit at px~0.3 (horizontal) -> J^T maps the vertical
+                # lift into a whip (L3 0.87 overshoot, side lean -0.6).
+                # Gentler rear lift; the wheels climb by rolling + assist.
+                _klift = 50.0 if leg in (2, 3) else 100.0
+                _fs = np.array([0.0, _wz_e * _klift - 25.0 * _wz_dot])
                 _Jf = self.fk.jac(q1, q2)
                 _th1f, _th2f = _Jf.T @ _fs
                 tau[LEG_CTRL_IDX[b + 1]] = float(_th1f) - 8.0 * dq1
