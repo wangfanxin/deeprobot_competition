@@ -320,7 +320,14 @@ class NmpcWbc:
                 al_des[1] += _ff_sw
         al_des[2] = kp_y * (ref['hdg'] - body['yaw']) \
             - kd_y * float(np.dot(R[:, 2], body['omega']))
+        # M1rl2 (2026-08-13): during any swing, scale down the ROLL
+        # correction (the QP realizes it with the rear legs' LATERAL forces,
+        # eating the friction budget -> forward F_x starves -> stall at the
+        # riser face -> tip). The roll drifts a little; the advance breaks
+        # the stall. On flat (no swing) the full gain holds.
         al_des[0] = -15.0 * body['roll']
+        if float(np.max(swing)) > 0.5:
+            al_des[0] *= 0.3
         al_des[0] -= 10.0 * float(np.dot(R[:, 0], body['omega']))
         if float(np.max(swing)) > 0.5:
             _al_lim = 30.0
