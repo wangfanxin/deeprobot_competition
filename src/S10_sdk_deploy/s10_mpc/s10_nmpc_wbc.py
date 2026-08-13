@@ -181,12 +181,16 @@ class NmpcWbc:
         _sw_d = max(self.swing_d, 0.15)
         for leg in range(4):
             gt = float(terrain_h[leg])
+            # M1ooo2: 每腿用自己髋位置定斜坡相位
+            # （原用 body 位置→后轮被前轮相位提前
+            # 抬目标→早悬空泵高实测）
+            _hip_xy = body['pos'][:2] + (
+                body['R'] @ np.array([LEG_ATTACH[leg][0], LEG_ATTACH[leg][1], 0.0]))[:2]
             for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
                 if _dhv <= 0.085:
                     continue
                 _dd = float(np.dot(
-                    np.asarray(body['pos'][:2], dtype=np.float64)
-                    - _rp, _tng))
+                    _hip_xy - _rp[:2], _tng))
                 # M1sss: z 参考沿摆动窗 smoothstep 爬升（原 0.4m
                 # 提前跳到台面顶→body z 过早抬 0.125m→
                 # 摆腿期泵高/发射实测）
@@ -675,6 +679,10 @@ class NmpcWbc:
                 _dz_h = _pz_d - float(wheel_xyz[leg, 2])
                 _fz_imp = float(os.environ.get(
                     'S10_NMPC_KPH', '300.0')) * _dz_h
+                # M1qqq2: 阻抗单向（只压不抬）：
+                # 原双向抬升→轮被提前拉起悬空
+                # →泵高；单向让轮靠接触滚上立面
+                _fz_imp = float(np.minimum(_fz_imp, 0.0))
                 f_s = f_s + np.array([0.0, _fz_imp])
                 J = self.fk.jac(q1, q2)
                 # v1069: 过伸强位置保持——轮高于地形目标时，J^T 在上折位形
