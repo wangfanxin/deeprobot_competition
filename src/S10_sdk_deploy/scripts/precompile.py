@@ -1,10 +1,10 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """最小预热脚本：初始化 MPC + plan_once 一次，打印 JIT 耗时。"""
 import os, sys, time
 import numpy as np
 PKG = '/home/wfx/DR_competition/0810new/deeprobot_competition/src/S10_sdk_deploy'
 sys.path.insert(0, PKG)
-sys.path.insert(0, '/home/wfx/DR_competition/dial-mpc')
+sys.path.insert(0, '/home/wfx/DR_competition/0810new/deeprobot_competition/dial-mpc')
 os.environ.setdefault('JAX_COMPILATION_CACHE_DIR', os.path.expanduser('~/.cache/s10_dial_mpc'))
 
 import mujoco
