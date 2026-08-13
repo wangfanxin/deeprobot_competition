@@ -460,9 +460,17 @@ class NmpcWbc:
                     # v1165: ???? 0.3??? 10cm ?????0.15 ?????
                     # ?????0.7 ???body ? 0.75??0.3 ?? v1159 ?
                     # body 0.86 ???????
-                    _t = float(np.clip(
-                        (_d_w + self.swing_d) / (0.3 * self.swing_d),
-                        0.0, 1.0))
+                    # v2026(M1k): 后轴贴面弧抬升窗 d∈[-R,0]（原 0.3 斜坡在
+                    # 棱前 0.245m 完成全抬→后轮提前悬空折叠；单点耦合失败，
+                    # 多 knot 前轮已稳定，后轴独立修复）
+                    if leg in (2, 3):
+                        _t = float(np.clip(
+                            (_d_w + self.fk.r) / max(self.fk.r, 1e-3),
+                            0.0, 1.0))
+                    else:
+                        _t = float(np.clip(
+                            (_d_w + self.swing_d) / (0.3 * self.swing_d),
+                            0.0, 1.0))
                     _ss = _t * _t * (3.0 - 2.0 * _t)
                     _zc = _z_bot + r + _dhv * _ss
                     swing_tgt_z[leg] = min(_zc, _top + r + 0.005)
