@@ -215,29 +215,9 @@ def main():
 
     except Exception as e:
         print('[VMC] 横脊预扫描失败', e, flush=True)
-    # v236: 台阶几何预扫描——wp6->7 楼梯区 riser 弧长表（已知地图，供
-    # 相位步态）。wp5->6 台阶间距 2m 与相位窗不匹配（v447 卡第一级），
-    # 仍由连续抬轮处理。
+    # decision 2: riser list is built incrementally from the lidar
+    # elevation map in the main loop (no god-view mj_ray pre-scan).
     stair_risers = []
-    try:
-        _s6 = float(fol.path_wp_s[6]); _s7 = float(fol.path_wp_s[7])
-        # v587: 楼梯 riser 只取**上升沿**（dh_s>=0.12）——wp5→6 第二级是
-        # 0.60 平台降到 0.48 的**下降沿**，|dh| 误判为台阶导致 CPG 空转。
-        # v627: 楼梯区 riser 阈值 0.12→0.05——y=37.94 的 0.06m 小台阶是
-        # 第一个真障碍（前轮上平台后后轮卸载爬不动）；下降沿仍排除。
-        # v630: 直接用 signed dh_s 扫全路径 [s6,s7]——旧法从 ridge_arcs
-        # 派生（ridge 扫描 |dh|>0.12），0.06m 小台阶进不了表
-        # v699: 楼梯表只留**真楼梯**（段末 4m 内，y≥37.4）——wp5→6 第二级
-        # （y=32.88）也是 0.12m 台阶但由巡航处理，误归入楼梯表会让
-        # FootPlace 过早接管翻车（v696-698）
-        _stair_idx = np.where((dh_s >= 0.05)
-                              & (fol.path_cum[:len(dh_s)] >= _s7 - 4.0)
-                              & (fol.path_cum[:len(dh_s)] <= _s7))[0]
-        stair_risers = [(float(fol.path_cum[k]), float(dh_s[k]))
-                        for k in _stair_idx]
-        print(f'[VMC] 楼梯区 riser {len(stair_risers)} 处', flush=True)
-    except Exception as e:
-        print('[VMC] 楼梯预扫描失败', e, flush=True)
     # v247: 横脊世界坐标表（供物理距离触发，替代 s_cur 投影——转向时 s_cur
     # 滞后导致步态漏触发，wp4→5 撞脊翻车实测）
     ridge_world = []
@@ -255,29 +235,9 @@ def main():
             ridge_world.append((_pt, _tng, sr, dhv))
     except Exception as e:
         print('[VMC] 横脊坐标表失败', e, flush=True)
-    # v571: 楼梯 riser 世界坐标表（供几何同步抬放窗——s_cur 投影在转弯/
-    # 卡死时不可靠，用轮轴到 riser 面的沿路径物理距离触发）
+    # decision 2: riser world table is built incrementally from the
+    # lidar elevation map in the main loop (no god-view mj_ray).
     stair_world = []
-    try:
-        # v629: 直接从 stair_risers（0.05 阈值）构建——旧版从 ridge_world
-        # 派生（0.12 阈值），0.06m 小台阶不在 ridge_world，CPG 看不到它
-        for (sr, dhv) in stair_risers:
-            _k = int(np.searchsorted(fol.path_cum, sr, side='right') - 1)
-            _k = min(max(_k, 0), len(fol.path_pts) - 2)
-            _pt = fol.path_pts[_k, :2].copy()
-            _th = float(fol.path_heading[_k])
-            _tng = np.array([np.cos(_th), np.sin(_th)])
-            _g9 = np.array([-1], dtype=np.int32)
-            _d9 = np.zeros(1); _n9 = np.zeros(3)
-            _hit9 = mujoco.mj_ray(
-                m, d, [_pt[0] + _tng[0] * 0.06,
-                      _pt[1] + _tng[1] * 0.06, 8.0],
-                [0, 0, -1], None, False, -1, _g9, _n9)
-            _top9 = (8.0 - _hit9) if _hit9 > 0 else 0.0
-            stair_world.append((_pt, _tng, sr, float(dhv), float(_top9)))
-        print(f'[VMC] 楼梯世界坐标 {len(stair_world)} 处', flush=True)
-    except Exception as e:
-        print('[VMC] 楼梯坐标表失败', e, flush=True)
     # v891(方案3): 单级台架模式——只保留第一个高 riser(0.125m)，
     # 排除首级小台阶与后续多级，定位单级爬升动力学
     if float(os.environ.get('S10_STAIR_BENCH', '0')) > 0:
@@ -439,6 +399,44 @@ def main():
                                 None, True, -1, g, nrm)
             return (8.0 - hit) if hit > 0 else 0.0
 
+    # decision 2: incremental lidar riser detection (deployable, no god-view).
+    _lrt = [-1e9]
+    def _refresh_stair_lidar(bp):
+        lterr.update()
+        _s_cur = float(getattr(fol, '_s_cur', 0.0))
+        if _s_cur <= 0.0:
+            _k = int(np.argmin(np.sum(
+                (fol.path_pts[:, :2] - bp[:2]) ** 2, axis=1)))
+            _s_cur = float(fol.path_cum[_k])
+        dets = lterr.detect_risers(fol.path_pts, fol.path_cum,
+                                   _s_cur - 0.5, _s_cur + 1.5,
+                                   rise=0.05, max_dh=0.15)
+        added = 0
+        for (sr, dhv, top) in dets:
+            if any(abs(sr - float(w[2])) < 0.15 for w in stair_world):
+                continue
+            _k = int(np.searchsorted(fol.path_cum, sr, side='right') - 1)
+            _k = min(max(_k, 0), len(fol.path_pts) - 2)
+            _pt = fol.path_pts[_k, :2].copy()
+            _th = float(fol.path_heading[_k])
+            _tng = np.array([np.cos(_th), np.sin(_th)])
+            stair_world.append((_pt, _tng, float(sr), float(dhv), float(top)))
+            stair_risers.append((float(sr), float(dhv)))
+            added += 1
+        if added:
+            stair_world.sort(key=lambda w: w[2])
+            stair_risers.sort(key=lambda r: r[0])
+            _sw_y = np.array([float(w[0][1]) for w in stair_world])
+            _sw_t = np.array([float(w[4]) for w in stair_world])
+            _ord = np.argsort(_sw_y)
+            fol.STAIR_RISERS = _sw_y[_ord].astype(np.float64)
+            fol.STAIR_TOPS = _sw_t[_ord].astype(np.float64)
+            fol._stair_last_arc = float(stair_world[-1][2])
+            vmc_nmpc.stair_world = stair_world
+            print('[VMC] lidar risers %d (+%d): y=%s top=%s'
+                  % (len(stair_world), added,
+                     np.round(fol.STAIR_RISERS, 3),
+                     np.round(fol.STAIR_TOPS, 3)), flush=True)
     next_idx = START_WP if 'START_WP' in dir() else 0
     # v893: 台架模式跳过 wp6（出生在 step1，直接以 wp7 为目标）
     if float(os.environ.get('S10_STAIR_BENCH', '0')) > 0 and next_idx == START_WP:
@@ -499,6 +497,16 @@ def main():
         _roll_env = float(np.clip((0.35 - abs(_roll_now)) / 0.15, 0.0, 1.0))
         wheel_xyz = np.asarray([d.xpos[WHEEL_BODY[i]] for i in range(4)])
         wheel_vel = np.asarray([d.cvel[WHEEL_BODY[i]][0:3] for i in range(4)])
+
+        # decision 2: refresh lidar risers at 10 Hz (no god-view mj_ray).
+        if (os.environ.get('S10_VMC_TERRAIN', 'ray') == 'lidar'
+                and t - _lrt[0] >= 0.1):
+            _lrt[0] = t
+            try:
+                _refresh_stair_lidar(body_pos)
+            except Exception:
+                if os.environ.get('S10_MODE_DEBUG'):
+                    import traceback; traceback.print_exc()
 
         # 导航 + MPPI 更新率（S10_NAV_HZ，默认 2）
         # v437: 原 int(t*20)%10==0 实为 2Hz（0.5s 一次）——方向翻转后 0.5s

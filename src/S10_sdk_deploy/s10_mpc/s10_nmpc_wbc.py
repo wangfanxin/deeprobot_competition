@@ -818,24 +818,6 @@ class NmpcWbc:
                 tau[LEG_CTRL_IDX[b + 2]] = 80.0 * (q2t - q2) - _kd_sw * dq2
                 # 贴面：摆腿轮保留小前驱（滚上立面），非自由
                 F_w = np.asarray(F_des[leg], dtype=np.float64)
-                # v1082: ??/HOVER ? hipx ?? 0?????????????
-                # ?? + F_y ????????????v1081 ??????
-                # v1092: ?? SWING = ??????????????? PD ??
-                # ?? J^T?F_des ????? NMPC ?????????????
-                # v1141/v1144: ???????????????v1109 J^T ??
-                # ??????????? J^T?F_des ????v1070"?????
-                # ???"????????? riser2??
-                if False and leg in (2, 3):
-                    # v1144: rear-only J^T climb force——m12 实测后轴爬升腿
-                    # 近折叠位形(L3 pz=-0.294)下 J^T 力把腿甩过头；v1141
-                    # 纯位置摆腿为文献共识。模型侧仍保 Fz>=46（规划现实），
-                    # WBC 侧改纯位置 PD 防折叠。
-                    _fb2 = R.T @ F_w
-                    _fs2 = np.array([float(_fb2[0]), -float(_fb2[2])])
-                    _J2 = self.fk.jac(q1, q2)
-                    _th1f, _th2f = _J2.T @ _fs2
-                    tau[LEG_CTRL_IDX[b + 1]] += float(_th1f)
-                    tau[LEG_CTRL_IDX[b + 2]] += float(_th2f)
                 tau[LEG_CTRL_IDX[b]] = float(
                     0.30 * F_w[1] + 80.0 * (
                         -0.05 if leg in (0, 1) else 0.05))
