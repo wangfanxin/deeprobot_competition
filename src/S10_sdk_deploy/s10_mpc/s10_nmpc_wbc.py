@@ -93,6 +93,17 @@ class NmpcWbc:
             [2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x)],
             [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x + y*y)],
         ], dtype=np.float64)
+        # M1att (2026-08-13): physical pitch/roll via yaw-removed R.
+        # Old direct quaternion extraction swaps pitch/roll for a yaw~90deg
+        # heading (this map): nose-up reads as roll, side-roll as pitch ->
+        # body was held level on stairs + pitch feedforward applied to the
+        # lateral axis -> sideways lean (155-run wall root cause).
+        _cy, _sy = np.cos(yaw), np.sin(yaw)
+        _RzT = np.array([[_cy, _sy, 0.0], [-_sy, _cy, 0.0], [0.0, 0.0, 1.0]])
+        _Rp = _RzT @ R
+        pitch = float(np.arctan2(-_Rp[2, 0],
+                                 np.hypot(_Rp[2, 1], _Rp[2, 2])))
+        roll = float(np.arctan2(_Rp[2, 1], _Rp[2, 2]))
         vw = R.T @ np.asarray(qvel[0:3], dtype=np.float64)
         return dict(pos=qpos[0:3], yaw=yaw, roll=roll, pitch=pitch,
                     vx=float(vw[0]), R=R,
@@ -224,7 +235,7 @@ class NmpcWbc:
                 - _f0, _t0))
             if -2.0 < _d_first < -0.4:
                 z_ref += 0.05
-        _pitch_ref = -float(np.arctan2(
+        _pitch_ref = float(np.arctan2(
             float(np.mean(_z_geo[0:2])) - float(np.mean(_z_geo[2:4])),
             0.456))
         # 楼梯切线 heading
@@ -281,8 +292,9 @@ class NmpcWbc:
             al_des[1] = float(np.clip(al_des[1], -_al_lim, _al_lim))
             if float(body['pitch']) < -0.55:
                 al_des[1] += 20.0 * (-0.55 - float(body['pitch']))
-        M_des = self.I_body @ al_des \
-            + np.cross(body['omega'], self.I_body @ body['omega'])
+        _w_b = R.T @ np.asarray(body['omega'], dtype=np.float64)
+        M_des = R @ (self.I_body @ al_des
+                     + np.cross(_w_b, self.I_body @ _w_b))
         # M1ggg: 角状态——线性化 ωxIω 于当前 ω
         _w0 = np.asarray(body['omega'], dtype=np.float64)
         _Ix, _Iy, _Iz = np.diag(self.I_body)
@@ -741,7 +753,15 @@ class NmpcWbc:
                 # M1uuu3: 所有 stance 腿参与抬 body（前腿在 riser2 顶
                 # drop 0.19 可达，能撑 body 到 0.94+；原只后腿抬→
                 # 后腿 drop 0.28+ 时 J^T 变弱推不动停滞实测）
-                _pos_lift = (_fr_sw or _wz_f > 0.75) and swing[leg] <= 0.5
+                # M1hold (2026-08-13): hold body height on the approach too.
+                # Legs fold to pz~0.075 (J vertical authority ~0.03) during the
+                # stair braking -> body collapses 0.78->0.64 -> G1 gate marginal
+                # -> single-leg swing -> saturated a_z=8 -> launch. Fire the
+                # position-lift branch whenever the body is below its ref.
+                _pos_lift = (_fr_sw or _wz_f > 0.75
+                             or float(body['pos'][2])
+                             < float(ref.get('z', 0.8)) - 0.06) \
+                    and swing[leg] <= 0.5
                 # 支撑腿：J^T·(R^T·F_des) 力分配——F_des 是作用在 body 的
                 # 接触力（向上），与 VMC 约定一致（f_b=R^T·F，f_sag=[fx,-fz]）
                 _qp1 = -1.16 if leg in (0, 1) else 1.16
