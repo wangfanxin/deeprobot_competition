@@ -97,6 +97,7 @@ class NmpcWbc:
         vw = R.T @ np.asarray(qvel[0:3], dtype=np.float64)
         return dict(pos=qpos[0:3], yaw=yaw, roll=roll, pitch=pitch,
                     vx=float(vw[0]), R=R,
+                    vel=np.asarray(qvel[0:3], dtype=np.float64),
                     omega=np.asarray(qvel[3:6], dtype=np.float64))
 
     # ---------------- ModeSequence：抬升轮（F=0）----------------
@@ -210,11 +211,13 @@ class NmpcWbc:
 
     # ---------------- NMPC：SRBD 接触力优化（20Hz）----------------
     def _nmpc(self, body, ref, swing, wheel_xyz, dt_nmpc, terrain_h=None):
-        """SRBD QP：变量 [F(12), a(3)]，等式 m·a=ΣF+mg，
-        代价跟踪 a_des 与角动量 M_des=Σr×F，摩擦锥/法向/抬升轮 F=0。
-        osqp 问题固定结构，每解只 update 数据（<2ms）。"""
+        """SRBD 轨迹 QP（M1 多 knot）：每 knot [F(12),a(3),p(3),v(3)]，
+        状态传播硬等式 + 常数 a_des 跟踪（m23 语义）+ 力平滑。
+        v2026 M1g 修复 SRBD 三轴等式（原把 x/y/z 全塞一行→动力学无约束）。"""
         m, g = self.m, self.g
         R = body['R']
+        K = int(os.environ.get('S10_NMPC_HORIZON', '8'))
+        dt = max(dt_nmpc, 1e-3)
         kp_z = float(os.environ.get('S10_NMPC_KP_Z', '200.0'))
         kd_z = float(os.environ.get('S10_NMPC_KD_Z', '30.0'))
         kp_vx = float(os.environ.get('S10_NMPC_KP_VX', '10.0'))
@@ -225,30 +228,19 @@ class NmpcWbc:
         w_f = float(os.environ.get('S10_NMPC_WF', '1e-3'))
         w_a = float(os.environ.get('S10_NMPC_WA', '1.0'))
         w_m = float(os.environ.get('S10_NMPC_WM', '0.1'))
-        # 名义支撑力参考：防 QP 把 F 压到 0 → 自由落体（台架 F=0 实测）
         w_fr = float(os.environ.get('S10_NMPC_WFR', '0.02'))
-        # v1060/v1061: 贴面爬升——SWING 轮保留小接触力（F_z≥5N）；
-        # F_ref 按实际接触轮数分配（前轮抬升时后轮各担 mg/2，否则
-        # 求解器给后轮 0 → body 落 → 前轮饱和 → 振荡发射实测）
+        w_s = float(os.environ.get('S10_NMPC_WS', '0.02'))
+        w_p = float(os.environ.get('S10_NMPC_WP', '0.05'))
+        w_v = float(os.environ.get('S10_NMPC_WV', '0.10'))
         F_ref = np.zeros(12)
         _n_cont = max(float(np.sum(swing <= 0.5)), 1.0)
         for i in range(4):
             F_ref[3*i+2] = m * g / _n_cont * (
                 1.0 if swing[i] <= 0.5 else 0.2)
-        # 期望线性加速度（世界系）
-        a_des = np.zeros(3)
-        a_des[2] = kp_z * (ref['z'] - body['pos'][2]) \
-            - kd_z * float(np.dot(R[:, 2], body['omega']))
         fwd_w = R @ np.array([1.0, 0.0, 0.0])
-        v_w = fwd_w * body['vx']
-        a_des[0:2] = kp_vx * (ref['vx'] * fwd_w[0:2] - v_w[0:2])
-        # 期望角加速度（pitch/yaw，roll 回零）
         al_des = np.zeros(3)
         al_des[1] = kp_p * (ref['pitch'] - body['pitch']) \
             - kd_p * float(np.dot(R[:, 1], body['omega']))
-        # v1072: 轴抬升 pitch 前馈——后轴 SWING 减载反作用使 body 翘头
-        # （~21Nm），前腿强保持饱和仍上折；前馈主动低头抵消（F_z_min=46
-        # 后后轮能出力执行）
         _ff_sw = 1.5
         if _ff_sw > 0.0:
             if float(np.max(swing[2:4])) > 0.5:
@@ -259,36 +251,14 @@ class NmpcWbc:
             - kd_y * float(np.dot(R[:, 2], body['omega']))
         al_des[0] = -8.0 * body['roll']
         al_des[0] -= 6.0 * float(np.dot(R[:, 0], body['omega']))
-        # v1082: SWING/HOVER ??? z/????????a_des[2]<-g ?????
-        # ? F_z>=0 ?? ? ?????? F=0 ?????v1081 HOVER ???
-        # F ????????????????F ?????
-        # v2026(m23): anti-launch——爬顶发射期 vz>0.5 时允许 a_des z 下探到
-        # -10（原 clip [-4,6] 把 kd_z*vz 率阻尼砍掉，控制器无权刹住发射；
-        # m16 body 0.99/轮 1.2 折叠卡死即此因）
-        _vz_b = float(np.dot(R[:, 2], body['omega']))
-        _zlo = -10.0 if _vz_b > 0.5 else -4.0
-        a_des[2] = float(np.clip(a_des[2], _zlo, 6.0))
         if float(np.max(swing)) > 0.5:
             _al_lim = 30.0
             al_des[1] = float(np.clip(al_des[1], -_al_lim, _al_lim))
-            # v1147: SWING ? pitch ?????pitch<-0.55???>32?????
-            # ???????0.36m?????? ? ???????real83 ??
-            # 1.35 ????????????????????????
             if float(body['pitch']) < -0.55:
                 al_des[1] += 20.0 * (-0.55 - float(body['pitch']))
-            # v1083/v1113: SWING ? yaw ???? ????real13/46 ?????
-            # v2026(m12): ?? SWING ? yaw ???? —— y=38.0-38.3 ????
-            # ???(2.15->2.65)??? al_des[2]=0 ????????????
-            # wheel yaw 4.0/4.0 ?????????? ??????????
-            _fwd2 = fwd_w[0:2]
-            _n2 = float(np.dot(_fwd2, _fwd2))
-            if _n2 > 1e-6:
-                a_des[0:2] = (float(np.dot(a_des[0:2], _fwd2)) / _n2) * _fwd2
         M_des = self.I_body @ al_des \
             + np.cross(body['omega'], self.I_body @ body['omega'])
-        # 轮相对 CoM 位置（世界系）
         r_w = wheel_xyz - body['pos']
-        # A_m：F(12) -> Σ r×F (3)
         A_m = np.zeros((3, 12))
         for i in range(4):
             rc = r_w[i]
@@ -298,94 +268,135 @@ class NmpcWbc:
             A_m[1, 3*i+2] = -rc[0]
             A_m[2, 3*i+0] = -rc[1]
             A_m[2, 3*i+1] = rc[0]
-        # 代价矩阵 P（15x15）——QP 标准形 0.5·x^T P x，P=2·(w‖·‖²)，
-        # 否则线性项被放大 → QP 选 F=0 自由落体（台架实测）
-        n = 15
-        P = np.zeros((n, n))
-        P[0:12, 0:12] = 2.0 * (
-            w_f * np.eye(12) + w_m * (A_m.T @ A_m) + w_fr * np.eye(12))
-        P[12:15, 12:15] = 2.0 * w_a * np.eye(3)
-        q = np.zeros(n)
-        q[12:15] = -2.0 * w_a * a_des
-        q[0:12] = -2.0 * (w_m * (A_m.T @ M_des) + w_fr * F_ref)
-        # 等式：m·a - ΣF = mg
-        Ae = np.zeros((3, n))
-        Ae[0, 0:12:3] = -1.0
-        Ae[1, 1:12:3] = -1.0
-        Ae[2, 2:12:3] = -1.0
-        Ae[0, 12] = m
-        Ae[1, 13] = m
-        Ae[2, 14] = m
-        # m·a - ΣF = m·g_vec，g_vec=(0,0,-g)（重力向下）——写 +mg 会让
-        # ΣF 解为向下、WBC 把 body 往上推发射（台架翻车实测）
-        # v1087(??3????): ????? mode ????SWING ????
-        # ?/???WBC ????? PD???? F_des?????????
-        # SWING ? F_z ? ????????????? ? ???????
-        # ?????real14-18 ?? bz 0.70?fn ????
-        # v1109: ??????/?? SWING ??"????"?????????
-        # ?? F_z>=20 ??????????? F_z>=46?v1070??
-        # #1(???): ????? NMPC??SWING ?? SRBD ?/??????
-        # ??????????????????? ????????????
-        # ???osqp ???????????????????????
         for i in range(4):
             if swing[i] > 0.5 and i in (0, 1):
-                # v1081 asymmetric contact: front swing wheels are airborne
-                # (F=0, removed from SRBD). Rear swing wheels ROLL/CLIMB the
-                # face -> keep them in dynamics with Fz>=REAR_SWING_FZ_MIN.
-                A_m[:, 3 * i:3 * i + 3] = 0.0
-                Ae[0, 3 * i + 0] = 0.0
-                Ae[1, 3 * i + 1] = 0.0
-                Ae[2, 3 * i + 2] = 0.0
-        be = np.array([0.0, 0.0, -m * g])
-        # 不等式（固定结构）：每轮 6 行
+                A_m[:, 3*i:3*i+3] = 0.0
+        nk = 21
+        n = nk * K
+        P = np.zeros((n, n))
+        q = np.zeros(n)
+        pos0 = np.asarray(body['pos'], dtype=np.float64)
+        vel0 = np.asarray(body['vel'], dtype=np.float64)
+        _vz_b = float(np.dot(R[:, 2], body['omega']))
+        _zlo = -10.0 if _vz_b > 0.5 else -4.0
+        _any_sw = float(np.max(swing)) > 0.5
+        a_des = np.zeros(3)
+        a_des[2] = float(np.clip(kp_z * (ref['z'] - pos0[2])
+                                - kd_z * float(np.dot(R[:, 2], body['omega'])),
+                                _zlo, 6.0))
+        v_w0 = fwd_w * body['vx']
+        a_des[0:2] = kp_vx * (ref['vx'] * fwd_w[0:2] - v_w0[0:2])
+        if _any_sw:
+            _n2 = float(np.dot(fwd_w[0:2], fwd_w[0:2]))
+            if _n2 > 1e-6:
+                a_des[0:2] = (float(np.dot(a_des[0:2], fwd_w[0:2])) / _n2) * fwd_w[0:2]
+        for k in range(K):
+            f0 = nk * k
+            P[f0+12:f0+15, f0+12:f0+15] += 2.0 * w_a * np.eye(3)
+            q[f0+12:f0+15] += -2.0 * w_a * a_des
+            Fs = np.arange(f0, f0+12)
+            P[np.ix_(Fs, Fs)] += 2.0 * (
+                w_f * np.eye(12) + w_m * (A_m.T @ A_m) + w_fr * np.eye(12))
+            q[Fs] += -2.0 * (w_m * (A_m.T @ M_des) + w_fr * F_ref)
+            p_free = pos0 + vel0 * (k * dt)
+            p_idx = [f0+15, f0+16, f0+17]
+            v_idx = [f0+18, f0+19, f0+20]
+            P[np.ix_(p_idx, p_idx)] += 2.0 * w_p * np.eye(3)
+            q[p_idx] += -2.0 * w_p * p_free
+            P[np.ix_(v_idx, v_idx)] += 2.0 * w_v * np.eye(3)
+            q[v_idx] += -2.0 * w_v * vel0
+            if k >= 1:
+                f1 = nk * (k-1)
+                P[np.ix_(Fs, Fs)] += 2.0 * w_s * np.eye(12)
+                P[np.ix_(np.arange(f1, f1+12), np.arange(f0, f0+12))] -= 2.0 * w_s * np.eye(12)
+                P[np.ix_(np.arange(f0, f0+12), np.arange(f1, f1+12))] -= 2.0 * w_s * np.eye(12)
+        neq = 3*K + 6*K
+        Ae = np.zeros((neq, n))
+        be = np.zeros(neq)
+        for k in range(K):
+            f0 = nk * k
+            # SRBD 三轴分行：x=Fx 行 3k, y=Fy 行 3k+1, z=Fz 行 3k+2
+            Ae[3*k+0, f0+0:f0+12:3] = -1.0
+            Ae[3*k+1, f0+1:f0+12:3] = -1.0
+            Ae[3*k+2, f0+2:f0+12:3] = -1.0
+            for i in range(4):
+                if swing[i] > 0.5 and i in (0, 1):
+                    Ae[3*k+0, f0+3*i+0] = 0.0
+                    Ae[3*k+1, f0+3*i+1] = 0.0
+                    Ae[3*k+2, f0+3*i+2] = 0.0
+            Ae[3*k+0, f0+12] = m
+            Ae[3*k+1, f0+13] = m
+            Ae[3*k+2, f0+14] = m
+            be[3*k+2] = -m * g
+            if k == 0:
+                r0 = 3*K
+                for j in range(3):
+                    Ae[r0+j, f0+15+j] = 1.0
+                    be[r0+j] = pos0[j]
+                    Ae[r0+3+j, f0+18+j] = 1.0
+                    be[r0+3+j] = vel0[j]
+            else:
+                rp = 3*K + 6*k
+                f1 = nk * (k-1)
+                for j in range(3):
+                    Ae[rp+j, f0+18+j] = 1.0
+                    Ae[rp+j, f1+18+j] = -1.0
+                    Ae[rp+j, f1+12+j] = -dt
+                    Ae[rp+3+j, f0+15+j] = 1.0
+                    Ae[rp+3+j, f1+15+j] = -1.0
+                    Ae[rp+3+j, f1+18+j] = -dt
         rows = []
         ub = []
-        for i in range(4):
-            e = np.zeros(n)
-            e[3*i+2] = -1.0
-            rows.append(e); ub.append(0.0)
-            for j in range(2):
+        for k in range(K):
+            f0 = nk * k
+            for i in range(4):
                 e = np.zeros(n)
-                e[3*i+j] = 1.0; e[3*i+2] = -self.mu
+                e[f0+3*i+2] = -1.0
                 rows.append(e); ub.append(0.0)
+                for j in range(2):
+                    e = np.zeros(n)
+                    e[f0+3*i+j] = 1.0; e[f0+3*i+2] = -self.mu
+                    rows.append(e); ub.append(0.0)
+                    e = np.zeros(n)
+                    e[f0+3*i+j] = -1.0; e[f0+3*i+2] = -self.mu
+                    rows.append(e); ub.append(0.0)
                 e = np.zeros(n)
-                e[3*i+j] = -1.0; e[3*i+2] = -self.mu
-                rows.append(e); ub.append(0.0)
+                e[f0+3*i+2] = 1.0
+                rows.append(e); ub.append(self.fz_max)
+            for i in range(12):
+                e = np.zeros(n)
+                e[f0+i] = 1.0
+                rows.append(e); ub.append(1e9)
             e = np.zeros(n)
-            e[3*i+2] = 1.0
-            rows.append(e); ub.append(self.fz_max)
-        # 恒等行把 F 变量界折进 A（结构固定，l/u 随调用变化）：
-        # 抬升轮 F=0（l=u=0），支撑轮自由（l=-inf,u=+inf）
-        A = np.vstack([Ae] + rows + [np.eye(n)[0:12]])
-        l = np.hstack([be] + [-1e9] * len(rows)
-                      + [-1e9] * 12)
-        u = np.hstack([be] + ub + [1e9] * 12)
-        for i in range(4):
-            if swing[i] > 0.5:
-                if i in (0, 1):
-                    # 前轴 SWING：轮离地 -> F=0（模型==执行）
-                    l[3 + len(rows) + 3*i + 0] = 0.0
-                    u[3 + len(rows) + 3*i + 0] = 0.0
-                    l[3 + len(rows) + 3*i + 1] = 0.0
-                    u[3 + len(rows) + 3*i + 1] = 0.0
-                    l[3 + len(rows) + 3*i + 2] = 0.0
-                    u[3 + len(rows) + 3*i + 2] = 0.0
-                else:
-                    # 后轴 SWING：轮贴面滚爬，需 Fz 下限保牵引（v1070 实测）
-                    l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
-                        'S10_NMPC_REAR_SWING_FZ_MIN', '46.0'))
-                    u[3 + len(rows) + 3*i + 2] = self.fz_max
-            elif float(np.max(swing[0:2])) > 0.5 and i in (2, 3):
-                # v1159: ?? SWING ???????F_z >= ??? 95N??85 ?
-                # ?????????????????????? 124N<186N??
-                l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
-                    'S10_NMPC_STANCE_FZ_MIN', '95.0'))
-                u[3 + len(rows) + 3*i + 2] = self.fz_max
-            elif float(np.max(swing[2:4])) > 0.5 and i in (0, 1):
-                # v1159: ?? SWING ????????? F_z >= 95N?
-                l[3 + len(rows) + 3*i + 2] = float(os.environ.get(
-                    'S10_NMPC_STANCE_FZ_MIN', '95.0'))
-                u[3 + len(rows) + 3*i + 2] = self.fz_max
+            e[f0+14] = 1.0
+            rows.append(e); ub.append(6.0)
+            e = np.zeros(n)
+            e[f0+14] = -1.0
+            rows.append(e); ub.append(-_zlo)
+        A = np.vstack([Ae] + rows)
+        l = np.hstack([be] + [-1e9] * len(rows))
+        u = np.hstack([be] + ub)
+        for k in range(K):
+            f0 = nk * k
+            for i in range(4):
+                base = neq + 38 * k + 24 + 3 * i
+                if swing[i] > 0.5:
+                    if i in (0, 1):
+                        l[base+0] = 0.0; u[base+0] = 0.0
+                        l[base+1] = 0.0; u[base+1] = 0.0
+                        l[base+2] = 0.0; u[base+2] = 0.0
+                    else:
+                        l[base+2] = float(os.environ.get(
+                            'S10_NMPC_REAR_SWING_FZ_MIN', '46.0'))
+                        u[base+2] = self.fz_max
+                elif float(np.max(swing[0:2])) > 0.5 and i in (2, 3):
+                    l[base+2] = float(os.environ.get(
+                        'S10_NMPC_STANCE_FZ_MIN', '95.0'))
+                    u[base+2] = self.fz_max
+                elif float(np.max(swing[2:4])) > 0.5 and i in (0, 1):
+                    l[base+2] = float(os.environ.get(
+                        'S10_NMPC_STANCE_FZ_MIN', '95.0'))
+                    u[base+2] = self.fz_max
         import osqp
         from scipy import sparse
         if self._nmpc_prob is None:
@@ -393,7 +404,7 @@ class NmpcWbc:
             prob.setup(P=sparse.csc_matrix(P), q=q,
                        A=sparse.csc_matrix(A), l=l, u=u,
                        verbose=False, eps_abs=1e-3, eps_rel=1e-3,
-                       max_iter=500, polish=False)
+                       max_iter=800, polish=False)
             self._nmpc_prob = prob
         else:
             prob = self._nmpc_prob
@@ -407,13 +418,13 @@ class NmpcWbc:
             F = x[0:12].reshape(4, 3)
             a = x[12:15]
             if os.environ.get('S10_NMPC_DEBUG', '0') == '1':
-                print('[NMPC] t=%.2f F=%s a=%s ades=%s Mdes=%s st=%s dt=%.1fms'
+                print('[NMPC] t=%.2f F=%s a=%s ades=%s Mdes=%s st=%s dt=%.1fms K=%d'
                       % (self._t, np.round(F, 1).tolist(),
                          np.round(a, 2).tolist(),
                          np.round(a_des, 2).tolist(),
                          np.round(M_des, 1).tolist(),
                          res.info.status,
-                         1e3 * (_t.perf_counter() - _t0)), flush=True)
+                         1e3 * (_t.perf_counter() - _t0), K), flush=True)
             return F, a
         except Exception as _e:
             print('[NMPC] ERR', _e, flush=True)
@@ -634,10 +645,10 @@ class NmpcWbc:
                 # 防倒转下限（小）
                 _tw = min(float(_tw), _dfx)
                 # yaw 率阻尼 + 航向误差（轮差速）
-                _tw += _sd * float(qvel[5]) * 4.0 * self.track_half
+                _tw += _sd * float(qvel[5]) * 8.0 * self.track_half
                 try:
                     _hdg_e = float(getattr(self.stair, '_hdg_err', 0.0))
-                    _ky = 4.0
+                    _ky = 8.0
                     _tw -= _sd * _hdg_e * _ky * self.track_half
                 except Exception:
                     pass
