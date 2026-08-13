@@ -140,8 +140,10 @@ class NmpcWbc:
         # ???0.80 ???????SWING ??????0.72 ??????? #1?
         # G1 geometry-scaled: swing only triggers when body is high enough
         # for the wheel target cap (body_z - 0.02 >= riser_top + r).
-        _bz_ok_f = float(body_pos[2]) > float(_tf) + r + 0.02
-        _bz_ok_r = float(body_pos[2]) > float(_tr) + r + 0.02
+        # M1ccc3: G1 门控适中化 top+r-0.05（原 +0.02=0.767 从不满足
+        # →swing 惰性；-0.05=0.697 登顶时短暂激活，位置控制抬轮过棱面）
+        _bz_ok_f = float(body_pos[2]) > float(_tf) + r - 0.05
+        _bz_ok_r = float(body_pos[2]) > float(_tr) + r - 0.05
         if self._sp_f <= 0.0:
             # M1ppp: 轮已在台面顶上时不重触 SWING
             # （两级台阶之间前轴 d<0.05 但轮已过棱→
