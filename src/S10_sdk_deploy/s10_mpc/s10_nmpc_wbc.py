@@ -271,7 +271,7 @@ class NmpcWbc:
         for i in range(4):
             if swing[i] > 0.5 and i in (0, 1):
                 A_m[:, 3*i:3*i+3] = 0.0
-        nk = 34  # M1ggg+ooo: [F(12),a(3),p(3),v(3),alpha(3),omega(3),theta(3),wv(4)]
+        nk = 38  # M1ggg+ooo+zzz: [...,wv(4),wz_sw(4)]
         n = nk * K
         P = np.zeros((n, n))
         q = np.zeros(n)
@@ -292,6 +292,32 @@ class NmpcWbc:
             _n2 = float(np.dot(fwd_w[0:2], fwd_w[0:2]))
             if _n2 > 1e-6:
                 a_des[0:2] = (float(np.dot(a_des[0:2], fwd_w[0:2])) / _n2) * fwd_w[0:2]
+        # M1xxx3: 摆动轮几何目标（与 WBC swing_tgt_z 同款 smoothstep）
+        _wz_sw_tgt = np.zeros(4)
+        for leg in range(4):
+            _ax_idx = (0, 1) if leg in (0, 1) else (2, 3)
+            _ax_xy = np.mean([wheel_xyz[_i, :2] for _i in _ax_idx], axis=0)
+            _best_d, _best = 1e9, None
+            for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
+                if _dhv <= 0.085:
+                    continue
+                _dd = float(np.dot(_ax_xy - _rp, _tng))
+                if -0.45 < _dd < 0.05 and abs(_dd) < abs(_best_d):
+                    _best_d, _best = _dd, (_rp, _tng, _dhv, _top)
+            if _best is not None:
+                (_rp, _tng, _dhv, _top) = _best
+                _z_bot = float(_top - _dhv)
+                _d_w = _best_d
+                _rr = self.fk.r
+                if leg in (2, 3):
+                    _t = float(np.clip((_d_w + _rr) / max(_rr, 1e-3), 0.0, 1.0))
+                else:
+                    _t = float(np.clip((_d_w + self.swing_d) / max(self.swing_d, 1e-3), 0.0, 1.0))
+                _ss = _t * _t * (3.0 - 2.0 * _t)
+                _zc = _z_bot + _rr + _dhv * _ss
+                _wz_sw_tgt[leg] = min(_zc, _top + _rr + 0.005)
+            else:
+                _wz_sw_tgt[leg] = float(wheel_xyz[leg, 2])
         for k in range(K):
             f0 = nk * k
             P[f0+12:f0+15, f0+12:f0+15] += 2.0 * w_a * np.eye(3)
@@ -334,6 +360,11 @@ class NmpcWbc:
                     P[f1w+30+_wi, f1w+30+_wi] += 2.0 * 0.2 * w_wheel
                     P[f1w+30+_wi, _wv_idx[_wi]] -= 2.0 * 0.2 * w_wheel
                     P[_wv_idx[_wi], f1w+30+_wi] -= 2.0 * 0.2 * w_wheel
+            # M1xxx3: 摆动轮 z 状态 wz_sw(4)，与 body z 耦合
+            _wz_idx = [f0+34, f0+35, f0+36, f0+37]
+            for _wi in range(4):
+                P[_wz_idx[_wi], _wz_idx[_wi]] += 2.0 * 1.0
+                q[_wz_idx[_wi]] += -2.0 * 1.0 * _wz_sw_tgt[_wi]
             if k >= 1:
                 f1 = nk * (k-1)
                 P[np.ix_(Fs, Fs)] += 2.0 * w_s * np.eye(12)
@@ -435,6 +466,13 @@ class NmpcWbc:
                 e = np.zeros(n)
                 e[f0+30+_wi] = -1.0
                 rows.append(e); ub.append(12.0)
+            # M1xxx3: body z ≥ 摆动轮 z + 0.05（计划层禁折叠几何）
+            for _wi in range(4):
+                if swing[_wi] > 0.5:
+                    e = np.zeros(n)
+                    e[f0+17] = -1.0
+                    e[f0+34+_wi] = 1.0
+                    rows.append(e); ub.append(-0.05)
             # M1mmm3: F_z 对称只在左右同态时生效（轮级
             # swing 后单轮摆动时不能强迫支撑轮 F_z=0）
             for _pr in ((0, 1), (2, 3)):
@@ -489,6 +527,7 @@ class NmpcWbc:
             F = x[0:12].reshape(4, 3)
             a = x[12:15]
             self._wv_des = np.clip(x[30:34], -12.0, 12.0)
+            self._wz_sw_des = np.clip(x[34:38], 0.0, 2.5)
             if os.environ.get('S10_NMPC_DEBUG', '0') == '1':
                 print('[NMPC] t=%.2f F=%s a=%s ades=%s Mdes=%s wv=%s st=%s dt=%.1fms K=%d'
                       % (self._t, np.round(F, 1).tolist(),
@@ -570,7 +609,8 @@ class NmpcWbc:
             sl = swing[leg]
             if sl > 0.5 and leg in swing_tgt_z:
                 # 摆腿（贴面爬升）：位置 PD + 小支撑力（F_des 的 F_z 部分）
-                wz_t = swing_tgt_z[leg]
+                _wzs = getattr(self, '_wz_sw_des', None)
+                wz_t = float(_wzs[leg]) if (_wzs is not None) else swing_tgt_z[leg]
                 # v1079(方向1): HOVER 期前轮目标 = body 相对 drop（正 drop
                 # 恒定，轮随 body 平移），钳在台面顶+半径以上不插台面
                 # v1089: ???????????????????-2cm?????
@@ -744,12 +784,13 @@ class NmpcWbc:
                 tau[LEG_CTRL_IDX[b]] = float(0.30 * fy + 80.0 * (
                     -0.05 if leg in (0, 1) else 0.05))
                 if _pos_lift:
-                    # 位置控制抬 body：后腿 IK 拉伸到 z_ref 对应腿长
-                    _zr = float(ref.get('z', 0.8))
-                    _drop = float(np.clip(_zr - float(wheel_xyz[leg, 2]), 0.10, 0.32))
+                    # 位置控制抬 body：目标钳到 0.94（后腿可达 0.96）
+                    # + kp 120 防过冲（body 过冲 1.12 > 0.96 后轮折叠实测）
+                    _zr = min(float(ref.get('z', 0.8)), 0.94)
+                    _drop = float(np.clip(_zr - float(wheel_xyz[leg, 2]), 0.10, 0.30))
                     _q1t, _q2t = self._ik(0.0, -_drop, q1, q2, leg=leg)
-                    tau[LEG_CTRL_IDX[b+1]] = 200.0 * (_q1t - q1) - 20.0 * dq1
-                    tau[LEG_CTRL_IDX[b+2]] = 200.0 * (_q2t - q2) - 20.0 * dq2
+                    tau[LEG_CTRL_IDX[b+1]] = 120.0 * (_q1t - q1) - 20.0 * dq1
+                    tau[LEG_CTRL_IDX[b+2]] = 120.0 * (_q2t - q2) - 20.0 * dq2
                     tau[LEG_CTRL_IDX[b]] = 0.0
         # 轮：Pfaffian 驱动——τ 跟随 NMPC 接触力前向分量（受摩擦锥约束），
         # vx PID 只做微调，下限仅防倒转。v1065: 前驱下限-5×4=247N 前向力
