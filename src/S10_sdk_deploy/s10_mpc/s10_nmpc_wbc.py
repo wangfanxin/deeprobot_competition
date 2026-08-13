@@ -200,9 +200,10 @@ class NmpcWbc:
             if self._sp[leg] <= 0.0:
                 _below_top = _wz < float(_top) + r - 0.02
                 _sw_win = 0.75 if leg in (2, 3) else 0.50
-                _d_use = (0.5 * (_front_d[0] + _front_d[1])
-                          if leg in (0, 1) else _d)
-                if -_sw_win < _d_use < 0.05 and _bz_ok and _below_top:
+                _d_use = _d
+                _tripod_ok = float(np.sum(self._sp)) <= 0.5
+                if (_tripod_ok and -_sw_win < _d_use < 0.05
+                        and _bz_ok and _below_top):
                     self._sp[leg] = 1.0
                     self._sp_top[leg] = float(_top)
                     self._sp_tgt[leg] = int(_tgt_idx)
@@ -325,10 +326,8 @@ class NmpcWbc:
         # eating the friction budget -> forward F_x starves -> stall at the
         # riser face -> tip). The roll drifts a little; the advance breaks
         # the stall. On flat (no swing) the full gain holds.
-        al_des[0] = -15.0 * body['roll']
-        if float(np.max(swing)) > 0.5:
-            al_des[0] *= 0.3
-        al_des[0] -= 10.0 * float(np.dot(R[:, 0], body['omega']))
+        al_des[0] = -18.0 * body['roll']
+        al_des[0] -= 12.0 * float(np.dot(R[:, 0], body['omega']))
         if float(np.max(swing)) > 0.5:
             _al_lim = 30.0
             al_des[1] = float(np.clip(al_des[1], -_al_lim, _al_lim))
@@ -672,8 +671,7 @@ class NmpcWbc:
                 # M1vvv3: 触发用单轮（对角支撑），目标用轴均值
                 # （左右同目标防 roll；单轮目标在左右独立
                 # swing 时目标不同→侧翻实测）
-                _ax_idx = (0, 1) if leg in (0, 1) else (2, 3)
-                _ax_xy = np.mean([wheel_xyz[_i, :2] for _i in _ax_idx], axis=0)
+                _ax_xy = wheel_xyz[leg, :2]
                 _best_d, _best = 1e9, None
                 for (_rp, _tng, _sr, _dhv, _top) in self.stair_world:
                     if _dhv <= 0.085:
@@ -732,8 +730,7 @@ class NmpcWbc:
             # legs together (axle-mean wheel z). Per-leg engagement lifted
             # one wheel first (L0 0.73 / L1 0.62) -> roll -1.48. The rear
             # stays per-leg (its wheels are farther apart in phase).
-            _wz_ctl = (float(np.mean(wheel_xyz[0:2, 2]))
-                       if leg in (0, 1) else float(wheel_xyz[leg, 2]))
+            _wz_ctl = float(wheel_xyz[leg, 2])
             if sl > 0.5 and leg in swing_tgt_z and (
                     float(swing_tgt_z[leg]) > _wz_ctl + 0.005
                     or _wz_ctl
@@ -747,11 +744,6 @@ class NmpcWbc:
                 # The lagging front wheel's target is raised toward the
                 # leader; the leader stays on the face arc (the overshoot
                 # damping returns it). Rear stays per-leg.
-                if leg in (0, 1) and sl > 0.5:
-                    _wz_max_f = float(np.max(wheel_xyz[0:2, 2]))
-                    if float(wheel_xyz[leg, 2]) < _wz_max_f - 0.01:
-                        wz_t = wz_t + 0.5 * (
-                            _wz_max_f - float(wheel_xyz[leg, 2]))
                 # v1079(方向1): HOVER 期前轮目标 = body 相对 drop（正 drop
                 # 恒定，轮随 body 平移），钳在台面顶+半径以上不插台面
                 # v1089: ???????????????????-2cm?????
