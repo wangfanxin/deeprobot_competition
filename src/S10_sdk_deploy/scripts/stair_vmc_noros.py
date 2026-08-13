@@ -773,18 +773,22 @@ def main():
                 pass
         elif _iszn9:
             try:
-                # v755: 显式轮心 z 参考（文献:轮轨迹显式化）——stair_wheel_ref
-                # 由 riser 表解析生成（棱前 RAMP_A ramp 平滑抬到台面顶+r），
-                # 替代"轮位-半径"自证地面（悬空轮跟随轮位不被纠正死锁实测）。
-                # 轮心目标 = terr + r = stair_wheel_ref，支撑腿沿参考轨迹抬升。
-                # v755d: 左右轮参考对称化——yaw≠1.57 时左/右轮 y 不同→ramp
-                # 相位差→单侧过抬 roll 侧翻实测（wz 0.78/0.95）；楼梯走廊
-                # 横向平坦，用轴心 y 生成参考，左右一致。
-                _wy_sym = np.array(
-                    [float(np.mean(wheel_xyz[0:2, 1]))] * 2
-                    + [float(np.mean(wheel_xyz[2:4, 1]))] * 2)
-                terr = np.asarray(fol.stair_wheel_ref(
-                    _wy_sym), dtype=np.float64) - 0.081
+                # M1map (2026-08-13): nmpcwbc terrain from the lidar
+                # ELEVATION MAP (deployable: the real robot has no god-view
+                # scan). The old stair_wheel_ref was riser-table derived
+                # (god-view pre-scan). KIN fallback fills unmeasured cells.
+                # Map heights carry a ~-1.4cm systematic bias and a 0.1m
+                # edge dead zone; the controller's own smoothstep windows
+                # (from the riser table) smooth the z refs.
+                terr = np.array(
+                    [terrain_at(wheel_xyz[i, 0], wheel_xyz[i, 1])
+                     for i in range(4)], dtype=np.float64)
+                if (os.environ.get('S10_VMC_TERRAIN_KIN', '0') == '1'
+                        and os.environ.get('S10_VMC_TERRAIN', 'ray')
+                        == 'lidar'):
+                    for _i in range(4):
+                        if not lterr.has(wheel_xyz[_i, 0], wheel_xyz[_i, 1]):
+                            terr[_i] = float(wheel_xyz[_i, 2] - 0.081)
             except Exception:
                 pass
         # v755b: 旧覆盖（棱前 0.30m 把 terr 抬到台面顶+0.02）删除——提前抬
