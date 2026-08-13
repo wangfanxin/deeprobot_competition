@@ -1031,7 +1031,14 @@ class NmpcWbc:
                     # （滑退时 NMPC 规划负轮速→后轮制动→加剧滑退）
                     # M1lll: 下限跟进指令速度 0.8*vx_f（原固定 0.3
                     # → 停滞时轮转 1.4 但参考 0.3 →后轮制动实测）
-                    _vref = max(float(_wv_des[leg]), 0.8 * self._vx_f)
+                    # M1vs (2026-08-13): the wheel-speed reference floor uses
+                    # the ACTUAL body vx, not the commanded vx_f. At the
+                    # riser face the command is 1.2 while the robot moves 0.2
+                    # -> the wheels spin at 1.2 (1.0 slip, friction wasted) ->
+                    # the drive stalls. Matching the actual speed keeps the
+                    # wheels in contact and the drive effective.
+                    _vref = max(float(_wv_des[leg]),
+                                0.8 * float(body['vx']))
                 else:
                     _vref = self._vx_f
                 # M1yyy4: 摆动期 stance 轮恢复导航 om 差速（登顶
