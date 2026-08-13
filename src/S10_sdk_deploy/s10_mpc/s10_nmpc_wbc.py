@@ -643,6 +643,16 @@ class NmpcWbc:
                 tau[WHEEL_Q_IDX[leg]] = float(np.clip(
                     -self.fk.r * fx_fb, -13.5, 13.5))
             else:
+                # M1ooo3: 前轮摆动期后轴支撑轮纯位置控制抬 body
+                # （力控在短腿位形推不动 body；IK 拉伸后腿直接举 body）
+                # M1ppp3: 前轮登顶（wz>0.75）时后轴位置控制抬 body
+                # （原依赖 swing 状态但登顶期 G1 门控不满
+                # 足→swing 惰性→未触发；直接按前轮高度）
+                _fr_sw = float(np.max(swing[0:2])) > 0.5
+                _rr_sw = float(np.max(swing[2:4])) > 0.5
+                _wz_f = float(np.mean(wheel_xyz[0:2, 2]))
+                # M1qqq3: 逐腿判断（该后腿不摆动且前轮登顶）
+                _pos_lift = (_fr_sw or _wz_f > 0.75) and swing[leg] <= 0.5 and leg in (2, 3)
                 # 支撑腿：J^T·(R^T·F_des) 力分配——F_des 是作用在 body 的
                 # 接触力（向上），与 VMC 约定一致（f_b=R^T·F，f_sag=[fx,-fz]）
                 _qp1 = -1.16 if leg in (0, 1) else 1.16
@@ -728,6 +738,14 @@ class NmpcWbc:
                 # v1078 回退：HipX 直接 yaw 误差项过冲（t=9 翻），v1075 基线最优
                 tau[LEG_CTRL_IDX[b]] = float(0.30 * fy + 80.0 * (
                     -0.05 if leg in (0, 1) else 0.05))
+                if _pos_lift:
+                    # 位置控制抬 body：后腿 IK 拉伸到 z_ref 对应腿长
+                    _zr = float(ref.get('z', 0.8))
+                    _drop = float(np.clip(_zr - float(wheel_xyz[leg, 2]), 0.10, 0.32))
+                    _q1t, _q2t = self._ik(0.0, -_drop, q1, q2, leg=leg)
+                    tau[LEG_CTRL_IDX[b+1]] = 200.0 * (_q1t - q1) - 20.0 * dq1
+                    tau[LEG_CTRL_IDX[b+2]] = 200.0 * (_q2t - q2) - 20.0 * dq2
+                    tau[LEG_CTRL_IDX[b]] = 0.0
         # 轮：Pfaffian 驱动——τ 跟随 NMPC 接触力前向分量（受摩擦锥约束），
         # vx PID 只做微调，下限仅防倒转。v1065: 前驱下限-5×4=247N 前向力
         # 作用在轮心（CoM 下方）→ 50Nm 俯仰 → 翘起发射（台架实测）；
