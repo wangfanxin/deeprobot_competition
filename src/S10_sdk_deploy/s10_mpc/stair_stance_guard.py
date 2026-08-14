@@ -70,6 +70,36 @@ class StairStanceGuard:
                 limit = min(limit, self.wheel_tau_max)
                 tau[act_id] = float(np.clip(tau[act_id], -limit, limit))
 
+        if __import__('os').environ.get('S10_STANCE_BODY_CTRL', '0') == '1':
+            kp_roll = float(__import__('os').environ.get('S10_STANCE_BODY_KP_ROLL', '40.0'))
+            kd_roll = float(__import__('os').environ.get('S10_STANCE_BODY_KD_ROLL', '4.0'))
+            kp_pitch = float(__import__('os').environ.get('S10_STANCE_BODY_KP_PITCH', '40.0'))
+            kd_pitch = float(__import__('os').environ.get('S10_STANCE_BODY_KD_PITCH', '4.0'))
+            quat = np.asarray(self.d.xquat[1], dtype=np.float64)
+            w, x, y, z = quat
+            roll = float(np.arctan2(2.0*(w*x + y*z), 1.0 - 2.0*(x*x + y*y)))
+            pitch = float(np.arcsin(np.clip(2.0*(w*y - z*x), -1.0, 1.0)))
+            ang = np.asarray(self.d.cvel[1][3:6], dtype=np.float64)
+            roll_err = -roll
+            pitch_err = -pitch
+            tau_roll = kp_roll * roll_err - kd_roll * float(ang[0])
+            tau_pitch = kp_pitch * pitch_err - kd_pitch * float(ang[1])
+            for i in range(4):
+                if not contact[i]:
+                    continue
+                base = i * 4
+                hip_idx = base + 1
+                knee_idx = base + 2
+                left = i in (0, 2)
+                front = i in (0, 1)
+                roll_side = -1.0 if left else 1.0
+                pitch_axle = -1.0 if front else 1.0
+                tau[hip_idx] += roll_side * tau_roll
+                tau[knee_idx] += pitch_axle * tau_pitch
+        leg_ids = (0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14)
+        for j in leg_ids:
+            tau[j] = float(np.clip(tau[j], -48.0, 48.0))
+
         if __import__('os').environ.get('S10_STANCE_GUARD_DEBUG', '0') == '1':
             print(f'[GUARD] fn={[round(float(v),1) for v in fn]} contact={[bool(v) for v in contact]} swing={[bool(v) for v in request_swing]}', flush=True)
         return tau
