@@ -30,8 +30,10 @@ class S10RLCfg:
     kp_wheel: float = 2.0
     # S10-adapted (NOT go2w): FK-verified wheel lift within +/-action_scale
     #   0.25->4.2cm 0.5->9.9cm 0.6->12.4cm 0.7->14.7cm 0.8->16.7cm
-    #   competition riser = 12.5cm  -> action_scale=0.7 (go2w 0.25 insufficient)
-    action_scale: float = 0.7
+    #   competition riser = 12.5cm. 0.7->0.8 (2026-08-15 00:35): 0.7 gives only 14.7cm
+    #   lift = 2.2cm margin over 12.5cm riser -> T1d unstable (repeated regresses).
+    #   0.8 -> 16.7cm = 4.2cm margin. Joint limits safe (hipy pm2.53, knee pm2.72).
+    action_scale: float = 0.8
     # S10-adapted: wheel r=0.081; go2w vel_scale=10 caps at 0.81 m/s but stair entry
     #   is ~1.5 m/s -> vel_scale=24 gives 1.94 m/s max (cmd 0.8-1.8 covered)
     vel_scale: float = 24.0
@@ -113,18 +115,18 @@ class S10RLEnv:
         self.goal_y = float(cfg.terrain.goal_y)
         self.first_riser_y = float(cfg.terrain.riser_y[0]) if cfg.terrain.riser_y else None
 
-        # standing pose: S10 cruise half-squat pose_target (vmc_legs.py:841-846,
-        # S10_CAR_SQUAT=1 default; CarVMC + FootPlaceVMC both use it).
-        #   fl:[-0.05,-1.10, 1.90] fr:[ 0.05,-1.10, 1.90]
-        #   hl:[-0.05, 1.10,-1.90] hr:[ 0.05, 1.10,-1.90]   (wheel=0)
-        # Deployment handoff at wp6 arrives in this exact cruise half-squat, so RL
-        # default_dof must match it (go2w stance [0,0.67,-1.3,0] was copied from the
-        # method reference repo and is NOT the S10 pose - user-flagged 2026-08-14).
+        # standing pose = S10 stair-appropriate TALL stance (USER-DIRECTED 2026-08-14:
+        # do NOT copy the cruise half-squat - that pose presses the body low for speed;
+        # stair climbing needs a HIGHER body with LESS-bent legs).
+        #   fl:[-0.05,-0.60, 1.20] fr:[ 0.05,-0.60, 1.20]
+        #   hl:[-0.05, 0.60,-1.20] hr:[ 0.05, 0.60,-1.20]   (wheel=0)
+        # MuJoCo verified: settled stand_z=0.359 (vs cruise 0.262), wheel lift @act0.7 =
+        # 0.193m (vs cruise 0.147), half-wheelbase 0.246. PD-hold stable.
         self.default_dof = jnp.asarray(np.array(
-            [-0.05, -1.10, 1.90, 0.0,
-              0.05, -1.10, 1.90, 0.0,
-             -0.05,  1.10, -1.90, 0.0,
-              0.05,  1.10, -1.90, 0.0], dtype=np.float64))
+            [-0.05, -0.60, 1.20, 0.0,
+              0.05, -0.60, 1.20, 0.0,
+             -0.05,  0.60, -1.20, 0.0,
+              0.05,  0.60, -1.20, 0.0], dtype=np.float64))
         self.stand_qpos = jnp.asarray(self._compute_stand())
         self.stand_z = float(np.asarray(self.stand_qpos)[2])
 
@@ -186,7 +188,7 @@ class S10RLEnv:
         if len(ry) == 0:
             return ctx
         nr = ry.shape[0]
-        for k, off in enumerate((0.210, -0.210)):   # S10 half-squat measured half-wheelbase (was 0.228=go2w stance)
+        for k, off in enumerate((0.246, -0.246)):   # tall-stance settled half-wheelbase (front/rear wheel x)
             ay = base_y + off
             idx = jnp.sum(ry[None, :] < ay[:, None], axis=-1)   # count risers passed
             nxt = jnp.minimum(idx, nr - 1)

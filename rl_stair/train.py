@@ -109,7 +109,7 @@ def main():
         state, obs, priv = reset_j(jax.random.PRNGKey(args.seed + stage_idx))
         log(f"stage reset compiled {time.time()-t0:.0f}s")
 
-    build_env(stages[0])
+    build_env(stages[min(stage_idx, len(stages)-1)])   # resume continues at restored stage, not T0
     obs_noise = torch.zeros(env.obs_dim, device=device)
     obs_noise[0:3] = 0.05
     obs_noise[3:6] = 0.01
