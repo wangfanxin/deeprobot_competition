@@ -55,7 +55,7 @@ graph LR
     S["mujoco S10_track.xml (200Hz)"] -->|"lidar 扇形 96x48 前下45° 10Hz"| L["LidarTerrainV2 世界栅格累积高程图<br/>60x60 瓦片 res=0.05"]
     L -->|"riser 表 y/top/dh<br/>rise=0.05 max_dh=0.16"| P["StairContactPlanner (20Hz)<br/>w_swing 连续权重 + foothold 目标场 + action bias"]
     L -->|"step_flag/高程"| N["AutoNavFollower (20Hz)<br/>Catmull-Rom 路径 + vx 剖面 + 航向锁"]
-    P -->|"软相位/落脚点"| D["DiAL-MBDPI (20Hz)<br/>16D 扭矩采样 N=2048/H=14/N4"]
+    P -->|"软相位/落脚点"| D["DiAL-MBDPI (20Hz)<br/>16D 扭矩采样 N=512~1024/H=14~20/N4"]
     N -->|"[vx, omega]"| C["CRUISE: CarVMC (200Hz)<br/>轮驱动/差速 + 腿=主动悬架"]
     D -->|"action"| T["act2tau (200Hz) → 16D 力矩<br/>+ StairStanceGuard (200Hz 支撑多边形否决/轮锁)"]
     C -->|"tau"| S
@@ -80,7 +80,7 @@ graph LR
 | 导航 AutoNavFollower | **20Hz** | 50ms | `S10_NAV_HZ=20`（运行脚本均设 20） |
 | StairContactPlanner | **20Hz** | 50ms | `stair_dial_noros.py` 内 step%10 调用 |
 | 感知 LidarTerrainV2 / riser 检测 | **10Hz** | 100ms | `S10_LIDAR_FREQ=10`；step%20 调用 |
-| DiAL-MBDPI 规划（STAIR） | **20Hz（目标；P1-5 后 N=1024 待实测）** | 50ms | `S10_MPC_PLAN_INTERVAL_AUTO=10`；N=1024/H=14~20/N4 目标采样+PD；2026-08-14 实测 2048 档 ~12Hz（plan_ms≈82ms） |
+| DiAL-MBDPI 规划（STAIR） | **20Hz（目标；P1-5b 后 N=512 待实测）** | 50ms | `S10_MPC_PLAN_INTERVAL_AUTO=10`；N=512/H=14~20/N4 目标采样+PD（Ndiffuse=1 退火已最小，无法再减）；实测 2048 档 ~12Hz（plan_ms≈82ms）、1024 档 ~17-18Hz（plan_ms≈55ms） |
 | act2tau + StairStanceGuard（STAIR） | **200Hz** | 5ms | 每主步；guard 做支撑多边形否决与轮锁 |
 | CarVMC（CRUISE） | **200Hz** | 5ms | 每主步 |
 | 历史 NmpcWBC（归档） | NMPC 20Hz / WBC 200Hz | — | 已由 DiAL 顶替，代码保留在 `s10_nmpc_wbc.py` |
@@ -255,6 +255,7 @@ lidar 高程图 (10Hz) → riser/高程特征 (10Hz) → AutoNavFollower (20Hz, 
 | 2026-08-13 | 6cb4b05→61425a9 | 创建总方案主文档；归纳 CRUISE/STAIR 方案、数据管线、控制频率、参数表；清理 8-11 前旧归档；venv dial_mpc 改指向仓库内置副本；M1 多 knot NMPC 提交并由并行会话收口为 M1j |
 | 2026-08-14 | cc70c19 | 方案转向 DiAL 分层爬梯（StairContactPlanner + DiAL-MBDPI + StairStanceGuard）；更新本总方案（DiAL 数据管线/频率/参数表）；删除 8-12 前旧 stair 方案文档（6 篇 08-11 文档）与旧图 carvmc_vmax6_wp0-6_v730.png；README 进度更新 |
 | 2026-08-14 | 7386c5b | wp0-6 复测 13.5s 一致性确认（final2_wp0-6_xy_speed.png）；lidar res 0.05 + 96×48 射线；riser 跳变点/台面顶修复；hierarchical DiAL 方案落地（S10_STAIR_HARD_MODE=1 + 200Hz guard）；v10-v13 迭代脚本入库 |
+| 2026-08-14 | 110a467+ | 审阅收口：P1-5b 采样 1024->512（code+yaml+run 脚本）、退火 Ndiffuse=1 已最小；P0-4 清理死 _hard_foothold_z 写；P1-6 补提交 v21/v22 实验脚本；P2-9 复核 DDP 已归档；wp7 卡点（前轮悬空/无接触）仍为 STAIR 主阻塞 |
 
 > 后续每次实验：在此表追加一行，并同步 §7/§8/§9。
 

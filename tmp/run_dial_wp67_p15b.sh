@@ -2,8 +2,8 @@
 # wp6->7 DiAL 爬梯（真原图 S10_track.xml）。P0 修复后：hard-mode 摆动进 DiAL cost。
 # 禁上帝视角：S10_RIDGE_PRESCAN=0（关闭已知地图横脊预扫描）。P1-5：Nsample=1024 提频。
 cd /home/wfx/DR_competition/0810new/deeprobot_competition
-LOG="tmp/log_dial_wp67_$(date +%Y%m%d_%H%M%S).log"
-export S10_AUTO_MAX_WP=8 S10_TEST_MAX_SIM=120 S10_USE_VIEWER=0 S10_MPC_ENABLE=1
+LOG="tmp/log_dial_wp67_p15b_$(date +%Y%m%d_%H%M%S).log"
+export S10_AUTO_MAX_WP=8 S10_TEST_MAX_SIM=45 S10_USE_VIEWER=0 S10_MPC_ENABLE=1 S10_MPC_TIMING=1
 export S10_START_WP=6 S10_MODE=auto_nav S10_LIDAR_BACKEND=cpu
 export S10_STAIR_HARD_MODE=1 S10_RIDGE_PRESCAN=0
 export S10_AUTO_VMAX=1.5 S10_BIAS_FULL_REF=1 S10_BIAS_LIFT_MIN=0.02 S10_BIAS_T_PROFILE=1

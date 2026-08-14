@@ -52,7 +52,7 @@ if not os.environ.get("JAX_COMPILATION_CACHE_DIR"):
 
 # hardware_profile → dial-mpc 参数覆盖
 HARDWARE_PROFILES = {
-    "desktop_4090": dict(Nsample=1024, Hsample=14, Hnode=4, Ndiffuse=1,  # P1-5: 2048->1024 提频；需要质量可 S10_MPC_NSAMPLE=2048
+    "desktop_4090": dict(Nsample=512, Hsample=14, Hnode=4, Ndiffuse=1,  # P1-5b: 1024->512 提频余量；需质量可 S10_MPC_NSAMPLE=1024/2048
                          dt=0.02, jax_platform="cuda"),
     "orin_agx": dict(Nsample=1024, Hsample=10, Hnode=4, Ndiffuse=1,
                      dt=0.025, jax_platform="cpu"),

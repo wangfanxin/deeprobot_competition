@@ -231,7 +231,6 @@ class StairContactPlanner:
         if os.environ.get('S10_STAIR_HARD_MODE', '1') == '1':
             _mode, _fz = self.compute_hard_mode(wheel_y, wheel_z, t)
             mpc._gait_swing = _mode
-            mpc._hard_foothold_z = _fz
         elif (os.environ.get("S10_GAIT", "0") == "1"
                 or os.environ.get("S10_GAIT_UTIL", "0") == "1"):
             mpc._gait_swing = np.asarray(

@@ -15,7 +15,7 @@ mode: auto_nav
 
 # ---- dial-mpc 核心参数（可按 hardware_profile 自动覆盖，见下方 profile）----
 env_name: s10_wheeled
-Nsample: 1024   # P1-5: 2048->1024 提频（~12->~20Hz）；需要质量用 S10_MPC_NSAMPLE=2048
+Nsample: 512    # P1-5b: 2048->1024->512 提频（~12->~17->>20Hz）；需要质量用 S10_MPC_NSAMPLE=1024/2048
 Hsample: 14
 Hnode: 4
 Ndiffuse: 1                 # 高频率版（2026-08-05 定稿）：8.3→17.7Hz；见 0806 §3.3
@@ -49,7 +49,7 @@ n_steps: 100000        # 无限跑（比赛结束由航点推进终止）
 hardware:
   desktop_4090:
     jax_platform: cuda        # cuda | cpu；cuda 需 jax[cuda12] + LD_LIBRARY_PATH
-    Nsample: 2048
+    Nsample: 512
     Hsample: 14
     Hnode: 4
     Ndiffuse: 1               # 高频率版：与顶层一致（否则 hardware 节会覆盖顶层）
