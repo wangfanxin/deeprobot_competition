@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+logs/
+logs_smoke*/
+deploy/policy.pt
+deploy/*.onnx
+envs/assets/
