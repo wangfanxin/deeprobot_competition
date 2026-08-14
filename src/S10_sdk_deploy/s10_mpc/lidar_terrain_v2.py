@@ -161,7 +161,8 @@ class LidarTerrainV2:
                             float(pts[j, 0]), float(pts[j, 1]))
                         if hj is not None and float(hj) > top:
                             top = float(hj)
-                    s_rise = float(cum[max(k - 1, 0)] + 0.5 * res)
-                    out.append((s_rise, dh, top))
+                    # 位置取跳变点 k 本身（实测 k-1 中点会早 0.04~0.085m，
+                    # 使前轮提前 swing 卡在真实立面前；k 点误差 ±0.04m 最小）
+                    out.append((s, dh, top))
             prev_h = h
         return out
