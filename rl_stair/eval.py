@@ -94,15 +94,16 @@ def main():
                 succ_np = np.asarray(succ)
                 ep_len_np = np.asarray(state["ep_len"])
                 just = done_np & ~finished
+                # track continuous max progress / risers (not only at done)
+                base_y = np.asarray(state["data"].qpos[:, 1])
+                prog = np.maximum(0.0, base_y - env.start_y)
+                risers = np.sum(np.asarray(env.riser_y)[None, :] < base_y[:, None], axis=-1)
+                ep_prog = np.maximum(ep_prog, np.where(finished, 0.0, prog))
+                ep_ris = np.maximum(ep_ris, np.where(finished, 0, risers))
                 if bool(just.any()):
                     ep_succ |= just & succ_np
                     ep_timeout |= just & (~succ_np) & (ep_len_np >= int(env.cfg.max_ep_len))
                     ep_fall |= just & (~succ_np) & (ep_len_np < int(env.cfg.max_ep_len))
-                    base_y = np.asarray(state["data"].qpos[:, 1])
-                    prog = np.maximum(0.0, base_y - env.start_y)
-                    risers = np.sum(np.asarray(env.riser_y)[None, :] < base_y[:, None], axis=-1)
-                    ep_prog = np.where(just, prog, ep_prog)
-                    ep_ris = np.where(just, risers, ep_ris)
                     finished |= just
                     # auto-reset done envs to keep the sim stable (same as train.py)
                     rs = reset_state_j(jax.random.fold_in(state["rng"], step))
@@ -116,8 +117,9 @@ def main():
             agg["fall"] += float(ep_fall.mean())
             agg["timeout"] += float(ep_timeout.mean())
             agg["unfinished"] += float((~finished).mean())
-            agg["prog"] += float(ep_prog.sum() / n_fin)
-            agg["risers"] += float(ep_ris.sum() / n_fin)
+            # mean over ALL envs (unfinished envs keep their running max)
+            agg["prog"] += float(ep_prog.mean())
+            agg["risers"] += float(ep_ris.mean())
             agg["rew"] += float(ep_rew.mean())
 
         E = max(args.episodes, 1)
