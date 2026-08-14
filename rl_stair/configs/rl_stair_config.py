@@ -81,7 +81,9 @@ def make_stages(num_envs=1024):
         Stage("T1a_step005", c1a, advance_at=0.4, min_iters=50),
         Stage("T1b_step081", c1b, advance_at=0.4, min_iters=50),
         Stage("T1c_step010", c1c, advance_at=0.4, min_iters=50),
-        Stage("T1d_step0125", c1d, advance_at=0.35, min_iters=80),
+        # T1d(single 12.5cm) REMOVED 2026-08-15 01:50: single 12.5cm gate too tight
+        # (2.2cm lift margin) -> 6+ regresses. Row-of-steps T2a-d reaches 12.5cm via
+        # height gradient (user-guided); T1c(10cm single) -> T2a(4x5cm row) -> ... -> T3.
         Stage("T2a_stairs4x005", c2a, advance_at=0.4, min_iters=50),
         Stage("T2b_stairs4x0061", c2b, advance_at=0.35, min_iters=80),
         Stage("T2c_stairs4x010", c2c, advance_at=0.3, min_iters=80),
