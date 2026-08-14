@@ -21,7 +21,7 @@ class StairStanceGuard:
         self.mu = float(mu)
         self.wheel_radius = float(wheel_radius)
 
-    def apply(self, tau, gait_swing, com_xy, wheel_y=None, wheel_z=None, terrain_z=None):
+    def apply(self, tau, gait_swing, com_xy, wheel_y=None, wheel_z=None, terrain_z=None, prox=None, wheel_ref_z=None):
         # tau: (16,) numpy torque vector.
         # gait_swing: (4,) continuous weights from the planner.
         # com_xy: (2,) world xy of the base link.
@@ -36,15 +36,24 @@ class StairStanceGuard:
         fn = np.where(contact, self.contact_min_n, 0.0)
 
         request_swing = swing > 0.5
+        if prox is None:
+            prox = np.full(4, 1e9, dtype=np.float64)
+        else:
+            prox = np.asarray(prox, dtype=np.float64)
 
         # Veto swing unless remaining contact wheels form a support polygon
-        # containing the projected CoM.
+        # containing the projected CoM. A wheel close to a riser face gets a
+        # physical reaction from that face, so two-wheel rear support is
+        # acceptable during the front-axle transition.
+        riser_prox = float(__import__('os').environ.get('S10_STANCE_RISER_PROX', '0.15'))
         for i in range(4):
             if not request_swing[i]:
                 continue
             stance = [j for j in range(4) if j != i and contact[j]]
             if len(stance) < 2:
                 request_swing[i] = False
+                continue
+            if prox[i] < riser_prox:
                 continue
             pts = np.array([self.d.xpos[self.wheel_body_ids[j]][:2] for j in stance])
             if not self._point_in_support(np.asarray(com_xy, dtype=np.float64), pts, self.support_margin):

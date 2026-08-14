@@ -398,7 +398,9 @@ def main():
                 _wy = np.asarray([d.xpos[_wb, 1] for _wb in (5, 9, 13, 17)], dtype=np.float64)
                 _wz = np.asarray([d.xpos[_wb, 2] for _wb in (5, 9, 13, 17)], dtype=np.float64)
                 _terr = np.asarray(fol.stair_terrain(_wy), dtype=np.float64)
-                mpc.latest_tau = guard.apply(mpc.latest_tau, _gsw_now, _com_xy, wheel_y=_wy, wheel_z=_wz, terrain_z=_terr)
+                _prox = np.asarray(getattr(mpc, '_stair_prox', np.full(4, 1e9)), dtype=np.float64)
+                _wref = np.asarray(fol.stair_wheel_ref(_wy), dtype=np.float64)
+                mpc.latest_tau = guard.apply(mpc.latest_tau, _gsw_now, _com_xy, wheel_y=_wy, wheel_z=_wz, terrain_z=_terr, prox=_prox, wheel_ref_z=_wref)
             d.ctrl[:] = np.asarray(mpc.latest_tau, dtype=np.float64)
             if os.environ.get('S10_STAIR_JOINT_DEBUG', '0') == '1' and step % 20 == 0:
                 _qleg = np.asarray(d.qpos[7:23]).reshape(-1,1).flatten()
