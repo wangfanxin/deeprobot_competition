@@ -31,7 +31,11 @@ def build_indices(mj_model):
     act2vel = act2jnt - 1
     names = [mj_model.joint(jid).name for jid in jids]
     leg_idx = np.array([j for j, nm in enumerate(names) if "wheel" not in nm])
-    default_dof = np.array([mj_model.qpos0[adr] for adr in act2jnt])
+    # BUGFIX 2026-08-14: training env default_dof is the explicit go2w stance
+    # [0, 0.67, -1.3, 0]*4 (s10_env.py), NOT model qpos0 (S10 qpos0 = all-zeros straight
+    # legs). qpos0 here fed wrong leg-pos-error obs + held legs straight in PD.
+    # Must match s10_env.py exactly (actuator order verified == training order).
+    default_dof = np.array([0.0, 0.67, -1.3, 0.0] * 4, dtype=np.float64)
     return {"act2jnt": act2jnt, "act2vel": act2vel, "leg_idx": leg_idx,
             "default_dof": default_dof}
 
