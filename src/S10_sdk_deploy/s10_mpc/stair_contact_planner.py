@@ -130,28 +130,42 @@ class StairContactPlanner:
         foothold_z = fol.stair_terrain(wheel_y) + 0.081
         # Front wheels swing when they are close to the next riser and the
         # next tread is clearly above the current tread.
+        # Synchronize the front axle: if either front wheel is near the next
+        # riser, both front wheels swing to the same next tread.
+        front_idx = [int(np.searchsorted(rs, wheel_y[i])) for i in (0, 1)]
+        front_d = []
+        front_z = []
         for i in (0, 1):
-            idx = int(np.searchsorted(rs, wheel_y[i]))
+            idx = front_idx[i]
             if idx < len(rs):
-                d = float(rs[idx]) - float(wheel_y[i])
-                target_z = float(ts[idx]) + 0.081
-                need = target_z - float(wheel_z[i])
-                if d < float(os.environ.get('S10_HARD_FRONT_PROX', '0.15')) and need > 0.02:
-                    mode[i] = 1.0
-                    foothold_z[i] = target_z
+                front_d.append(float(rs[idx]) - float(wheel_y[i]))
+                front_z.append(float(ts[idx]) + 0.081)
+            else:
+                front_d.append(1e9)
+                front_z.append(foothold_z[i])
+        d_min_front = min(front_d)
+        need_front = max(front_z[0] - float(wheel_z[0]), front_z[1] - float(wheel_z[1]))
+        if d_min_front < float(os.environ.get('S10_HARD_FRONT_PROX', '0.15')) and need_front > 0.02:
+            mode[0] = mode[1] = 1.0
+            foothold_z[0] = foothold_z[1] = max(front_z)
         # Rear wheels swing after the front wheels have reached a higher tread.
         front_terr = max(float(fol.stair_terrain(np.array([wheel_y[0]]))[0]),
                          float(fol.stair_terrain(np.array([wheel_y[1]]))[0]))
         rear_terr = float(fol.stair_terrain(np.array([wheel_y[2]]))[0])
+        rear_d = []
         for i in (2, 3):
             idx = int(np.searchsorted(rs, wheel_y[i]))
             if idx < len(rs):
-                d = float(rs[idx]) - float(wheel_y[i])
-                target_z = front_terr + 0.081
-                need = target_z - float(wheel_z[i])
-                if (front_terr - rear_terr) > 0.06 and d < float(os.environ.get('S10_HARD_REAR_PROX', '0.15')) and need > 0.02:
-                    mode[i] = 1.0
-                    foothold_z[i] = target_z
+                rear_d.append(float(rs[idx]) - float(wheel_y[i]))
+            else:
+                rear_d.append(1e9)
+        target_z_rear = front_terr + 0.081
+        need_rear = max(target_z_rear - float(wheel_z[2]), target_z_rear - float(wheel_z[3]))
+        if ((front_terr - rear_terr) > 0.06 and min(rear_d) < float(os.environ.get('S10_HARD_REAR_PROX', '0.15')) and need_rear > 0.02):
+            mode[2] = mode[3] = 1.0
+            foothold_z[2] = foothold_z[3] = target_z_rear
+        if os.environ.get('S10_HARD_MODE_DEBUG', '0') == '1':
+            print(f'[HARD] wy={[round(float(v),2) for v in wheel_y]} wz={[round(float(v),2) for v in wheel_z]} mode={[int(v) for v in mode]} fz={[round(float(v),2) for v in foothold_z]}', flush=True)
         return mode, foothold_z.astype(np.float32)
 
     def stair_confirmed(self, robot_xy, yaw):
@@ -170,14 +184,18 @@ class StairContactPlanner:
                 prox[k] = float(rs[ix]) - float(wheel_y[k])
         mpc._stair_prox = np.asarray(prox, dtype=np.float32)
 
-        if (os.environ.get("S10_GAIT", "0") == "1"
+        if os.environ.get('S10_STAIR_HARD_MODE', '1') == '1':
+            _mode, _fz = self.compute_hard_mode(wheel_y, wheel_z)
+            mpc._gait_swing = _mode
+            mpc._hard_foothold_z = _fz
+        elif (os.environ.get("S10_GAIT", "0") == "1"
                 or os.environ.get("S10_GAIT_UTIL", "0") == "1"):
             mpc._gait_swing = np.asarray(
                 fol.gait_schedule(wheel_y, wheel_z, t), dtype=np.float32)
 
         y_arr = np.asarray([body_y], dtype=np.float64)
         pitch = float(fol.stair_pitch_ref(y_arr)[0])
-        base_z = float(fol.stair_base_z_ref(y_arr)[0])
+        base_z = float(fol.stair_base_z_ref(y_arr, stand=float(os.environ.get('S10_STAIR_STAND', '0.205')))[0])
         mpc.set_stair_ref(pitch, base_z)
         wr_now = np.asarray(fol.stair_wheel_ref(np.asarray(wheel_y, dtype=np.float64)), dtype=np.float64)
         lift_now = np.clip(wr_now - np.asarray(wheel_z, dtype=np.float64), 0.0, 0.25)
