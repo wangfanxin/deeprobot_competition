@@ -49,7 +49,7 @@ class S10RLCfg:
     reset_backtrack: float = 0.5
     tilt_limit: float = 1.2
 
-    r_progress = 2.0
+    r_progress = 4.0   # +2->+4 (2026-08-14): 强化前进激励，破除"站立吃小奖励"局部最优；legged_gym 主用 velocity-tracking，progress 为辅助，翻倍不改变最优方向
     r_riser = 1.0
     r_goal = 10.0
     r_termination = -0.8
@@ -284,7 +284,7 @@ class S10RLEnv:
             "ep_len": jnp.zeros(n, dtype=jnp.int32),
             "last_action": jnp.zeros((n, 16)),
             "cmd": cmd,
-            "prev_progress": jnp.zeros(n),
+            "prev_progress": jnp.maximum(0.0, sy - self.start_y),   # init to spawn progress (no free bonus, legged_gym convention)
             "riser_crossed": jnp.zeros(n, dtype=jnp.int32),
             "done": jnp.zeros(n, dtype=bool),
             "success": jnp.zeros(n, dtype=bool),
@@ -398,7 +398,7 @@ class S10RLEnv:
             "ep_len": jnp.zeros(n, dtype=jnp.int32),
             "last_action": jnp.zeros((n, 16)),
             "cmd": cmd,
-            "prev_progress": jnp.zeros(n),
+            "prev_progress": jnp.maximum(0.0, sy - self.start_y),   # init to spawn progress (no free bonus, legged_gym convention)
             "riser_crossed": jnp.zeros(n, dtype=jnp.int32),
             "done": jnp.zeros(n, dtype=bool),
             "success": jnp.zeros(n, dtype=bool),
