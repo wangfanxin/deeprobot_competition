@@ -25,7 +25,14 @@ def _base_cfg(num_envs=1024):
 
 def make_stages(num_envs=1024):
     def c0():
-        c = _base_cfg(num_envs); c.terrain = flat(course=12.0); return c
+        c = _base_cfg(num_envs); c.terrain = flat(course=6.0)
+        # gentle start for WIP balancing: small initial speed / pose / vel perturbation
+        c.vx_lo, c.vx_hi = 0.0, 0.5
+        c.yaw_lo, c.yaw_hi = -0.1, 0.1
+        c.q_off = 0.02
+        c.v_off = 0.2
+        c.cmd_vx_lo, c.cmd_vx_hi = 0.4, 0.9   # T0 target speed reachable -> succ achievable
+        return c
     def c1a():
         c = _base_cfg(num_envs); c.terrain = single_step(0.05, y0=1.5); return c
     def c1b():

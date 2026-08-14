@@ -39,6 +39,7 @@ class S10RLCfg:
     yaw_lo, yaw_hi = -0.5, 0.5
     h_off = 0.05
     q_off = 0.1
+    v_off = 1.0
     spawn_x = 0.3
 
     cmd_vx_lo, cmd_vx_hi = 0.8, 1.8
@@ -93,7 +94,6 @@ class S10RLEnv:
         self.leg_idx = jnp.asarray([i for i in range(16) if "wheel" not in names[i + 1]])
         self.wheel_idx = jnp.asarray([i for i in range(16) if "wheel" in names[i + 1]])
         self.hipx_idx = jnp.asarray([i for i in range(16) if "hipx" in names[i + 1]])
-        self.default_dof = jnp.asarray([self.qpos0[self.jnt_adr[i + 1]] for i in range(16)])
         self.act2jnt = jnp.asarray([self.jnt_adr[i + 1] for i in range(16)])   # qpos adr
         self.act2vel = jnp.asarray([self.jnt_adr[i + 1] - 1 for i in range(16)])  # qvel adr
         self.jnt_range = jnp.asarray(self.mj_model.jnt_range)[jnp.asarray([i + 1 for i in range(16)])]
@@ -105,7 +105,10 @@ class S10RLEnv:
         self.goal_y = float(cfg.terrain.goal_y)
         self.first_riser_y = float(cfg.terrain.riser_y[0]) if cfg.terrain.riser_y else None
 
-        # standing pose
+        # standing pose: go2w default [hipx=0, hipy=0.67, knee=-1.3, wheel=0] per leg.
+        # Verified statically stable with PD-hold at base_z ~0.355 (the old qpos0
+        # all-zeros pose + gravity-collapsed settle made the robot unable to stand).
+        self.default_dof = jnp.asarray(np.array([0.0, 0.67, -1.3, 0.0] * 4, dtype=np.float64))
         self.stand_qpos = jnp.asarray(self._compute_stand())
         self.stand_z = float(np.asarray(self.stand_qpos)[2])
 
@@ -118,10 +121,28 @@ class S10RLEnv:
         )(jnp.zeros(cfg.num_envs))
 
     def _compute_stand(self):
+        # settle with PD holding default_dof (go2w pose) from slightly high -> equilibrium
         m, d = self.mj_model, mujoco.MjData(self.mj_model)
+        default = np.asarray(self.default_dof)
+        names = [mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, i) for i in range(1, m.njnt)]
+        leg_idx = [i for i, nm in enumerate(names) if "wheel" not in nm]
+        wheel_idx = [i for i, nm in enumerate(names) if "wheel" in nm]
+        adr = np.array(m.jnt_qposadr)[1:]
         d.qpos[:] = self.qpos0
-        d.qpos[2] = 0.6
-        for _ in range(800):
+        for i in range(16):
+            d.qpos[adr[i]] = default[i]
+        d.qpos[2] = 0.42
+        d.qvel[:] = 0.0
+        mujoco.mj_forward(m, d)
+        for _ in range(1500):
+            q = d.qpos[adr] - default
+            qd = d.qvel[adr - 1]
+            tau = np.zeros(16)
+            lt = np.clip(50.0 * (0.0 - q) - 1.0 * qd, -48.0, 48.0)
+            tau[leg_idx] = lt[leg_idx]
+            wt = np.clip(2.0 * (0.0 - qd), -13.5, 13.5)
+            tau[wheel_idx] = wt[wheel_idx]
+            d.ctrl[:] = tau
             mujoco.mj_step(m, d)
         return np.array(d.qpos)
 
@@ -230,7 +251,7 @@ class S10RLEnv:
         h_off = jax.random.uniform(k1, (n,), minval=-self.cfg.h_off, maxval=self.cfg.h_off)
         x_spawn = jax.random.uniform(k2, (n,), minval=-self.cfg.spawn_x, maxval=self.cfg.spawn_x)
         q_off = jax.random.uniform(k1, (n, 16), minval=-self.cfg.q_off, maxval=self.cfg.q_off)
-        v_off = jax.random.uniform(k2, (n, 16), minval=-1.0, maxval=1.0)
+        jv = jax.random.uniform(k2, (n, 16), minval=-self.cfg.v_off, maxval=self.cfg.v_off)
 
         if self.first_riser_y is not None:
             sy = self.first_riser_y - jax.random.uniform(k1, (n,), minval=0.5, maxval=2.0)
@@ -248,7 +269,7 @@ class S10RLEnv:
         qvel = qvel.at[:, 0].set(c*vx - s*vy)
         qvel = qvel.at[:, 1].set(s*vx + c*vy)
         qvel = qvel.at[:, 5].set(vyaw)
-        qvel = qvel.at[:, self.act2vel].add(v_off)
+        qvel = qvel.at[:, self.act2vel].add(jv)
 
         cmd = jnp.stack([jax.random.uniform(rng, (n,), minval=self.cfg.cmd_vx_lo,
                                             maxval=self.cfg.cmd_vx_hi),
@@ -345,7 +366,7 @@ class S10RLEnv:
         h_off = jax.random.uniform(k1, (n,), minval=-self.cfg.h_off, maxval=self.cfg.h_off)
         x_spawn = jax.random.uniform(k2, (n,), minval=-self.cfg.spawn_x, maxval=self.cfg.spawn_x)
         q_off = jax.random.uniform(k1, (n, 16), minval=-self.cfg.q_off, maxval=self.cfg.q_off)
-        v_off = jax.random.uniform(k2, (n, 16), minval=-1.0, maxval=1.0)
+        jv = jax.random.uniform(k2, (n, 16), minval=-self.cfg.v_off, maxval=self.cfg.v_off)
         if self.first_riser_y is not None:
             sy = self.first_riser_y - jax.random.uniform(k1, (n,), minval=0.5, maxval=2.0)
         else:
@@ -361,7 +382,7 @@ class S10RLEnv:
         qvel = qvel.at[:, 0].set(c * vx - s * vy)
         qvel = qvel.at[:, 1].set(s * vx + c * vy)
         qvel = qvel.at[:, 5].set(vyaw)
-        qvel = qvel.at[:, self.act2vel].add(v_off)
+        qvel = qvel.at[:, self.act2vel].add(jv)
         cmd = jnp.stack([jax.random.uniform(rng, (n,), minval=self.cfg.cmd_vx_lo,
                                             maxval=self.cfg.cmd_vx_hi),
                          jnp.zeros(n)], axis=-1)

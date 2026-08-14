@@ -138,14 +138,16 @@ def build_model_xml(terrain: Terrain, robot_xml=ROBOT_XML, mesh_dir=MESH_DIR,
             if msz:
                 r, h = float(msz.group(1)), float(msz.group(2))
                 if 'friction="1 0.8 0.001"' in ln and body and body.endswith("_wheel"):
-                    # wheel -> capsule (same r,h), terrain-only contact (contype=2)
-                    # avoids self-collision with wide capsule and MJX cylinder-box gap
+                    # wheel -> capsule with SAME dimensions (rounded ends), terrain-only
+                    # contact (contype=2). needed for MJX stair-box contact (cylinder-box
+                    # unsupported). (launch bug was the leg r+h inflation, now fixed)
                     quat = mquat.group(1) if mquat else "1 0 0 0"
                     ln = (f'<geom type="capsule" class="collision" size="{r:.6g} {h:.6g}" '
                           f'quat="{quat}" friction="1 0.8 0.001" contype="2" conaffinity="2"/>')
                 else:
+                    # legs: cylinder -> capsule with SAME dimensions (rounded ends only)
                     ln = ln.replace('type="cylinder"', 'type="capsule"')
-                    ln = ln.replace(msz.group(0), f'size="{r+h:.6g} {h:.6g}"')
+                    ln = ln.replace(msz.group(0), f'size="{r:.6g} {h:.6g}"')
         out.append(ln)
     xml = "\n".join(out)
 
