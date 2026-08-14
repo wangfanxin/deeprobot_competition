@@ -670,9 +670,15 @@ class MPCController:
         # 启发式摆动相（v211 基线行为，防止全零静音摆动/CRUISE 抬脊失效）。
         _gsw = getattr(self, "_gait_swing", np.zeros(4, dtype=np.float32))
         _gsw_active = bool(np.any(np.asarray(_gsw) > 0.5))
+        # STAIR：始终注入 hard-mode 相位（含全零=全支撑），避免释放后回退
+        # 旧 lift-need 启发式造成"该落地却继续悬空"（wp7 卡点：mode=0 释放后
+        # 前轮悬空 15s 不落地）。CRUISE 行为不变（仍回退 lift-need 抬脊）。
+        # S10_STAIR_ALWAYS_GWSW=0 可回退旧行为做 A/B。
+        _stair_always = (os.environ.get("S10_STAIR_ALWAYS_GWSW", "1") == "1")
         if (os.environ.get("S10_GAIT", "0") == "1"
                 or os.environ.get("S10_GAIT_UTIL", "0") == "1"
-                or (getattr(self, "_mode", None) == "STAIR" and _gsw_active)):
+                or (getattr(self, "_mode", None) == "STAIR"
+                    and (_stair_always or _gsw_active))):
             info["gait_swing"] = jnp.asarray(_gsw, dtype=jnp.float32)
         # v215d: 摆动邻近门控（轮距下一 riser 距离，m；默认 1e9=不启用）
         info["stair_prox"] = jnp.asarray(

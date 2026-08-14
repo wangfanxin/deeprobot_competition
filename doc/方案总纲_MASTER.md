@@ -232,6 +232,7 @@ lidar 高程图 (10Hz) → riser/高程特征 (10Hz) → AutoNavFollower (20Hz, 
   - 已提交：`stair_stance_guard.py`（b229932）、hard mode 接触规划器（232a6e0）、前/后轴同步与可配置站姿（33aa019）、hierarchical DiAL 方案（7811a85）；
     P0 修复后 hard-mode 摆动信号已进 DiAL cost。
   - 8-14 下午迭代：riser 台面顶取跳变后窗口最大值（a570db1）、riser 位置取跳变点 k（9651d35）、lidar res 0.05 + 96×48 射线（7386c5b）、前后轴互斥不双抬（8c83eeb）、v10-v13 迭代脚本入库（76d3e23）。
+  - 8-14 审阅收口：P0-3 卡点定位——wp7 前轮抬升目标取到 tread2（fz≈0.72）早于到达 riser1（tread1 顶 0.528→应 0.609），前轮悬空不落地→死锁；S10_STAIR_ALWAYS_GWSW=1（STAIR 恒注入 hard-mode 相位）后规划 21.5Hz、行为一致，但落地问题仍存（感知 riser 表跳动 + 过抬）。N=512 实测：空载 ~21.5Hz（med 47ms），GPU 争抢时 ~14Hz。
 - **速度目标**：70s 全程需均速 3.35 m/s（依赖台阶技能打通）。
 - **真机**：未迁移。**初赛材料**：8.20 技术方案 PDF + Demo + GitHub 链接（待做）。
 
@@ -256,6 +257,7 @@ lidar 高程图 (10Hz) → riser/高程特征 (10Hz) → AutoNavFollower (20Hz, 
 | 2026-08-14 | cc70c19 | 方案转向 DiAL 分层爬梯（StairContactPlanner + DiAL-MBDPI + StairStanceGuard）；更新本总方案（DiAL 数据管线/频率/参数表）；删除 8-12 前旧 stair 方案文档（6 篇 08-11 文档）与旧图 carvmc_vmax6_wp0-6_v730.png；README 进度更新 |
 | 2026-08-14 | 7386c5b | wp0-6 复测 13.5s 一致性确认（final2_wp0-6_xy_speed.png）；lidar res 0.05 + 96×48 射线；riser 跳变点/台面顶修复；hierarchical DiAL 方案落地（S10_STAIR_HARD_MODE=1 + 200Hz guard）；v10-v13 迭代脚本入库 |
 | 2026-08-14 | 110a467+ | 审阅收口：P1-5b 采样 1024->512（code+yaml+run 脚本）、退火 Ndiffuse=1 已最小；P0-4 清理死 _hard_foothold_z 写；P1-6 补提交 v21/v22 实验脚本；P2-9 复核 DDP 已归档；wp7 卡点（前轮悬空/无接触）仍为 STAIR 主阻塞 |
+| 2026-08-14 | 88be68e+ | P0-3 实验：S10_STAIR_ALWAYS_GWSW=1（STAIR 恒注入 hard-mode 相位，A/B 默认开）；wp7 定位为 riser 表/落脚目标不一致 + 前轮过抬悬空；N=512 空载 21.5Hz 达标 |
 
 > 后续每次实验：在此表追加一行，并同步 §7/§8/§9。
 
