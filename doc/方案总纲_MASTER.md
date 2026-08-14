@@ -1,6 +1,6 @@
 # S10 巡逻赛 · 总方案主文档（MASTER）
 
-> **维护中** · 创建 2026-08-13 · 本会话终点 HEAD `61425a9`（M1j：multi-knot + wheel yaw 8.0，后轴贴面弧已回退无效果）
+> **维护中** · 创建 2026-08-13 · 更新 2026-08-14 · 基线 HEAD `cc70c19`（+ 工作树 StairStanceGuard 接线 WIP）
 > 本文件是全仓库唯一"总方案"入口：赛题 / 双技能方案 / 数据管线 / 实际控制频率 /
 > 参数表 / 进度 / 卡点 / 待办 / 维护日志。**每次实验后在此追加维护日志并更新参数表。**
 
@@ -12,8 +12,8 @@
    实际运行参数以 `tmp/run_*.sh` 为准；本文档只做归纳，不覆盖代码。
 2. **每次会话收尾**：在 §10 维护日志追加一行（日期 / HEAD / 做了什么 / 结果），
    并同步更新 §7 参数表、§8 进度、§9 待办；然后 `git add doc && git commit && git push`。
-3. **相关文档**：`doc/0808.md`（逐版本实验长记录）、`doc/stair_*` 系列（台阶专项）、
-   `doc/carvmc_方案与数据管线_20260810.md`（巡航专项）、`README.md`（快速开始）。
+3. **相关文档**：`doc/0808.md`（逐版本实验长记录）、`doc/S10_轮足爬梯_全方案总文档_20260813.md`（NmpcWBC 阶段总档）、
+   `doc/stair_dial_layered_plan_20260814.md`（DiAL 分层爬梯方案，当前）、`doc/carvmc_方案与数据管线_20260810.md`（巡航专项）、`README.md`。
 
 ---
 
@@ -28,49 +28,63 @@
 ## 2. 总体方案（双技能 + 三层架构）
 
 ```
-CRUISE（CarVMC 车化巡航） ⇄ STAIR（NmpcWBC 爬梯）
-   唯一离散门控：前轴距首级 riser < S10_STAIR_EXEC_D 切 STAIR；几何完成 AND 导航推进切回
+CRUISE（CarVMC 车化巡航） ⇄ STAIR（DiAL 分层：StairContactPlanner + DiAL-MBDPI + act2tau + StairStanceGuard）
+   唯一离散门控：lidar riser 感知确认（stair_confirmed）切 STAIR；几何完成 AND 导航推进切回
 ```
 
-三层架构：**感知层(10Hz) → 规划层(20Hz) → 执行层(200Hz)**，无 MPPI 轨迹优化（v850 冻结）。
+三层架构：**感知层(10Hz) → 规划层(20Hz) → 执行层(200Hz)**；STAIR 内 DiAL 规划 20Hz、力矩 200Hz。
+
+**方案演进（已归档为历史）**：
+1. **StairWBC（08-11，位置基全身控制）**：三层 + 布尔相位 + BodyIK 位置 PD + 轮开环限幅。
+   结论：非奇异区正确，但 0.125m 阶"同踏面"位形腿近水平，Jᵀ 垂直权威消失——折叠不可回收。
+2. **NmpcWBC M1 系列（08-12~13，155 实验/23 提交）**：多 knot SRBD 力优化(20Hz) + WBC(200Hz) +
+   角状态 MPC、轮 Pfaffian、几何阻抗、对角步态、力基摆动等 11 个墙逐一闭环。
+   结论：几何盲区（轴距 0.456m ≥ 踏面 0.399~0.448m → 25° 俯仰同踏面位形），增量调参彻底闭环。
+3. **DiAL 分层（08-14，当前）**：上层连续相位/落脚点规划 + 下层 DiAL(MBDPI) 扭矩采样，见 §6。
 
 铁律（用户指令）：
 - **唯一允许的离散门控 = CRUISE/STAIR 技能切换**；地形/抬轮/限速全部用连续几何量或连续安全包线。
-- **禁止 z 先验**：AutoNavFollower 纯 xy 路径规划，不读任何高程/台面信息（v829）；楼梯感知由 lidar 高程图 + stair_world 预扫描给出。
+- **禁止 z 先验**：AutoNavFollower 纯 xy 路径规划；楼梯几何只来自 lidar 高程图 + riser 检测（决策 2）。
+- **比赛原文件零改动、cruise 源文件零改动**（STAIR 用复制出的 `stair_dial_noros.py`）。
 - 力矩合规：腿 ≤48Nm、轮 ≤13.5Nm。
 
 ## 3. 数据管线
 
 ```mermaid
 graph LR
-    S["mujoco S10_track.xml (200Hz)"] -->|"lidar 扇形 64x32 前下45° 10Hz"| L["LidarTerrain 世界栅格累积高程图<br/>x[-25,40] y[-5,55] res=0.1, min-z 累积"]
-    L -->|"地形/step_flag"| N["AutoNavFollower (20Hz)<br/>Catmull-Rom 平滑路径 + 速度剖面 + 判点"]
-    PW["stair_world 预扫描 (启动时)<br/>riser 表: 弧长/高差/台面顶/世界坐标"] -->|"几何"| N
-    N -->|"[vx, omega]"| C["CRUISE: CarVMC (200Hz)<br/>轮驱动/差速 + 腿=主动悬架 + 连续前瞻抬轮"]
-    N -->|"[vx, omega]"| W["STAIR: NmpcWBC<br/>NMPC 20Hz SRBD-QP → WBC 200Hz 腿力/摆腿/轮"]
-    C -->|"tau 16 维 200Hz"| S
-    W -->|"tau 16 维 200Hz"| S
+    S["mujoco S10_track.xml (200Hz)"] -->|"lidar 扇形 64x32 前下45° 10Hz"| L["LidarTerrainV2 世界栅格累积高程图<br/>60x60 瓦片 res=0.10"]
+    L -->|"riser 表 y/top/dh<br/>rise=0.05 max_dh=0.16"| P["StairContactPlanner (20Hz)<br/>w_swing 连续权重 + foothold 目标场 + action bias"]
+    L -->|"step_flag/高程"| N["AutoNavFollower (20Hz)<br/>Catmull-Rom 路径 + vx 剖面 + 航向锁"]
+    P -->|"软相位/落脚点"| D["DiAL-MBDPI (20Hz)<br/>16D 扭矩采样 N=2048/H=14/N4"]
+    N -->|"[vx, omega]"| C["CRUISE: CarVMC (200Hz)<br/>轮驱动/差速 + 腿=主动悬架"]
+    D -->|"action"| T["act2tau (200Hz) → 16D 力矩<br/>+ StairStanceGuard (200Hz 支撑多边形否决/轮锁)"]
+    C -->|"tau"| S
+    T -->|"tau"| S
 ```
 
-关键点：
-- **感知**：mujoco-lidar 扇形射线（`lidar_site` base 上方 0.15m，前下 45°，64×32，垂直 +10°~-55°，cutoff 20m，10Hz）→ LidarTerrain 世界坐标栅格（SLAM 式跨帧累积 min-z，geomgroup 只留 group0 地形，未覆盖格返回 0）。
-- **stair_world 预扫描**：启动时沿平滑路径射线扫描，生成 riser 表（每级弧长/高差/台面顶高，世界坐标），供台阶几何相位与显式轮心 z 参考使用（不依赖 s_cur 弧长投影，防漂移）。
-- **导航**：Catmull-Rom 平滑路径（切线因子 0.7）+ 曲率/横脊/高架限速速度剖面 + 单调弧长游标/切线投影 + 航点严格判点（`S10_WP_ADVANCE_DIST`），20Hz 输出 [vx, ω]。
-- **CRUISE 执行**：CarVMC（200Hz）——轮=驱动+差速转向（yaw 比例+阻尼、动态抓地钳制按载荷），腿=主动悬架（mg/4+roll/pitch 分配+地形阻抗，半蹲降质心、微 roll 内倾压弯），横脊单步跨越/抬轮前馈；无门控、连续地形响应。
-- **STAIR 执行**：NmpcWBC——NMPC（20Hz）SRBD 接触力 QP（m·a=ΣF+mg、I·α=Σr×F），WBC（200Hz）支撑腿 Jᵀ·F_des 力分配 + 摆腿纯位置 PD + 轮速 PID/差速。
+### STAIR DiAL 数据管线（每层输入/输出）
+
+| 层 | 频率 | 输入 | 输出 | 代码 |
+|---|---|---|---|---|
+| 感知 | 10Hz | lidar 点云/高程 | 高程栅格、riser 特征 | `lidar_terrain_v2.py` |
+| 导航 | 20Hz | 位姿、waypoint | `vx`, `vyaw`, `s_cur` | `stair_auto_nav.py` |
+| 接触规划 | 20Hz | 高程栅格、riser 表、轮世界坐标 | `w_swing[4]`、`foothold_xy[4]`、`foothold_z[4]` | `stair_contact_planner.py` |
+| DiAL | 20Hz | 状态、目标、软相位、地形场 | 16D action | `mpc_controller.py` |
+| 力矩 | 200Hz | action、qpos、qvel | 16D torque | `mpc_controller.compute_tau()` + `stair_stance_guard.py` |
 
 ## 4. 实际控制频率表
 
 | 环节 | 频率 | 周期 | 说明 |
 |---|---|---|---|
 | 仿真/主控制环 | **200Hz** | 5ms | `DT=0.005`，所有执行层逐主步重算 |
-| 导航 AutoNavFollower | **20Hz** | 50ms | `S10_NAV_HZ=20`（代码默认 2 为保守值，运行脚本均设 20） |
-| NMPC（STAIR 内） | **20Hz** | 50ms | `S10_NMPC_HZ=20`；H=4（M1 改 `S10_NMPC_HORIZON=8` 多 knot） |
-| WBC（STAIR 内） | **200Hz** | 5ms | 每主步；osqp 固定结构 <2ms |
-| CarVMC（CRUISE 内） | **200Hz** | 5ms | 每主步 |
-| LiDAR 高程图 | **10Hz** | 100ms | `S10_LIDAR_FREQ=10`，部署同款 |
-| BodyMPPI（已冻结，不用） | ~10–20Hz | — | N=2048/H=40 实测 ~12ms；v850 后 `S10_VMC_USE_NAV=1` 直通 |
-| 仿真实时比 | ≈0.53x | — | 瓶颈 MuJoCo Python 步进（~9.4ms/步），非控制器；真机控制环按 200Hz |
+| 导航 AutoNavFollower | **20Hz** | 50ms | `S10_NAV_HZ=20`（运行脚本均设 20） |
+| StairContactPlanner | **20Hz** | 50ms | `stair_dial_noros.py` 内 step%10 调用 |
+| 感知 LidarTerrainV2 / riser 检测 | **10Hz** | 100ms | `S10_LIDAR_FREQ=10`；step%20 调用 |
+| DiAL-MBDPI 规划（STAIR） | **20Hz** | 50ms | `S10_MPC_PLAN_INTERVAL_AUTO=10`；N=2048/H=14/N4 全阶扭矩采样 |
+| act2tau + StairStanceGuard（STAIR） | **200Hz** | 5ms | 每主步；guard 做支撑多边形否决与轮锁 |
+| CarVMC（CRUISE） | **200Hz** | 5ms | 每主步 |
+| 历史 NmpcWBC（归档） | NMPC 20Hz / WBC 200Hz | — | 已由 DiAL 顶替，代码保留在 `s10_nmpc_wbc.py` |
+| 仿真实时比 | ≈0.5x | — | 瓶颈 MuJoCo Python 步进，非控制器；真机按 200Hz |
 
 ## 5. CRUISE 模式细节方案（CarVMC，稳定主线）
 
@@ -83,15 +97,15 @@ graph LR
 | 盲区 | 未覆盖格返回 0 | 真机近场盲区同款；横脊阴影由连续前瞻抬轮兜底 |
 
 ### 5.2 导航（AutoNavFollower 20Hz）
-- 路径：Catmull-Rom 严格过 33 航点（偏差 0.013m），切线因子 `S10_GLOBAL_TANGENT_K=0.7`（弯道半径 1.36→2.1m+）。
-- 速度剖面：曲率限速 `v=√(3.5·R)`、转向能力 `v≤2.0·R`、急弯/横脊/台阶/高架限速（`S10_RIDGE_VX`、`S10_AUTO_STEP_VX`、`S10_AUTO_ELEV_K`），运行时减速前瞻 `S10_AUTO_VLIM_LOOKAHEAD`。
-- 目标选择：接近航点（d_wp<0.8）瞄航点；过点后瞄路径前视点（v267）；cte 纠偏仅当 |cte|<0.5 且不与 err 冲突（v272 离线恢复丢弃 cte）。
+- 路径：Catmull-Rom 严格过 33 航点（偏差 0.013m），切线因子 `S10_GLOBAL_TANGENT_K=0.7`。
+- 速度剖面：曲率限速 `v=√(3.5·R)`、转向 `v≤2.0·R`、急弯/横脊/台阶/高架限速，运行时减速前瞻 `S10_AUTO_VLIM_LOOKAHEAD`。
+- 目标选择：接近航点瞄航点；过点后瞄路径前视点（v267）；cte 纠偏带门控（v272）。
 - 判点：`S10_WP_ADVANCE_DIST=1.0`（位置式），过点后强制 s_cur 前进（v253）。
 
 ### 5.3 执行（CarVMC 200Hz）
-- **轮**：差速参考 `v_ref = vx ± ω_ref·track_half`（ω_ref 用即时指令，v252）；`t_yaw = -yk·(ω_cmd−ω) + kd·ω_hf` + 可选摩擦前馈；yaw 超速保护（|ω|>a_lat_max/v 反向差速硬刹，v251）；力矩限速 `S10_CAR_YAW_SLEW`；差速滑移余量 `S10_VMC_YAW_TMAX`（受控滑移转向）。
-- **腿（主动悬架）**：垂直力 `F = mg/4 + roll分配 + pitch分配 + kp_h·(terr+r−wheel_z)`；半蹲（knee 1.90 降质心 ~6cm）；微 roll 压弯 `roll_tar = −0.06·ω·|vx|`。
-- **连续前瞻抬轮（无门控）**：按"轴前 0.35m 地形高 − 轴下地形高"连续抬放，比例 clamp 0.15m；带通 0.02~0.5m（0.12m 脊→满抬、高架伪尖峰→0）；抬轮前瞻独立于 terr 前瞻（v266）。
+- **轮**：差速参考 `v_ref = vx ± ω_ref·track_half`（即时指令，v252）；`t_yaw = -yk·(ω_cmd−ω) + kd·ω_hf`；yaw 超速保护（v251）；差速滑移余量 `S10_VMC_YAW_TMAX`。
+- **腿（主动悬架）**：`F = mg/4 + roll分配 + pitch分配 + kp_h·(terr+r−wheel_z)`；半蹲（knee 1.90 降质心 ~6cm）；微 roll 压弯。
+- **连续前瞻抬轮（无门控）**：轴前 0.35m 地形高差连续抬放，比例 clamp 0.15m；带通 0.02~0.5m。
 - **轮矩钳制**：`τ_w = μ_w·F_load·r + YAW_TMAX·f(ω_cmd)`，μ_w=0.9。
 
 ### 5.4 CRUISE 当前参数集（run_v850test.sh，v890 基线）
@@ -113,55 +127,82 @@ graph LR
 | S10_VMC_YAW_K_WHEEL | 60 | S10_CTE_LP | 0.3 |
 | S10_VMC_STAIR_GAIT | 1 | S10_NAV_HZ | 20 |
 
-## 6. STAIR 模式细节方案（NmpcWBC，当前攻关）
+## 6. STAIR 模式细节方案（DiAL 分层，当前）
 
 > 目标：真原图 wp6→7 连续越过全部 6 级台阶（riser 高 **0.061 + 0.125×5**，R=0.081，阶距 0.4m）。
-> 现状：最优基线 m23 稳定越过 riser1–3（y=39.4），卡在爬顶折叠停滞墙。
+> 核心思想：**不把步态/落脚点塞进 DiAL 的暴力采样维度**——上层连续软相位+目标场，下层 DiAL 只搜 16 维扭矩。
 
-### 6.1 技能切换（唯一离散门控）
-- 入口：前轴距首级 riser < `S10_STAIR_EXEC_D`（1.0–1.5m）→ STAIR；接近段 yaw 未对准时保持 CRUISE 对准（`S10_STAIR_YAW_GATE`）。
-- 出口：几何完成（后轴过末级 riser 且轮高≥台面顶+R−0.02，持续 0.05s）AND 导航推进（next_idx 推进或 s_cur 超末级+1.0m）→ CRUISE。
-- vx 连续：入口/出口窗插值，不归零（`S10_STAIR_VX_RAMP`、`S10_STAIR_WIN_VX`）。
+### 6.1 架构（v2，20+200Hz）
 
-### 6.2 NMPC（20Hz，SRBD 接触力 QP）
-- 变量 [F(12), a(3)]（单点版）；等式 m·a=ΣF+mg、角动量 I·α=Σr×F；摩擦锥 μ=`S10_NMPC_MU`=0.8、Fz≤180N。
-- 接触模式进 NMPC（#1）：前轴 SWING 从 SRBD/力矩删列（F=0）；后轴 SWING 贴面滚爬保留 `S10_NMPC_REAR_SWING_FZ_MIN`=46N；SWING 期支撑腿 `S10_NMPC_STANCE_FZ_MIN`=95N。
-- 抗发射：vz>0.5 时 a_des z 允许下探 -10（m23 关键）。
-- **M1（2026-08-13，HEAD `9f285be`→`61425a9`）**：改为多 knot 轨迹 QP——每 knot [F(12),a(3),p(3),v(3)]，`S10_NMPC_HORIZON`=8，硬等式 v/p 状态传播，代价含 z/xy 跟踪、角动量、力平滑 + wheel yaw 8.0；意图在 0.4s 预测窗内规划并平滑力（防发射尖峰）。M1j 结论：前缘折叠被抑制（wheel 0.85 vs 1.2），后轴贴面弧抬升窗（M1k）回退——无效果。
+```
+lidar 高程图 (10Hz) → riser/高程特征 (10Hz) → AutoNavFollower (20Hz, vx/yaw/s_cur)
+  → StairContactPlanner (20Hz, w_swing + foothold) → DiAL-MBDPI (20Hz, 16D 扭矩采样)
+  → act2tau (200Hz) → StairStanceGuard (200Hz, 安全否决) → MuJoCo (200Hz)
+```
 
-### 6.3 WBC（200Hz）
-- 支撑腿：`τ = Jᵀ·(Rᵀ·F_des)` + 姿态正则 + 地形阻抗；摆腿：纯位置 PD（`S10_NMPC_KP_SW`=120、`KP_SW_R`=40、`KD_SW`=6，v1141 文献共识去 Jᵀ 力）；轮：速度 PID + 差速 yaw。
-- 折叠钳制：轮目标 ≤ hip−0.02（v1145）；SWING 期 yaw 冻结解除；roll 阻尼 −8·roll−6·rate；力矩限幅 腿48/轮13.5。
+- DiAL 是底层执行器，**直接顶掉 NMPC+WBC**（不是接在两者之间）。
+- 废弃 `s10_dial_mpc.py` 的 DDP/SRBD 骨架（方向已错，计划归档/git rm）。
 
-### 6.4 STAIR 当前参数集（m23 = run_3knob_m16.sh）
+### 6.2 接触规划（StairContactPlanner，20Hz）
+- **riser 检测（决策 2，lidar 唯一几何来源）**：LidarTerrainV2 沿导航路径窗口扫描，
+  `rise=0.05, max_dh=0.16`，检测到后覆盖 `S10_STAIR_RISERS/TOPS`（follower 硬编码表仅作 fallback）。
+- **步态 = 连续 swing 权重**：`w_swing_i = sigmoid((d_i - d_trigger_i)/sigma)`，σ 默认 0.05m；
+  前后轴天然错开半阶，**不新增布尔门控**（可复用 `S10_SWING_PROX/S10_SWING_THRESH`）。
+- **落脚点 = 连续目标场**：stance 轮 `p_z = terrain(wheel_xy)+R`；swing 轮 `p_z = 下一级台面顶+R`，
+  `p_xy = 下一级踏面中心`。DiAL 代价只惩罚"轮实际偏离目标场"。
+- **软 action bias**：把几何抬升场作为 MBDPI 采样均值先验（非门控），
+  `S10_BIAS_FL_HIPY=0.20 / S10_BIAS_FL_KNEE=-0.50 / S10_BIAS_HL_HIPY=-0.10 / S10_BIAS_HL_KNEE=0.45`，
+  `S10_BIAS_LIFT_MIN=0.05`、`S10_BIAS_T_PROFILE=0`、`S10_BIAS_FULL_REF=0`。
+- **roll 不平衡前馈**：左右抬升差 → `S10_ROLL_IMB_GAIN=0.8`，clip ±0.15。
+
+### 6.3 DiAL-MBDPI（20Hz，执行核心）
+- 动作空间保持 16D：`u = [hipy, thigh, calf]*4 + [wheel]*4`，不新增接触/落脚点变量。
+- 代价新增三项（软相位进 rollout）：`J += w_swing·‖wheel_z−foothold_z‖² + (1−w_swing)·‖wheel_z−ground_z‖² + w_foothold·w_swing·‖wheel_xy−foothold_xy‖²`。
+- 现有注入入口已具备：`set_gait_swing / set_foothold / set_elevation_map / set_stair_ref / set_stair_action_bias`。
+- 核心采样参数（`doc/s10_mpc_deploy.yaml`，desktop_4090）：`Nsample=2048, Hsample=14, Hnode=4,
+  Ndiffuse=1, Ndiffuse_init=10, temp_sample=0.05, update_method=mppi, sigma_scale=1.0, dt=0.02`；
+  执行 `leg_control=torque, kp=80, kd=2, vel_scale=56, kd_wheel=1.2, wheel_tau_scale=3.0`。
+- 地形代价（s10_env）：slope=2.0 / roughness=1.0 / step=5.0（阈值 0.18m）/ ground=120 / leg=1.0 /
+  upright=25 / attdamp=0.8 / stumble=0.5。
+
+### 6.4 StairStanceGuard（200Hz，确定性安全层，WIP）
+- 在 MBDPI 力矩之后逐主步执行，不做 reward shaping，只**否决/钳制不安全摆动**：
+  - 几何接触判定：`wheel_z < terrain_z + R + 0.02`；
+  - **支撑多边形否决**：若剩余接触轮（≥3）构成的凸多边形不含投影 CoM（margin 0.06m），则禁止该轮 swing；
+  - **轮锁**：swing 轮 τ=0；支撑轮按库仑牵引 `τ ≤ μ·N·R`（N=20N，μ=0.8，上限 13.5Nm）。
+- 参数：`contact_min_n=20, support_margin=0.06, wheel_tau_max=13.5, mu=0.8`。
+
+### 6.5 当前 STAIR 参数集（stair_dial_noros.py 默认 + 计划参数）
 | 参数 | 值 | 参数 | 值 |
 |---|---|---|---|
-| S10_VMC_MODE | nmpcwbc | S10_STAIR_POSMODE | 1 |
-| S10_STAIR_ENTER_DIST | 2.0 | S10_STAIR_EXEC_D | 1.0 |
-| S10_STAIR_VX_RAMP | 10.0 | S10_STAIR_WIN_VX | 2.0 |
-| S10_STAIR_CREST_VX | 1.2 | S10_STAIR_MPPI_OFF_D | 0.5 |
-| S10_AUTO_LOOKAHEAD_STAIR | 3.5 | S10_AUTO_CTE_GAIN_STAIR | 1.0 |
-| S10_AUTO_YAW_GAIN_STAIR | 0.8 | S10_YAW_DAMP | 2.0 |
-| S10_STAIR_YAW_GATE | 1.0 | S10_VMC_TERRAIN_KIN | 1 |
-| S10_NMPC_HZ | 20 | S10_NMPC_SWING_D | 0.35 |
-| S10_NMPC_MU | 0.8 | S10_NMPC_FRONT_SWING_FZ_MIN | 0.0 |
-| S10_NMPC_WF | 1e-3 | S10_NMPC_WM | 0.3 |
-| S10_NMPC_WA | 1.0 | S10_NMPC_KP_PITCH | 80.0 |
-| S10_NMPC_KD_PITCH | 15.0 | S10_NMPC_Z_OFF | 0.25 |
-| S10_NMPC_KP_VX | 10.0 | S10_NMPC_KP_YAW | 6.0 |
-| S10_NMPC_YAW_ERR_K | 1.5 | S10_NMPC_WHEEL_K | 12.0 |
-| S10_NMPC_YAW_DIFF | 1.0 | S10_STAIR_HDG_K | 1.0 |
-| S10_STAIR_HDG_D | 3.0 | S10_STAIR_HDG_OM | 0.5 |
-| S10_STAIR_OM_SCALE | 1.0 | S10_FP_STAND_DROP | 0.22 |
-| S10_WHEEL_PRESS | 0.05 | S10_CAR_YAW_SLEW | 12 |
+| S10_MPC_PLAN_INTERVAL_AUTO | 10 (20Hz) | S10_MPC_YAML | doc/s10_mpc_deploy.yaml |
+| S10_STAIR_W_FOOTHOLD | 0.0（待调） | S10_GAIT / S10_GAIT_UTIL | 0（软相位开关） |
+| S10_ROLL_IMB_GAIN | 0.8 | S10_BIAS_LIFT_MIN | 0.05 |
+| S10_BIAS_FL_HIPY / KNEE | 0.20 / -0.50 | S10_BIAS_HL_HIPY / KNEE | -0.10 / 0.45 |
+| riser 检测 rise / max_dh | 0.05 / 0.16 | stair_confirmed rise/span | 0.06 / 2.0m |
+| tile_half / res | 3.0 / 0.10 | StairStanceGuard N / margin | 20N / 0.06m |
+| S10_NAV_HZ | 20 | S10_AUTO_VYAW_MAX | 1.5 |
+| S10_AUTO_YAW_GAIN | 3.0 | S10_AUTO_YAW_FF_GAIN | 20.0 |
 
-NMPC 代码默认（未覆盖时）：KP_Z=200 / KD_Z=30 / KP_YAW=2 / KD_YAW=2 / WM=0.1 / WFR=0.02 / WS=0.02 / WP=0.05 / WV=0.10 / FZ_MAX=180 / REACH=-0.34 / SWING_D=0.35 / H=4 / HORIZON=8(M1)。
+### 6.6 历史 NmpcWBC 参数（归档参考，run_m1mmm3.sh）
+| 参数 | 值 | 说明 |
+|---|---|---|
+| S10_VMC_MODE | nmpcwbc | 旧 STAIR 执行器（已顶替） |
+| S10_NMPC_HZ / WBC | 20Hz / 200Hz | SRBD 力优化 + WBC 力分配 |
+| S10_NMPC_WA / WM / WF | 0.2 / 0.3 / 1e-3 | 轨迹 QP 权重 |
+| S10_NMPC_KP_PITCH / KD_PITCH | 80 / 15 | 姿态增益 |
+| S10_NMPC_Z_OFF | 0.25 | body-z 参考偏移 |
+| S10_NMPC_KP_SW | 40 | 摆腿位置 PD |
+| S10_NMPC_WWHEEL | 30 | 轮速权重 |
+| S10_STAIR_HDG_LAT | 0.0 | 纯切线航向锁 |
 
-### 6.5 卡点与结论（29 变体证据，HEAD 7961731）
-- **最优 m23**：y=39.4（越过 riser3，3/6 级），body 稳定 0.84–0.96，t≈12 折叠停滞坠落；29 个变体（m24–m51）全部更差。
-- **机制链**：爬顶动量过冲（2.0m/s 撞 0.125m 面，v²/2g≈0.2m 弹起）→ 折叠（轮甩到髋上方，J22≈0 奇异）→ 模型-执行断层（折叠轮被标记 stance、后轮被标记 swing）→ 后轴预抬失牵引 → 停滞-坠落。
-- **决定性几何根因**：`J21 = -px`——站立位形轮在髋正下方（px=0）时 hip 力矩对垂直力贡献严格为 0，body 高度只由"轮高+腿长静态几何"决定；z 跟踪应移除或改用途，爬升靠轮滚（接触+动量冲棱），摆腿只做引导。
-- **剩余选项**：① 完整 OCS2 式轨迹优化（离散接触 mode 序列 + Pfaffian 轮约束 + 全身轨迹规划，多日工作量，需确认投入）；② 换执行策略（爬顶期前后轮"低抬快滚"）；③ 接受 3/6 级为当前架构上限，转其他赛道能力优化。
+### 6.7 卡点与结论
+- **NmpcWBC 结构性卡点（155 实验闭环）**：几何盲区——轴距 0.456m ≥ 踏面 0.399~0.448m → "同踏面"位形 →
+  25° 俯仰；三个同源墙：前轮左右不对称→roll、后轮折叠→yaw 漂移、后轮够不到摆动窗。增量调参彻底闭环。
+- **DiAL 转向动机**：步态/落脚点是离散决策，不该由暴力采样承担；上层连续软相位 + 下层扭矩采样是正确分层。
+- **DiAL 风险与回退**：若软相位搜不到抬轮 → 先调 `swing_prox / w_foothold / ground_phase`；
+  仍不够 → 升级为"低维上层离散选择器 + 固定 mode DiAL"（上层搜 4 腿相位 + 4 落脚点）。
+  不重开：旧 NMPC+WBC 距离窗、力控软切换、车化动量冲阶。
 
 ## 7. 硬件 / 模型参数
 
@@ -170,33 +211,44 @@ NMPC 代码默认（未覆盖时）：KP_Z=200 / KD_Z=30 / KP_YAW=2 / KD_YAW=2 /
 | 质量 m | 19.0 kg | NmpcWbc 默认 |
 | 腿长 L1=L2 | 0.18 m | FK 一致 |
 | 轮半径 R | 0.081 m | FK 一致（vmc_legs） |
-| 轴距 wheelbase | 0.456 m | > 阶距 0.4m → 前后轴永不同时 SWING |
+| 轴距 wheelbase | 0.456 m | ≥ 阶距 0.4m → 爬梯同踏面位形根因 |
 | 半轮距 track_half | 0.24 m | 差速参考用 |
 | 腿力矩限幅 | ≤48 Nm | 合规 |
 | 轮力矩限幅 | ≤13.5 Nm | 合规 |
-| 台阶几何 | 0.061 + 0.125×5 | wp6→7 连续 6 级，阶距 0.4m |
+| 台阶几何 | 0.061 + 0.125×5 | wp6→7 连续 6 级，阶距 0.4m，踏面 0.399~0.448m |
 
-## 8. 当前进度（2026-08-13）
+## 8. 当前进度（2026-08-14）
 
-- **CRUISE（稳定主线）**：wp0→4 ≈13.5s；wp0→5 稳定通过（v890：高架伪影过滤 + 加速度限幅）；wp0→33 分段验证通过 18 点（wp0-6/8/10/12/14-16/18/20/22/26-27，跳过台阶 wp6-7 与横脊/墙区），卡点集中在坡底脊区与 wp17 大弯。最新图 `doc/final_wp0-6_xy_speed.png`。
-- **STAIR（当前攻关）**：m23 = 3/6 级（y=39.4），29 变体全差；工作树 M1 多 knot 轨迹 QP 待验证。
-- **速度目标**：70s 全程需均速 3.35 m/s（离线扫描 OMAX≥2 + 放开急弯/横脊/近点可达 70.4s，依赖台阶技能）。
-- **真机**：未迁移（待 vel_scale 回退 50、IMU 闭环、Orin 实测）。
-- **初赛材料**：8.20 技术方案 PDF + Demo + GitHub 链接（待做）。
+- **CRUISE（稳定主线）**：wp0→4 ≈13.5s；wp0→5 稳定通过（v890）；wp0→33 分段验证通过 18 点，
+  卡点集中在坡底脊区与 wp17 大弯。最新图 `doc/final_wp0-6_xy_speed.png`。
+- **STAIR（DiAL 分层，当前攻关）**：
+  - NmpcWBC M1 系列 155 实验/23 提交已闭环（`S10_轮足爬梯_全方案总文档_20260813.md`），物理最远
+    "前轮登顶 riser2 + 后轮跟爬、yaw 0.60、body 0.70 无发射"。
+  - 8-14 DiAL 落地 7 个提交：riser 表来自 lidar（决策 2）、已知地形/roll override/action bias/joint debug、
+    DiAL lidar 接触规划器 + 无 ROS 测试台、轮锁 reward、AXLE 步态前后轴同步。
+  - 工作树 WIP：`stair_stance_guard.py`（新）+ `stair_dial_noros.py` 接线（支撑多边形否决/轮锁，未提交）。
+- **速度目标**：70s 全程需均速 3.35 m/s（依赖台阶技能打通）。
+- **真机**：未迁移。**初赛材料**：8.20 技术方案 PDF + Demo + GitHub 链接（待做）。
 
 ## 9. 待办（按优先级）
 
-1. STAIR 方向决策：OCS2 轨迹优化 / 执行策略重写 / 接受 3/6 上限（需用户确认）。
-2. 验证 M1 多 knot 轨迹 QP（工作树 WIP）是否解决折叠发射。
-3. 33 航点全程（打通台阶后逐段回归 wp6→8→…→32）。
-4. 真机迁移（vel_scale 50、IMU 闭环、Orin 实测）。
-5. 8.20 初赛材料（技术方案 PDF + Demo + GitHub）。
+1. **DiAL 实施顺序（计划 1→7）**：
+   ① 归档 DDP 骨架（`s10_dial_mpc.py` git rm/归档）；② 确认 MBDPI 基线（`tmp/run_v658_test.sh` 记录卡点）；
+   ③ StairContactPlanner 离线单测（w_swing 连续、前后轴自然交替）；④ 接入 `stair_dial_noros.py` STAIR 分支；
+   ⑤ 打通 gait_swing+foothold 到 DiAL cost（确认软相位真正进 rollout）；⑥ 清理旧距离窗/HOVER/相位门参数；
+   ⑦ 真原图 wp6→7 验证。
+2. **STAIR 验收**：wp6→7 连续成功 4 次（前轮过 riser2、fn>10N、|yaw_err|<5°、|pitch|<0.5、|roll|<0.5、vx≥0.8、力矩合规）。
+3. 提交并验证 StairStanceGuard（工作树 WIP）。
+4. 33 航点全程（台阶打通后逐段回归 wp6→8→…→32）。
+5. 真机迁移（vel_scale 50、IMU 闭环、Orin 实测）。
+6. 8.20 初赛材料（技术方案 PDF + Demo + GitHub）。
 
 ## 10. 维护日志
 
 | 日期 | HEAD | 内容 |
 |---|---|---|
-| 2026-08-13 | 6cb4b05→61425a9 | 创建总方案主文档；归纳 CRUISE/STAIR 方案、数据管线、控制频率、参数表；清理 8-11 前旧归档（_archive_20260806/08/10/12、backups、根 dial-mpc、refs）；venv dial_mpc 改指向仓库内置副本；M1 多 knot NMPC 提交并由并行会话收口为 M1j（后轴贴面弧回退） |
+| 2026-08-13 | 6cb4b05→61425a9 | 创建总方案主文档；归纳 CRUISE/STAIR 方案、数据管线、控制频率、参数表；清理 8-11 前旧归档；venv dial_mpc 改指向仓库内置副本；M1 多 knot NMPC 提交并由并行会话收口为 M1j |
+| 2026-08-14 | cc70c19 | 方案转向 DiAL 分层爬梯（StairContactPlanner + DiAL-MBDPI + StairStanceGuard）；更新本总方案（DiAL 数据管线/频率/参数表）；删除 8-12 前旧 stair 方案文档（6 篇 08-11 文档）与旧图 carvmc_vmax6_wp0-6_v730.png；README 进度更新 |
 
 > 后续每次实验：在此表追加一行，并同步 §7/§8/§9。
 
@@ -204,11 +256,12 @@ NMPC 代码默认（未覆盖时）：KP_Z=200 / KD_Z=30 / KP_YAW=2 / KD_YAW=2 /
 
 | 类别 | 文件 |
 |---|---|
-| STAIR 执行层 | `src/S10_sdk_deploy/s10_mpc/s10_nmpc_wbc.py`（NMPC+WBC）、`stair_wbc.py`（位置基全身控制）、`stair_wbc_qp.py`（QP 力分配变体） |
+| STAIR 执行层（当前 DiAL） | `src/S10_sdk_deploy/s10_mpc/stair_contact_planner.py`（接触规划）、`mpc_controller.py`（DiAL-MBDPI + act2tau）、`stair_stance_guard.py`（支撑多边形否决/轮锁，WIP）、`lidar_terrain_v2.py`（高程图+riser 检测） |
+| STAIR 历史执行层（归档） | `s10_nmpc_wbc.py`（NmpcWBC）、`stair_wbc.py` / `stair_wbc_qp.py` / `stair_vmc_legs.py` |
 | CRUISE 执行层 | `src/S10_sdk_deploy/s10_mpc/vmc_legs.py`（LidarTerrain + CarVMC） |
 | 导航 | `src/S10_sdk_deploy/s10_mpc/auto_nav.py`、`stair_auto_nav.py` |
-| 主入口 | `src/S10_sdk_deploy/scripts/cruise_vmc_noros.py`（CRUISE）、`stair_vmc_noros.py`（STAIR） |
+| 主入口 | `src/S10_sdk_deploy/scripts/cruise_vmc_noros.py`（CRUISE）、`stair_dial_noros.py`（STAIR DiAL，由 cruise_noros.py 复制）、`stair_vmc_noros.py`（旧 NmpcWBC 入口） |
 | 模型 | `src/S10_sdk_deploy/S10_description/s10_mjcf/mjcf/`（S10_track.xml、new_wp30.xml） |
-| 运行脚本 | `tmp/run_3knob_m16.sh`（stair m23）、`tmp/run_v850test.sh`（cruise v890）、`tmp/run_stw_smoke.sh`（主测试入口）、`tmp/run_nmpc_real114.sh`（进梯对齐最优） |
-| 文档 | `doc/0808.md`（工程总文档）、`doc/stair_nmpcwbc_攻坚最终总结_20260813.md`、`doc/stair_方案与数据管线_当前版_20260812.md`、`doc/carvmc_方案与数据管线_20260810.md`、`doc/s10_mpc_deploy.yaml`（dial-mpc 部署配置） |
+| 运行脚本 | `tmp/run_v850test.sh`（cruise v890）、`tmp/run_m1mmm3.sh`（NmpcWBC 历史最优）、`tmp/run_v658_test.sh`（DiAL MBDPI 基线） |
+| 文档 | `doc/0808.md`（工程总文档）、`doc/S10_轮足爬梯_全方案总文档_20260813.md`、`doc/stair_dial_layered_plan_20260814.md`（当前 DiAL 方案）、`doc/carvmc_方案与数据管线_20260810.md`（巡航专项）、`doc/s10_mpc_deploy.yaml`（DiAL 部署配置） |
 | 官方材料 | `doc/比赛规则_赛道四_具身未来.md`、`doc/赛道四_具身未来.pdf`、`doc/hardware spec.pdf`、`doc/Airy*` |

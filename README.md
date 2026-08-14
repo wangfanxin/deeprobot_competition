@@ -120,22 +120,23 @@ S10_MUJOCO_XML=/absolute/path/to/model.xml \
   文件 `src/S10_sdk_deploy/S10_description/s10_mjcf/mjcf/new_wp30.xml`，
   路径图 [new_wp30_path.png](doc/new_wp30_path.png)，说明见 doc/0808.md §9.1。
 
-## 当前进度与待办（2026-08-12）
+## 当前进度与待办（2026-08-14）
 
 - **CarVMC 巡航**（主线，稳定）：
   - wp0→4 ≈13.5s、wp0→5 稳定通过（v890：高架伪影过滤 + 加速度限幅）；
     wp0→33 分段验证通过 18 点（wp0-6/8/10/12/14-16/18/20/22/26-27，跳过
     台阶 wp6-7 与横脊/墙区），卡点集中在坡底脊区与 wp17 大弯。
-- **台阶**（stair session，当前攻关）：
-  - v216 轮锁 v4：8/8 不翻、前轮 2~3 级；位置基腿控 80+ 组实验收敛于
-    「爬顶几何冲突」结构性失败（前轮释放后后腿折叠悬空）。
-  - **WBC QP 力分配主环**（v904 起）：`stair_vmc_noros.py` + `stair_wbc_qp.py`，
-    新增 `S10_VMC_MODE=stairwbcqp`；台架已能完全越过 riser2，剩余爬顶瞬间
-    roll/yaw 崩溃。方案见 doc/stair_StairWBC_终版_20260811.md。
-- 待办：WBC QP 爬顶收敛、33 航点全程、真机迁移（vel_scale 回退 50、IMU 闭环、
-  Orin 实测）、初赛材料（8.20 技术方案 PDF + Demo + GitHub 链接）。
+- **台阶**（stair session，当前攻关 = DiAL 分层方案）：
+  - 演进：StairWBC 位置基（08-11）→ NmpcWBC M1 系列（155 实验/23 提交闭环，几何盲区
+    轴距≥踏面 → 25° 同踏面位形）→ **DiAL 分层（08-14 当前）**：上层 StairContactPlanner
+    （连续 swing 权重 + 落脚点目标场，20Hz）+ 下层 DiAL-MBDPI（16D 扭矩采样，20Hz）
+    + StairStanceGuard（200Hz 支撑多边形否决/轮锁，WIP）。方案见
+    [doc/stair_dial_layered_plan_20260814.md](doc/stair_dial_layered_plan_20260814.md)。
+- 待办：DiAL 实施 1→7（归档 DDP 骨架/基线/planner 接入/cost 打通/清旧参数/真原图验证）、
+  wp6→7 连续成功 4 次、33 航点全程、真机迁移（vel_scale 50、IMU 闭环、Orin 实测）、
+  初赛材料（8.20 技术方案 PDF + Demo + GitHub 链接）。
 
-详细实验记录与参数演进见 `doc/0808.md`（§9 起）与归档 `_archive_20260808/doc/0806.md`。
+详细实验记录与参数演进见 `doc/0808.md`（§9 起）与总方案 `doc/方案总纲_MASTER.md`。
 
 ## 相关文档
 
@@ -145,4 +146,4 @@ S10_MUJOCO_XML=/absolute/path/to/model.xml \
 - [doc/requirements.md](doc/requirements.md) —— Ubuntu 22.04（非 WSL）安装要求
 - `doc/比赛规则_赛道四_具身未来.md`、`doc/赛道四_具身未来.pdf` —— 官方规则
 - `doc/Airy雷达用户手册.pdf`、`doc/hardware spec.pdf` —— 真机硬件资料
-- `doc/cruise_3.50_xy_speed.png`、`doc/new_wp30_full_xy_speed.png` —— 最新结果图
+- `doc/final_wp0-6_xy_speed.png` —— 最新巡航结果图
