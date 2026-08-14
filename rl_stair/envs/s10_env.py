@@ -61,6 +61,10 @@ class S10RLCfg:
     # clip dense rewards at 0, termination added AFTER clip
     # (go2w_rl_gym/legged_gym `only_positive_rewards = True`; avoids negative-return std inflation)
     only_positive_rewards: bool = True
+    # velocity tracking (legged_gym/go2w_rl_gym primary locomotion reward)
+    r_tracking_lin_vel = 4.0
+    r_tracking_ang_vel = 2.0
+    tracking_sigma = 0.25
 
     terrain: Terrain = field(default_factory=flat)
 
@@ -197,6 +201,19 @@ class S10RLEnv:
                jnp.maximum(soft*self.jnt_range[:, 0] - q, 0.0)**2
         r += self.cfg.r_dof_limits * jnp.sum(over[:, self.leg_idx], axis=-1)
         r += self.cfg.r_hip_l2 * jnp.sum(action[:, self.hipx_idx]**2, axis=-1)
+        # velocity tracking (legged_gym: exp(-err/tracking_sigma); body-frame lin vel)
+        qw, qx, qy, qz = qpos[:, 3], qpos[:, 4], qpos[:, 5], qpos[:, 6]
+        vl = data.qvel[:, 0:3]
+        # inverse-quat rotate world lin vel -> body frame
+        tx = 2.0 * (-qy * vl[:, 2] + qz * vl[:, 1])
+        ty = 2.0 * (-qz * vl[:, 0] + qx * vl[:, 2])
+        tz = 2.0 * (-qx * vl[:, 1] + qy * vl[:, 0])
+        vbx = vl[:, 0] + qw * tx + (-qy * tz + qz * ty)
+        vby = vl[:, 1] + qw * ty + (-qz * tx + qx * tz)
+        lin_err = (state["cmd"][:, 0] - vbx) ** 2 + (0.0 - vby) ** 2
+        r += self.cfg.r_tracking_lin_vel * jnp.exp(-lin_err / self.cfg.tracking_sigma)
+        ang_err = (state["cmd"][:, 1] - data.qvel[:, 5]) ** 2
+        r += self.cfg.r_tracking_ang_vel * jnp.exp(-ang_err / self.cfg.tracking_sigma)
         if self.cfg.only_positive_rewards:
             r = jnp.clip(r, 0.0, None)
         r = r + self.cfg.r_termination * term
