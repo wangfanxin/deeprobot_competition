@@ -58,6 +58,9 @@ class S10RLCfg:
     r_action_rate = -0.0002
     r_dof_limits = -0.9
     r_hip_l2 = -0.1
+    # clip dense rewards at 0, termination added AFTER clip
+    # (go2w_rl_gym/legged_gym `only_positive_rewards = True`; avoids negative-return std inflation)
+    only_positive_rewards: bool = True
 
     terrain: Terrain = field(default_factory=flat)
 
@@ -185,7 +188,6 @@ class S10RLEnv:
         r += self.cfg.r_progress * jnp.maximum(0.0, new_progress - state["prev_progress"])
         r += self.cfg.r_riser * jnp.clip(new_risers - state["riser_crossed"], 0, None)
         r += self.cfg.r_goal * success
-        r += self.cfg.r_termination * term
         r += self.cfg.r_orientation * (roll**2 + pitch**2)
         r += self.cfg.r_height * (qpos[:, 2] - self.stand_z)**2
         r += self.cfg.r_torque * jnp.sum(tau**2, axis=-1)
@@ -195,6 +197,9 @@ class S10RLEnv:
                jnp.maximum(soft*self.jnt_range[:, 0] - q, 0.0)**2
         r += self.cfg.r_dof_limits * jnp.sum(over[:, self.leg_idx], axis=-1)
         r += self.cfg.r_hip_l2 * jnp.sum(action[:, self.hipx_idx]**2, axis=-1)
+        if self.cfg.only_positive_rewards:
+            r = jnp.clip(r, 0.0, None)
+        r = r + self.cfg.r_termination * term
         return r
 
     def reset(self, rng):
