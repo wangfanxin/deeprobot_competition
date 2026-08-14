@@ -244,7 +244,9 @@ class S10RLEnv:
         n = self.n
         rng, k1 = jax.random.split(rng)
         rng, k2 = jax.random.split(rng)
-        yaw = jax.random.uniform(k1, (n,), minval=self.cfg.yaw_lo, maxval=self.cfg.yaw_hi)
+        # face the course (+y): body +x forward must equal world +y (progress axis),
+        # matching the competition track direction; yaw_lo/hi are perturbation around pi/2
+        yaw = np.pi / 2 + jax.random.uniform(k1, (n,), minval=self.cfg.yaw_lo, maxval=self.cfg.yaw_hi)
         vx = jax.random.uniform(k1, (n,), minval=self.cfg.vx_lo, maxval=self.cfg.vx_hi)
         vy = jax.random.uniform(k2, (n,), minval=self.cfg.vy_lo, maxval=self.cfg.vy_hi)
         vyaw = jax.random.uniform(k2, (n,), minval=-0.5, maxval=0.5)
@@ -359,7 +361,9 @@ class S10RLEnv:
         rng, k1 = jax.random.split(rng)
         rng, k2 = jax.random.split(rng)
         n = self.n
-        yaw = jax.random.uniform(k1, (n,), minval=self.cfg.yaw_lo, maxval=self.cfg.yaw_hi)
+        # face the course (+y): body +x forward must equal world +y (progress axis),
+        # matching the competition track direction; yaw_lo/hi are perturbation around pi/2
+        yaw = np.pi / 2 + jax.random.uniform(k1, (n,), minval=self.cfg.yaw_lo, maxval=self.cfg.yaw_hi)
         vx = jax.random.uniform(k1, (n,), minval=self.cfg.vx_lo, maxval=self.cfg.vx_hi)
         vy = jax.random.uniform(k2, (n,), minval=self.cfg.vy_lo, maxval=self.cfg.vy_hi)
         vyaw = jax.random.uniform(k2, (n,), minval=-0.5, maxval=0.5)
