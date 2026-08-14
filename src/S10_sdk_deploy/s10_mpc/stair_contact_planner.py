@@ -202,6 +202,12 @@ class StairContactPlanner:
                 self._rear_swing_t0 = None   # 超时释放，下一轮重试
         else:
             self._rear_swing_t0 = None
+        # 永不双轴同抬（v11 实测 mode=[1,1,1,1] 四轮全抬 -> 无支撑 -> 卡死）。
+        # 前轴优先：前轴在抬时压制后轴；后轴等前轴释放后再抬。
+        if mode[0] or mode[1]:
+            mode[2] = mode[3] = 0.0
+        elif mode[2] or mode[3]:
+            mode[0] = mode[1] = 0.0
         if os.environ.get('S10_HARD_MODE_DEBUG', '0') == '1':
             print(f'[HARD] wy={[round(float(v),2) for v in wheel_y]} wz={[round(float(v),2) for v in wheel_z]} mode={[int(v) for v in mode]} fz={[round(float(v),2) for v in foothold_z]}', flush=True)
         return mode, foothold_z.astype(np.float32)
