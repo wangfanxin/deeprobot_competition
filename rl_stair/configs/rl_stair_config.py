@@ -47,14 +47,16 @@ def make_stages(num_envs=1024):
     def c1d():
         c = _base_cfg(num_envs); c.terrain = single_step(0.125, y0=1.5); return c
     def c2a():
-        # USER-DIRECTED 2026-08-15 01:40: T2 split into a ROW of low steps, then raise
-        # height gradually. Learn multi-step sequencing rhythm at easy heights first.
+        # USER-DIRECTED 2026-08-15: T2 split into ROW of low steps, raise height gradually.
         c = _base_cfg(num_envs); c.terrain = stairs([0.05]*4, y0=1.5); return c
     def c2b():
         c = _base_cfg(num_envs); c.terrain = stairs([0.061]*4, y0=1.5); return c
     def c2c():
-        c = _base_cfg(num_envs); c.terrain = stairs([0.10]*4, y0=1.5); return c
+        # 4x8cm added 02:35: 6.1->10 jump too steep (T2c 4x10 failed 3x at succ 0.000)
+        c = _base_cfg(num_envs); c.terrain = stairs([0.08]*4, y0=1.5); return c
     def c2d():
+        c = _base_cfg(num_envs); c.terrain = stairs([0.10]*4, y0=1.5); return c
+    def c2e():
         c = _base_cfg(num_envs); c.terrain = stairs([0.125]*4, y0=1.5); return c
     def c3():
         c = _base_cfg(num_envs); c.terrain = stairs(COMPETITION_RISERS, y0=1.5); return c
@@ -86,8 +88,9 @@ def make_stages(num_envs=1024):
         # height gradient (user-guided); T1c(10cm single) -> T2a(4x5cm row) -> ... -> T3.
         Stage("T2a_stairs4x005", c2a, advance_at=0.4, min_iters=50),
         Stage("T2b_stairs4x0061", c2b, advance_at=0.35, min_iters=80),
-        Stage("T2c_stairs4x010", c2c, advance_at=0.3, min_iters=80),
-        Stage("T2d_stairs4x0125", c2d, advance_at=0.3, min_iters=100),
+        Stage("T2c_stairs4x008", c2c, advance_at=0.35, min_iters=80),
+        Stage("T2d_stairs4x010", c2d, advance_at=0.3, min_iters=80),
+        Stage("T2e_stairs4x0125", c2e, advance_at=0.3, min_iters=100),
         Stage("T3_stairs6", c3, advance_at=0.3, min_iters=200),
         Stage("T4a_ridge008", c4a, advance_at=0.5, min_iters=50),
         Stage("T4b_ridge012", c4b, advance_at=0.4, min_iters=80),
