@@ -93,6 +93,22 @@ class StairContactPlanner:
                     if bool(src[si, sj]):
                         valid[i, j] = True
                         height[i, j] = float(hgt[si, sj])
+        # 前轮下方地形盲区回填：riser 立面在 LiDAR 前下 45° 扇形下产生阴影，
+        # 轮正下方格常无效 -> rollout 的 ground cost 无下压信号 -> 悬空轮不落地。
+        # 用 lidar 派生的 riser 表把"盲区内台面"填回（不是上帝视角，表来自
+        # detect_risers）。只填无效格，可见格保持 lidar 实测。
+        rs, ts = self.follower._stair_tables()
+        if len(rs) > 0:
+            yy = y0 + (np.arange(n) + 0.5) * self.res
+            tread = np.zeros(n, dtype=np.float32)
+            for k in range(len(rs)):
+                tread = np.where(yy >= float(rs[k]), float(ts[k]), tread)
+            lo = float(rs[0]) - 0.05
+            hi = float(rs[-1]) + 0.60
+            band = (yy >= lo) & (yy <= hi)
+            fill = (~valid) & band[:, None]
+            height = np.where(fill, tread[:, None], height)
+            valid = valid | fill
         tile = LocalMapTile(height, valid, (x0, y0), self.res, n, n,
                             float(t))
         features = compute_terrain_features(tile, step_threshold=0.18)
@@ -140,7 +156,7 @@ class StairContactPlanner:
         wheel_z = np.asarray(wheel_z, dtype=np.float64)
         mode = np.zeros(4, dtype=np.float32)
         foothold_z = fol.stair_terrain(wheel_y) + 0.081
-        release = float(os.environ.get('S10_HARD_SWING_RELEASE', '0.04'))
+        release = float(os.environ.get('S10_HARD_SWING_RELEASE', '0.0'))
         timeout = float(os.environ.get('S10_HARD_SWING_TIMEOUT', '1.5'))
         # Front wheels swing when they are close to the next riser and the
         # next tread is clearly above the current tread.
@@ -158,9 +174,14 @@ class StairContactPlanner:
                 front_d.append(1e9)
                 front_z.append(foothold_z[i])
         d_min_front = min(front_d)
-        need_front = max(front_z[0] - float(wheel_z[0]), front_z[1] - float(wheel_z[1]))
-        front_target = max(front_z)
-        front_done = (max(float(wheel_z[0]), float(wheel_z[1]))
+        # 落脚目标 = 前轴当前要越过的台面（min）：前轮若跨级（左/右分别对
+        # 到不同 riser），取较低级——先清当前棱、落地，再抬下一级。旧 max
+        # 会把整轴抬到更高级台面 -> 悬空过抬（wp7 卡点：fz 0.72 vs 当前
+        # 级 0.609）。need_front 仍取最大欠抬（任一轮需要抬就抬）。
+        front_target = min(front_z)
+        need_front = max(front_target - float(wheel_z[0]),
+                         front_target - float(wheel_z[1]))
+        front_done = (min(float(wheel_z[0]), float(wheel_z[1]))
                       >= front_target - release)
         front_trigger = (d_min_front < float(os.environ.get('S10_HARD_FRONT_PROX', '0.15'))
                          and need_front > 0.02)
@@ -203,11 +224,14 @@ class StairContactPlanner:
         else:
             self._rear_swing_t0 = None
         # 永不双轴同抬（v11 实测 mode=[1,1,1,1] 四轮全抬 -> 无支撑 -> 卡死）。
-        # 前轴优先：前轴在抬时压制后轴；后轴等前轴释放后再抬。
-        if mode[0] or mode[1]:
-            mode[2] = mode[3] = 0.0
-        elif mode[2] or mode[3]:
+        # 交替爬升：后轴"待跨"（trigger 且未到位）时后轴优先——前轴已在
+        # 更高台面、后轴卡在低一级时，若前轴还优先空摆下一级，后轴永远
+        # 过不了当前棱（wp7 riser2 死锁）。后轴先跨，前轴再跨下一级。
+        if (mode[2] or mode[3]
+                or (rear_trigger and not rear_done)):
             mode[0] = mode[1] = 0.0
+        elif mode[0] or mode[1]:
+            mode[2] = mode[3] = 0.0
         if os.environ.get('S10_HARD_MODE_DEBUG', '0') == '1':
             print(f'[HARD] wy={[round(float(v),2) for v in wheel_y]} wz={[round(float(v),2) for v in wheel_z]} mode={[int(v) for v in mode]} fz={[round(float(v),2) for v in foothold_z]}', flush=True)
         return mode, foothold_z.astype(np.float32)
@@ -250,7 +274,17 @@ class StairContactPlanner:
             wr = np.asarray(fol.stair_wheel_ref(np.asarray(wheel_y, dtype=np.float64)), dtype=np.float64)
             if int(t * 20) % 20 == 0:
                 _rs, _ts = fol._stair_tables()
-                print(f'[PLANNER] t={t:.1f} wy={[round(float(v),2) for v in wheel_y]} wz={[round(float(v),2) for v in wheel_z]} wr={[round(float(v),2) for v in wr]} prox={[round(float(v),2) if v < 1e8 else -1 for v in prox]} risers={[round(float(v),3) for v in _rs]} tops={[round(float(v),3) for v in _ts]}', flush=True)
+                # 诊断：轮正下方 lidar 格 (valid, hmax)
+                _bx = float(self.data.xpos[1][0])
+                _ch = []
+                for _w in range(4):
+                    _gi = int(np.floor((wheel_y[_w] - float(self.lidar.oy)) / self.res))
+                    _gj = int(np.floor((_bx - float(self.lidar.ox)) / self.res))
+                    if 0 <= _gi < self.lidar.valid.shape[0] and 0 <= _gj < self.lidar.valid.shape[1]:
+                        _ch.append(f'{int(self.lidar.valid[_gi,_gj])}:{float(self.lidar.hmax[_gi,_gj]):.3f}')
+                    else:
+                        _ch.append('out')
+                print(f'[PLANNER] t={t:.1f} wy={[round(float(v),2) for v in wheel_y]} wz={[round(float(v),2) for v in wheel_z]} wr={[round(float(v),2) for v in wr]} prox={[round(float(v),2) if v < 1e8 else -1 for v in prox]} risers={[round(float(v),3) for v in _rs]} tops={[round(float(v),3) for v in _ts]} cell={_ch}', flush=True)
 
         # Soft time-varying action bias: keep MBDPI sampling mean in the
         # direction of the geometric lift field. It is a prior, not a gate.
@@ -280,13 +314,23 @@ class StairContactPlanner:
                 pro = float(np.cos(np.pi * tt / 2.0))
             elif bprof == 2.0:
                 pro = float(np.sin(np.pi * tt))
-            pw = np.array([pro if float(sww[i]) > 0.3 else 1.0
+            # 抬升偏置只施加给"正在摆动"的轮（sww>0.3），stance 轮归零：
+            # 旧逻辑 stance 轮 pw=1.0（全量）会把停在台面上的轮持续顶高
+            # （REF_STEP 下一级台面+margin 目标 ~0.9），wp7 悬空不落地主因。
+            pw = np.array([pro if float(sww[i]) > 0.3 else 0.0
                            for i in range(4)], dtype=np.float32)
             yk = np.asarray(wheel_y, dtype=np.float64) + vx * k * dt
             wrk = np.asarray(fol.stair_wheel_ref(yk), dtype=np.float64)
             if full_ref:
                 nrr = np.asarray(fol.stair_next_riser_ref(yk), dtype=np.float64)
                 wrk = np.maximum(wrk, nrr)
+            # v-p0: 抬升偏置只对"正在摆动"的轮用下一级 ref；stance 轮改用
+            # 当前台面+半径 -> 不预抬下一级（REF_STEP 全值+margin 会把停在
+            # 台面上的轮顶到悬空），只在轮子低于当前台面时扶正（保稳定）。
+            _swk = (np.asarray(sww, dtype=np.float32) > 0.3).astype(np.float64)
+            _cur = (np.asarray(fol.stair_terrain(yk), dtype=np.float64)
+                    + 0.081)
+            wrk = np.where(_swk, wrk, _cur)
             lk = np.clip(wrk - np.asarray(wheel_z, dtype=np.float64), 0.0, 0.25)
             lk = np.where(lk < lift_min, 0.0, lk)
             nk = np.clip(lk / 0.15, 0.0, 1.0)

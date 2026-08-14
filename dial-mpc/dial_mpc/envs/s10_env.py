@@ -753,10 +753,15 @@ def _reward_pure(cfg, ctx, d, info, ctrl):
             _sw3 = ((_ms > 0.5) & _wr_ok & _prox_ok & (
                 _wr - (h_terrain + cfg["wheel_radius"]) > _sw_th)
             ).astype(jnp.float32)
-        _prog = jnp.clip(
-            (wheel_z - (h_terrain + cfg["wheel_radius"])) / 0.15,
-            0.0, 1.0)
-        r_lift_prog = _wlp * jnp.sum(_sw3 * _prog)
+        # v-p0: 抬升进度按"摆动目标"归一化（目标=轮下地形+半径+抬升需求），
+        # 到位即 1.0；超过目标按 0.05m 窗口线性扣回。旧版固定 /0.15 使抬得
+        # 越高奖励越大（无上限）-> 前轮在 riser3 抬到 0.97（目标 0.86）
+        # 悬空飞轮/侧翻。到位后不再奖励继续抬，超抬转为惩罚。
+        _gt0 = h_terrain + cfg["wheel_radius"]
+        _lift_need = jnp.clip(target_z - _gt0, 0.03, 0.25)
+        _prog = jnp.clip((wheel_z - _gt0) / _lift_need, 0.0, 1.0)
+        _over = jnp.clip((wheel_z - target_z) / 0.05, 0.0, 1.0)
+        r_lift_prog = _wlp * jnp.sum(_sw3 * (_prog - _over))
         # 做功正奖（用户方案 2.4"后腿蹬"）：轮地法向力×前移速度 +
         # 髋伸矩×前移速度。纯物理、无感知依赖；前移速度 vb[0]（body 局部
         # x），法向力 f_z（轮），髋伸矩 = ctrl 腿力矩的 hipy 分量。

@@ -66,9 +66,25 @@ class StairStanceGuard:
         # 实测支撑轮被压成刹车（FR/HR 恒 ±1.3），离地轮却满矩 ±14，
         # 左右牵引不对称 -> 侧翻（roll ±0.71, t≈8-11s）。防滑交给 DiAL
         # cost 的 r_wheel_lock / r_brake / r_wheel_ref 软罚。
+        # 摆动轮不全锁：保留 DiAL 方向但限幅到 S10_SWING_WHEEL_DRIVE（默认
+        # 0.25×τmax）——摆动轮常顶在 riser 立面（轮底差几 cm 没够到台面），
+        # 全锁(tau=0)后无法滚动爬棱 -> 悬在立面死锁（wp7 riser3 卡点）。
+        # 小幅前驱让轮贴面滚上最后几 cm；离地时幅度小不会空转失控。
+        _sw_drive = float(os.environ.get('S10_SWING_WHEEL_DRIVE', '0.25'))
         for i, act_id in enumerate(self.wheel_act_ids):
             if request_swing[i]:
-                tau[act_id] = 0.0
+                if contact[i]:
+                    # 摆动轮仍接地（还没离地/顶在立面）：保持全驱推着走，
+                    # 直到真正离地——否则后轮在 tread1 上被钳到 3.4Nm
+                    # 推不动，前轮独自前冲 -> 后轴死锁（wp7 riser2 卡点）。
+                    tau[act_id] = float(np.clip(
+                        tau[act_id], -self.wheel_tau_max, self.wheel_tau_max))
+                else:
+                    # 已离地：小幅前驱（防空转失控）
+                    tau[act_id] = float(np.clip(
+                        tau[act_id],
+                        -_sw_drive * self.wheel_tau_max,
+                        _sw_drive * self.wheel_tau_max))
             elif contact[i]:
                 tau[act_id] = float(np.clip(
                     tau[act_id], -self.wheel_tau_max, self.wheel_tau_max))
