@@ -25,8 +25,11 @@ class S10RLCfg:
     naconmax: int = 20
 
     # PD
-    kp_leg: float = 50.0
-    kd_leg: float = 1.0
+    # S10-adapted 05:25: competition stair WBC uses kp_pose=80 (vmc_legs.py:104,
+    # "后轮抬0.07m不足0.13m台阶, 提高kp让抬放姿态到位"); go2w-copied kp=50 too soft for
+    # reliable >8cm lift-climb. kd 1->2 (middle: go2w 1 / S10 6, avoid over-damping RL lifts).
+    kp_leg: float = 80.0
+    kd_leg: float = 2.0
     kp_wheel: float = 2.0
     # S10-adapted (NOT go2w): FK-verified wheel lift within +/-action_scale
     #   0.25->4.2cm 0.5->9.9cm 0.6->12.4cm 0.7->14.7cm 0.8->16.7cm
