@@ -704,7 +704,10 @@ def _reward_pure(cfg, ctx, d, info, ctrl):
         # 0.375m 就需抬，若也被 prox 锁 stance 则死锁（前轮卡面、后轮禁抬）。
         _prox_ok = (_prox < cfg.get("swing_prox", 1e9)) | (
             jnp.arange(4) >= 2)
-        if cfg.get("ground_phase", 0.0) > 0.0:
+        # 注意：cfg 在部分重 trace 路径下为动态输入（tracer），Python `if` 会
+        # TracerBoolConversionError（2026-08-14 P0 复跑发现）；与 set_mode 同源
+        # 直接读 env（trace 期为具体 Python float）。
+        if float(os.environ.get("S10_STAIR_GROUND_PHASE", "0")) > 0.0:
             # v214: gait_swing 可作连续 swing 权重（0~1，utility 选腿）；
             # 摆动相误差 × 权重 + 支撑相误差 × (1-权重)——软相位无门控。
             if _gsw is not None:
@@ -727,7 +730,7 @@ def _reward_pure(cfg, ctx, d, info, ctrl):
             _w4 = jnp.array([_lw, 1.0, _lw, 1.0], dtype=jnp.float32)
             r_ground = -cfg["terrain_w_ground"] * jnp.sum(
                 jnp.where(ok_h, _ph_err * _w4, 0.0))
-        elif cfg.get("ground_oneway", 0.0) > 0.0:
+        elif float(os.environ.get("S10_STAIR_GROUND_ONEWAY", "0")) > 0.0:
             r_ground = -cfg["terrain_w_ground"] * jnp.sum(
                 jnp.where(ok_h,
                           jnp.square(jnp.clip(target_z - wheel_z, 0.0, 1.0)),
