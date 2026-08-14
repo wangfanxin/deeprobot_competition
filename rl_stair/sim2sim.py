@@ -30,7 +30,7 @@ def main():
     ap.add_argument("--ckpt", type=str, required=True)
     ap.add_argument("--x", type=float, default=-14.4)
     ap.add_argument("--y", type=float, default=37.0)
-    ap.add_argument("--yaw", type=float, default=0.0)
+    ap.add_argument("--yaw", type=float, default=1.5708)   # wp6->7 track heading ~88.85 deg (+y); training reset body+x=+y. old default 0 drove perpendicular to stairs
     ap.add_argument("--vx", type=float, default=1.5)
     ap.add_argument("--steps", type=int, default=1500)   # policy steps (50Hz)
     args = ap.parse_args()
@@ -43,7 +43,7 @@ def main():
     default_dof = idx["default_dof"]
 
     # spawn before stairs, facing along track (+y), base z = ground + stand height
-    stand_z = 0.382
+    stand_z = 0.354   # == S10RLEnv._compute_stand (training env), same robot geometry
     cy, sy = math.cos(args.yaw / 2), math.sin(args.yaw / 2)
     d.qpos[0:3] = [args.x, args.y, GROUND + stand_z]
     d.qpos[3:7] = [cy, 0.0, 0.0, sy]
