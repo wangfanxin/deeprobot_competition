@@ -56,7 +56,7 @@ class S10RLCfg:
     tilt_limit: float = 1.2
 
     r_progress = 4.0   # +2->+4 (2026-08-14): 强化前进激励，破除"站立吃小奖励"局部最优；legged_gym 主用 velocity-tracking，progress 为辅助，翻倍不改变最优方向
-    r_riser = 1.0
+    r_riser = 3.0   # 1->3 (2026-08-15 04:00): 4x10cm排台阶卡3次 - 单级可靠率~50%需74%; riser奖励1.0相对tracking太弱, 强化跨台阶信号
     r_goal = 10.0
     r_termination = -0.8
     r_orientation = -2.0
