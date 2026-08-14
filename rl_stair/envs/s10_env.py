@@ -30,10 +30,9 @@ class S10RLCfg:
     kp_wheel: float = 2.0
     # S10-adapted (NOT go2w): FK-verified wheel lift within +/-action_scale
     #   0.25->4.2cm 0.5->9.9cm 0.6->12.4cm 0.7->14.7cm 0.8->16.7cm
-    #   competition riser = 12.5cm. 0.7->0.8 (2026-08-15 00:35): 0.7 gives only 14.7cm
-    #   lift = 2.2cm margin over 12.5cm riser -> T1d unstable (repeated regresses).
-    #   0.8 -> 16.7cm = 4.2cm margin. Joint limits safe (hipy pm2.53, knee pm2.72).
-    action_scale: float = 0.8
+    #   competition riser = 12.5cm -> action_scale=0.7 (go2w 0.25 insufficient; 0.8
+    #   tried 00:35 but destabilized lower stages (overshoot) and was reverted 01:05)
+    action_scale: float = 0.7
     # S10-adapted: wheel r=0.081; go2w vel_scale=10 caps at 0.81 m/s but stair entry
     #   is ~1.5 m/s -> vel_scale=24 gives 1.94 m/s max (cmd 0.8-1.8 covered)
     vel_scale: float = 24.0

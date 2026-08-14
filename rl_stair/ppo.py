@@ -147,6 +147,10 @@ class PPO:
                                          self.cfg.max_grad_norm)
                 self.optim.step()
         self.it += 1
+        # STD CAP (2026-08-15 01:05): hard stages repeatedly inflated std 0.45->0.67,
+        # hedging on noisy returns -> destabilized lower stages (cascading regresses).
+        # rsl_rl converges std to ~0.1-0.3; cap at 0.5 keeps exploring but exploits learned skills.
+        self.actor.log_std.data.clamp_(max=float(np.log(0.5)))
         return {"loss_actor": loss_actor.item(), "loss_critic": loss_critic.item(),
                 "entropy": entropy.item(), "mean_std": float(torch.exp(self.actor.log_std).mean().item())}
 
