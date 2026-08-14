@@ -25,6 +25,9 @@ class StairContactPlanner:
         self.n_out = int(round(2.0 * self.tile_half / self.res))
         self.lidar = LidarTerrainV2(model, data, res=self.res)
         self.riser_records = []
+        # hard-mode swing 起止时刻（到位/超时释放用，2026-08-14）
+        self._front_swing_t0 = None
+        self._rear_swing_t0 = None
 
     def update_perception(self, t):
         self.lidar.update()
@@ -121,13 +124,24 @@ class StairContactPlanner:
                     features[_key] = np.where(mk, kt[_key], features[_key])
         return out
 
-    def compute_hard_mode(self, wheel_y, wheel_z):
+    def compute_hard_mode(self, wheel_y, wheel_z, t):
+        """硬 mode 轴级摆动 + 到位/超时释放（2026-08-14 死锁修复）。
+
+        v9 实测卡死根因：前轮 swing 无退出条件——轮抬到位（0.86/目标
+        0.871）后仍保持锁定（tau=0），无法滚动，机器人永远到不了下一
+        个触发点。现增加：
+          - 到位释放：轮高 >= 目标 - S10_HARD_SWING_RELEASE（默认 0.04）
+          - 超时释放：S10_HARD_SWING_TIMEOUT（默认 1.5s）内未到位则放
+            行让轮滚动，下一轮再试（复用 NmpcWBC 时代的释放设计）。
+        """
         fol = self.follower
         rs, ts = fol._stair_tables()
         wheel_y = np.asarray(wheel_y, dtype=np.float64)
         wheel_z = np.asarray(wheel_z, dtype=np.float64)
         mode = np.zeros(4, dtype=np.float32)
         foothold_z = fol.stair_terrain(wheel_y) + 0.081
+        release = float(os.environ.get('S10_HARD_SWING_RELEASE', '0.04'))
+        timeout = float(os.environ.get('S10_HARD_SWING_TIMEOUT', '1.5'))
         # Front wheels swing when they are close to the next riser and the
         # next tread is clearly above the current tread.
         # Synchronize the front axle: if either front wheel is near the next
@@ -145,9 +159,21 @@ class StairContactPlanner:
                 front_z.append(foothold_z[i])
         d_min_front = min(front_d)
         need_front = max(front_z[0] - float(wheel_z[0]), front_z[1] - float(wheel_z[1]))
-        if d_min_front < float(os.environ.get('S10_HARD_FRONT_PROX', '0.15')) and need_front > 0.02:
-            mode[0] = mode[1] = 1.0
-            foothold_z[0] = foothold_z[1] = max(front_z)
+        front_target = max(front_z)
+        front_done = (max(float(wheel_z[0]), float(wheel_z[1]))
+                      >= front_target - release)
+        front_trigger = (d_min_front < float(os.environ.get('S10_HARD_FRONT_PROX', '0.15'))
+                         and need_front > 0.02)
+        if front_trigger and not front_done:
+            if self._front_swing_t0 is None:
+                self._front_swing_t0 = float(t)
+            if (float(t) - self._front_swing_t0) <= timeout:
+                mode[0] = mode[1] = 1.0
+                foothold_z[0] = foothold_z[1] = front_target
+            else:
+                self._front_swing_t0 = None   # 超时释放，下一轮重试
+        else:
+            self._front_swing_t0 = None
         # Rear wheels swing after the front wheels have reached a higher tread.
         front_terr = max(float(fol.stair_terrain(np.array([wheel_y[0]]))[0]),
                          float(fol.stair_terrain(np.array([wheel_y[1]]))[0]))
@@ -161,9 +187,21 @@ class StairContactPlanner:
                 rear_d.append(1e9)
         target_z_rear = front_terr + 0.081
         need_rear = max(target_z_rear - float(wheel_z[2]), target_z_rear - float(wheel_z[3]))
-        if ((front_terr - rear_terr) > 0.06 and min(rear_d) < float(os.environ.get('S10_HARD_REAR_PROX', '0.15')) and need_rear > 0.02):
-            mode[2] = mode[3] = 1.0
-            foothold_z[2] = foothold_z[3] = target_z_rear
+        rear_done = (max(float(wheel_z[2]), float(wheel_z[3]))
+                     >= target_z_rear - release)
+        rear_trigger = ((front_terr - rear_terr) > 0.06
+                        and min(rear_d) < float(os.environ.get('S10_HARD_REAR_PROX', '0.15'))
+                        and need_rear > 0.02)
+        if rear_trigger and not rear_done:
+            if self._rear_swing_t0 is None:
+                self._rear_swing_t0 = float(t)
+            if (float(t) - self._rear_swing_t0) <= timeout:
+                mode[2] = mode[3] = 1.0
+                foothold_z[2] = foothold_z[3] = target_z_rear
+            else:
+                self._rear_swing_t0 = None   # 超时释放，下一轮重试
+        else:
+            self._rear_swing_t0 = None
         if os.environ.get('S10_HARD_MODE_DEBUG', '0') == '1':
             print(f'[HARD] wy={[round(float(v),2) for v in wheel_y]} wz={[round(float(v),2) for v in wheel_z]} mode={[int(v) for v in mode]} fz={[round(float(v),2) for v in foothold_z]}', flush=True)
         return mode, foothold_z.astype(np.float32)
@@ -185,7 +223,7 @@ class StairContactPlanner:
         mpc._stair_prox = np.asarray(prox, dtype=np.float32)
 
         if os.environ.get('S10_STAIR_HARD_MODE', '1') == '1':
-            _mode, _fz = self.compute_hard_mode(wheel_y, wheel_z)
+            _mode, _fz = self.compute_hard_mode(wheel_y, wheel_z, t)
             mpc._gait_swing = _mode
             mpc._hard_foothold_z = _fz
         elif (os.environ.get("S10_GAIT", "0") == "1"
