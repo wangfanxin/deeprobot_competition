@@ -326,8 +326,8 @@ class NmpcWbc:
         # eating the friction budget -> forward F_x starves -> stall at the
         # riser face -> tip). The roll drifts a little; the advance breaks
         # the stall. On flat (no swing) the full gain holds.
-        al_des[0] = -18.0 * body['roll']
-        al_des[0] -= 12.0 * float(np.dot(R[:, 0], body['omega']))
+        al_des[0] = -35.0 * body['roll']
+        al_des[0] -= 18.0 * float(np.dot(R[:, 0], body['omega']))
         if float(np.max(swing)) > 0.5:
             _al_lim = 30.0
             al_des[1] = float(np.clip(al_des[1], -_al_lim, _al_lim))
