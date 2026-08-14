@@ -32,6 +32,7 @@ def make_stages(num_envs=1024):
         c.q_off = 0.02
         c.v_off = 0.2
         c.cmd_vx_lo, c.cmd_vx_hi = 0.4, 0.9   # T0 target speed reachable -> succ achievable
+        c.max_ep_len = 800   # 16s: 6m needs 0.375 m/s (T0 = balance+roll warm-up, not speed test)
         return c
     def c1a():
         c = _base_cfg(num_envs); c.terrain = single_step(0.05, y0=1.5); return c
