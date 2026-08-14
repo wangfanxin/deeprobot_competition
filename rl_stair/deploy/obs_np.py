@@ -19,12 +19,19 @@ FRONT_REAR_OFFSET = 0.228   # half wheelbase (m) for front/rear axle terrain ctx
 
 
 def build_indices(mj_model):
-    """Return index arrays / defaults from a MuJoCo model (same convention as training)."""
-    names = [mj_model.joint(i).name for i in range(mj_model.njnt)]
-    act2jnt = np.array([mj_model.jnt_qposadr[i] for i in range(1, mj_model.njnt)])
-    act2vel = np.array([mj_model.jnt_qposadr[i] - 1 for i in range(1, mj_model.njnt)])
-    leg_idx = np.array([i for i, nm in enumerate(names[1:]) if "wheel" not in nm])
-    default_dof = np.array([mj_model.qpos0[mj_model.jnt_qposadr[i]] for i in range(1, mj_model.njnt)])
+    """Return index arrays / defaults from a MuJoCo model (robust to extra joints).
+
+    Maps actuator j -> its joint via actuator(j).trnid[0], so the obs/action order
+    always matches the actuator order the policy was trained on (works for the
+    competition track model which has extra non-robot joints).
+    """
+    n = mj_model.nu
+    jids = [mj_model.actuator(j).trnid[0] for j in range(n)]
+    act2jnt = np.array([mj_model.jnt_qposadr[jid] for jid in jids])
+    act2vel = act2jnt - 1
+    names = [mj_model.joint(jid).name for jid in jids]
+    leg_idx = np.array([j for j, nm in enumerate(names) if "wheel" not in nm])
+    default_dof = np.array([mj_model.qpos0[adr] for adr in act2jnt])
     return {"act2jnt": act2jnt, "act2vel": act2vel, "leg_idx": leg_idx,
             "default_dof": default_dof}
 
