@@ -28,8 +28,13 @@ class S10RLCfg:
     kp_leg: float = 50.0
     kd_leg: float = 1.0
     kp_wheel: float = 2.0
-    action_scale: float = 0.25
-    vel_scale: float = 10.0
+    # S10-adapted (NOT go2w): FK-verified wheel lift within +/-action_scale
+    #   0.25->4.2cm 0.5->9.9cm 0.6->12.4cm 0.7->14.7cm 0.8->16.7cm
+    #   competition riser = 12.5cm  -> action_scale=0.7 (go2w 0.25 insufficient)
+    action_scale: float = 0.7
+    # S10-adapted: wheel r=0.081; go2w vel_scale=10 caps at 0.81 m/s but stair entry
+    #   is ~1.5 m/s -> vel_scale=24 gives 1.94 m/s max (cmd 0.8-1.8 covered)
+    vel_scale: float = 24.0
     torque_clip_leg: float = 48.0
     torque_clip_wheel: float = 13.5
 
