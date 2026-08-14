@@ -1437,9 +1437,10 @@ class MPCController:
         a = _np.asarray(action, dtype=_np.float32)
         q = _np.asarray(q, dtype=_np.float32)
         qd = _np.asarray(qd, dtype=_np.float32)
+        _env_cfg = getattr(self.env, '_config', self.env_config)
         leg_target = (
             _np.asarray(self.env._default_leg)
-            + a[:12] * self.env_config.leg_action_scale
+            + a[:12] * _env_cfg.leg_action_scale
         )
         q_leg = q[7:][LEG_IDX_NP]
         qd_leg = qd[6:][LEG_IDX_NP]
