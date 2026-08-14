@@ -60,16 +60,18 @@ class StairStanceGuard:
             if not self._point_in_support(np.asarray(com_xy, dtype=np.float64), pts, self.support_margin):
                 request_swing[i] = False
 
-        # Swing wheels are locked; support wheels keep DiAL drive torque but
-        # are limited by Coulomb traction so they cannot free-spin.
+        # Swing wheels are locked (tau=0). Support wheels keep DiAL drive
+        # torque but are clamped to wheel_tau_max.
+        # 2026-08-14: 去掉库仑钳制（mu*N*R，N=contact_min_n=20N -> 1.3Nm）。
+        # 实测支撑轮被压成刹车（FR/HR 恒 ±1.3），离地轮却满矩 ±14，
+        # 左右牵引不对称 -> 侧翻（roll ±0.71, t≈8-11s）。防滑交给 DiAL
+        # cost 的 r_wheel_lock / r_brake / r_wheel_ref 软罚。
         for i, act_id in enumerate(self.wheel_act_ids):
             if request_swing[i]:
                 tau[act_id] = 0.0
             elif contact[i]:
-                normal = max(fn[i], 0.0)
-                limit = self.mu * normal * self.wheel_radius
-                limit = min(limit, self.wheel_tau_max)
-                tau[act_id] = float(np.clip(tau[act_id], -limit, limit))
+                tau[act_id] = float(np.clip(
+                    tau[act_id], -self.wheel_tau_max, self.wheel_tau_max))
 
         if os.environ.get('S10_STANCE_BODY_CTRL', '0') == '1':
             kp_roll = float(os.environ.get('S10_STANCE_BODY_KP_ROLL', '40.0'))
