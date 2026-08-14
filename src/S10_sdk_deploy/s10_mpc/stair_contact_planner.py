@@ -146,6 +146,12 @@ class StairContactPlanner:
         pitch = float(fol.stair_pitch_ref(y_arr)[0])
         base_z = float(fol.stair_base_z_ref(y_arr)[0])
         mpc.set_stair_ref(pitch, base_z)
+        wr_now = np.asarray(fol.stair_wheel_ref(np.asarray(wheel_y, dtype=np.float64)), dtype=np.float64)
+        lift_now = np.clip(wr_now - np.asarray(wheel_z, dtype=np.float64), 0.0, 0.25)
+        lneed = max(float(lift_now[0]), float(lift_now[2]))
+        rneed = max(float(lift_now[1]), float(lift_now[3]))
+        _imb = float(np.clip((lneed - rneed) * float(os.environ.get("S10_ROLL_IMB_GAIN", "0.8")), -0.15, 0.15))
+        mpc._stair_roll_override = _imb
         if os.environ.get('S10_STAIR_PLANNER_DEBUG', '0') == '1':
             wr = np.asarray(fol.stair_wheel_ref(np.asarray(wheel_y, dtype=np.float64)), dtype=np.float64)
             if int(t * 20) % 20 == 0:

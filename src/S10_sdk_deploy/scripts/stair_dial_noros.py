@@ -391,6 +391,10 @@ def main():
                     t_cmd0 = t
             mpc.latest_tau = mpc.compute_tau(last_act, qq, qqd)
             d.ctrl[:] = np.asarray(mpc.latest_tau, dtype=np.float64)
+            if os.environ.get('S10_STAIR_JOINT_DEBUG', '0') == '1' and step % 20 == 0:
+                _qleg = np.asarray(d.qpos[7:23]).reshape(-1,1).flatten()
+                _tleg = np.asarray(mpc.latest_tau)
+                print(f'[JOINT] t={t:.1f} q={[round(float(v),2) for v in _qleg[0:3]]}/{round(float(_qleg[3]),2)} tau={[round(float(v),1) for v in _tleg[0:4]]} mode={fol.mode}', flush=True)
 
         mujoco.mj_step(m, d)
         t += DT
