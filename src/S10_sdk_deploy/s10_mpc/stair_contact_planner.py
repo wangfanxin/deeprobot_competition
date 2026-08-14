@@ -181,7 +181,11 @@ class StairContactPlanner:
         # 到不同 riser），取较低级——先清当前棱、落地，再抬下一级。旧 max
         # 会把整轴抬到更高级台面 -> 悬空过抬（wp7 卡点：fz 0.72 vs 当前
         # 级 0.609）。need_front 仍取最大欠抬（任一轮需要抬就抬）。
-        front_target = min(front_z)
+        # 可滚过余量：前轮只需抬到"轮底离台面顶 <= R"即可滚上棱角（0.125m
+        # 高台面静态全清障需 knee 到 2.72 关节限位，抬不到 0.848；降 0.05
+        # 后目标 0.798 腿够得着，配合推进奖励让轮滚过最后几 cm）。
+        _roll_clear = float(os.environ.get('S10_HARD_ROLL_CLEAR', '0.05'))
+        front_target = min(front_z) - _roll_clear
         need_front = max(front_target - float(wheel_z[0]),
                          front_target - float(wheel_z[1]))
         front_done = (min(float(wheel_z[0]), float(wheel_z[1]))
@@ -220,7 +224,7 @@ class StairContactPlanner:
                 rear_d.append(float(rs[idx]) - float(wheel_y[i]))
             else:
                 rear_d.append(1e9)
-        target_z_rear = front_terr + 0.081
+        target_z_rear = front_terr + 0.081 - _roll_clear
         need_rear = max(target_z_rear - float(wheel_z[2]), target_z_rear - float(wheel_z[3]))
         rear_done = (max(float(wheel_z[2]), float(wheel_z[3]))
                      >= target_z_rear - release)

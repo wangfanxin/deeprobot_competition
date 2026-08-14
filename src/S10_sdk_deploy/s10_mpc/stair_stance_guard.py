@@ -116,6 +116,17 @@ class StairStanceGuard:
                 pitch_axle = -1.0 if front else 1.0
                 tau[hip_idx] += roll_side * tau_roll
                 tau[knee_idx] += pitch_axle * tau_pitch
+        # 前轴摆动期间后轮前推（协调机制）：前轮抬起悬在棱前时，机器人要
+        # 靠后轮推车前进让前轮滚过棱角；DiAL 常停在"保持位形"局部极小
+        # （后轮差速/制动）-> 加一个前向推进偏置（默认 0.4×tau_max）。
+        # 仅前轴 swing 且后轮接地时生效。
+        if (request_swing[0] or request_swing[1]):
+            _rboost = float(os.environ.get('S10_FRONT_SWING_REAR_BOOST', '0.4'))
+            for i in (2, 3):
+                if contact[i]:
+                    tau[self.wheel_act_ids[i]] = float(np.clip(
+                        tau[self.wheel_act_ids[i]] + _rboost * self.wheel_tau_max,
+                        -self.wheel_tau_max, self.wheel_tau_max))
         leg_ids = (0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14)
         for j in leg_ids:
             tau[j] = float(np.clip(tau[j], -48.0, 48.0))
