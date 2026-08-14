@@ -47,7 +47,10 @@ def make_stages(num_envs=1024):
     def c1d():
         c = _base_cfg(num_envs); c.terrain = single_step(0.125, y0=1.5); return c
     def c2():
-        c = _base_cfg(num_envs); c.terrain = stairs([0.081, 0.125], y0=1.5); return c
+        # T2 eased 2026-08-15 00:20: second step 0.125->0.10 (0.081+0.125 too steep,
+        # 4 attempts cascaded std 0.45->0.58 and destabilized T1d/T1c). Still teaches
+        # two-step sequencing; full 0.125x5 risers stay in T3 (competition stairs).
+        c = _base_cfg(num_envs); c.terrain = stairs([0.081, 0.10], y0=1.5); return c
     def c3():
         c = _base_cfg(num_envs); c.terrain = stairs(COMPETITION_RISERS, y0=1.5); return c
     def c4a():

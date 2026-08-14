@@ -150,9 +150,12 @@ class PPO:
         return {"loss_actor": loss_actor.item(), "loss_critic": loss_critic.item(),
                 "entropy": entropy.item(), "mean_std": float(torch.exp(self.actor.log_std).mean().item())}
 
-    def save(self, path):
-        torch.save({"actor": self.actor.state_dict(), "critic": self.critic.state_dict(),
-                    "optim": self.optim.state_dict(), "it": self.it}, path)
+    def save(self, path, extra=None):
+        d = {"actor": self.actor.state_dict(), "critic": self.critic.state_dict(),
+             "optim": self.optim.state_dict(), "it": self.it}
+        if extra:
+            d.update(extra)
+        torch.save(d, path)
 
     def load(self, path):
         ck = torch.load(path, map_location=self.device)
@@ -160,3 +163,4 @@ class PPO:
         self.critic.load_state_dict(ck["critic"])
         self.optim.load_state_dict(ck["optim"])
         self.it = ck.get("it", 0)
+        return ck

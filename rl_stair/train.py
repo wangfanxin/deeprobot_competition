@@ -73,6 +73,13 @@ def main():
 
     # curriculum state
     stage_idx = 0
+    if args.resume and os.path.exists(args.resume):
+        try:
+            _ck = torch.load(args.resume, map_location="cpu")
+            stage_idx = int(_ck.get("stage", 0))
+            print("resume stage_idx =", stage_idx)
+        except Exception as e:
+            print("resume stage read failed:", e)
     env = None
     ppo = None
     state = None
@@ -182,9 +189,9 @@ def main():
             log_resource(os.path.join(args.logdir, "resource.log"))
         if it % ppo_cfg.save_every == 0:
             ck = os.path.join(args.logdir, f"model_{it:06d}.pt")
-            ppo.save(ck)
+            ppo.save(ck, {"stage": stage_idx})
             latest = os.path.join(args.logdir, "model_latest.pt")
-            ppo.save(latest)
+            ppo.save(latest, {"stage": stage_idx})
             log(f"saved {ck}")
         if args.smoke and it >= 20:
             log("smoke done")
@@ -212,7 +219,7 @@ def main():
             succ_window = []
             build_env(stages[stage_idx])
 
-    ppo.save(os.path.join(args.logdir, "model_final.pt"))
+    ppo.save(os.path.join(args.logdir, "model_final.pt"), {"stage": stage_idx})
     log(f"training finished: {it} iters, {tot_env_int/1e6:.1f}M env-int, {el/3600:.2f}h")
     logf.close()
 
