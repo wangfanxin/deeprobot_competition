@@ -236,7 +236,14 @@ class S10RLEnv:
         r += self.cfg.r_riser * jnp.clip(new_risers - state["riser_crossed"], 0, None)
         r += self.cfg.r_goal * success
         r += self.cfg.r_orientation * (roll**2 + pitch**2)
-        r += self.cfg.r_height * (qpos[:, 2] - self.stand_z)**2
+        # height target = stand_z + terrain height under base (stairs-aware; old flat-ground
+        # version PENALIZED being on top of a step = anti-climb. 2026-08-15 05:10)
+        if len(self.riser_y) > 0:
+            _idx = jnp.sum(self.riser_y[None, :] < qpos[:, 1:2], axis=-1).astype(jnp.int32)
+            _th = jnp.where(_idx > 0, self.riser_top[jnp.maximum(_idx - 1, 0)], 0.0)
+        else:
+            _th = jnp.zeros_like(qpos[:, 1])
+        r += self.cfg.r_height * (qpos[:, 2] - (self.stand_z + _th))**2
         r += self.cfg.r_torque * jnp.sum(tau**2, axis=-1)
         r += self.cfg.r_action_rate * jnp.sum((action - state["last_action"])**2, axis=-1)
         soft = 0.9
