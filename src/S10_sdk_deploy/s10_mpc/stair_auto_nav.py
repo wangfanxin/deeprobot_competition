@@ -1258,14 +1258,15 @@ class AutoNavFollower:
         if _axle == 1:
             _fneed = max(float(util[0]), float(util[1]))
             _rneed = max(float(util[2]), float(util[3]))
+            _fpw = float(os.environ.get("S10_GAIT_AXLE_W", "0.8"))
             if _fneed >= need_thr and _fneed >= _rneed * 0.75:
-                _fpw = float(os.environ.get("S10_GAIT_AXLE_W", "0.8"))
-                swing[0] = _fpw if util[0] >= need_thr else 0.0
-                swing[1] = _fpw if util[1] >= need_thr else 0.0
+                # Synchronize the front axle: lift both front wheels together.
+                swing[0] = _fpw
+                swing[1] = _fpw
             elif _rneed >= need_thr:
-                _fpw = float(os.environ.get("S10_GAIT_AXLE_W", "0.8"))
-                swing[2] = _fpw if util[2] >= need_thr else 0.0
-                swing[3] = _fpw if util[3] >= need_thr else 0.0
+                # Synchronize the rear axle when the rear phase is active.
+                swing[2] = _fpw
+                swing[3] = _fpw
             self._gaitu_prim = 0 if swing[:2].sum() > 0 else (
                 2 if swing[2:].sum() > 0 else None)
             swing = np.asarray(swing, dtype=np.float32)
