@@ -135,30 +135,32 @@ def main():
     planner = StairContactPlanner(m, d, fol)
     guard = StairStanceGuard(m, d)
     mpc.set_yaw_gain_lo(float(os.environ.get('S10_AUTO_YAW_FF_GAIN', '20.0')))
-    # 已知地图横脊预扫描（与节点 _scan_ridge_zones 同法）：段内 0.12m+ 棱限速
-    try:
-        _pts = fol.path_pts
-        _hs = np.empty(len(_pts))
-        for _k, _p in enumerate(_pts):
-            _g = np.array([-1], dtype=np.int32)
-            _dist = np.zeros(1); _nrm = np.zeros(3)
-            _hit = mujoco.mj_ray(
-                m, d, [_p[0], _p[1], 8.0], [0, 0, -1],
-                None, False, -1, _g, _nrm)
-            _hs[_k] = (8.0 - _hit) if _g[0] >= 0 else float(_p[2])
-        _dh = np.abs(np.diff(_hs))
-        _skip = float(fol.path_wp_s[1]) - 2.0
-        _ri = np.where((_dh > 0.12)
-                       & (fol.path_cum[:len(_dh)] > _skip))[0]
-        _rv = float(os.environ.get('S10_RIDGE_VX', '2.5'))
-        for _k in _ri:
-            _lo = max(0, _k - int(2.0 / fol.path_res))
-            _hi = min(len(fol.path_vlim), _k + int(1.2 / fol.path_res))
-            fol.path_vlim[_lo:_hi] = np.minimum(
-                fol.path_vlim[_lo:_hi], _rv)
-        print(f'[NOROS] 横脊预扫描 {len(_ri)} 处，限速 {_rv}', flush=True)
-    except Exception as _e:
-        print('[NOROS] 横脊预扫描失败', _e, flush=True)
+    # 已知地图横脊预扫描（与节点 _scan_ridge_zones 同法）：段内 0.12m+ 棱限速。
+    # 这是已知地图（上帝视角）捷径；目标要求禁上帝视角 → S10_RIDGE_PRESCAN=0 关闭。
+    if os.environ.get('S10_RIDGE_PRESCAN', '1') == '1':
+        try:
+            _pts = fol.path_pts
+            _hs = np.empty(len(_pts))
+            for _k, _p in enumerate(_pts):
+                _g = np.array([-1], dtype=np.int32)
+                _dist = np.zeros(1); _nrm = np.zeros(3)
+                _hit = mujoco.mj_ray(
+                    m, d, [_p[0], _p[1], 8.0], [0, 0, -1],
+                    None, False, -1, _g, _nrm)
+                _hs[_k] = (8.0 - _hit) if _g[0] >= 0 else float(_p[2])
+            _dh = np.abs(np.diff(_hs))
+            _skip = float(fol.path_wp_s[1]) - 2.0
+            _ri = np.where((_dh > 0.12)
+                           & (fol.path_cum[:len(_dh)] > _skip))[0]
+            _rv = float(os.environ.get('S10_RIDGE_VX', '2.5'))
+            for _k in _ri:
+                _lo = max(0, _k - int(2.0 / fol.path_res))
+                _hi = min(len(fol.path_vlim), _k + int(1.2 / fol.path_res))
+                fol.path_vlim[_lo:_hi] = np.minimum(
+                    fol.path_vlim[_lo:_hi], _rv)
+            print(f'[NOROS] 横脊预扫描 {len(_ri)} 处，限速 {_rv}', flush=True)
+        except Exception as _e:
+            print('[NOROS] 横脊预扫描失败', _e, flush=True)
 
     # v218: 身体层 MPPI（S10_BODY_MPPI=1 启用）——替代 compute_cmd 直出，输出 [vx,ω]
     _bmpi = None
@@ -399,11 +401,7 @@ def main():
                 _wz = np.asarray([d.xpos[_wb, 2] for _wb in (5, 9, 13, 17)], dtype=np.float64)
                 _terr = np.asarray(fol.stair_terrain(_wy), dtype=np.float64)
                 _prox = np.asarray(getattr(mpc, '_stair_prox', np.full(4, 1e9)), dtype=np.float64)
-                _wref = np.asarray(fol.stair_wheel_ref(_wy), dtype=np.float64)
-                _hard_fz = getattr(mpc, '_hard_foothold_z', None)
-                if _hard_fz is not None:
-                    _wref = np.asarray(_hard_fz, dtype=np.float64)
-                mpc.latest_tau = guard.apply(mpc.latest_tau, _gsw_now, _com_xy, wheel_y=_wy, wheel_z=_wz, terrain_z=_terr, prox=_prox, wheel_ref_z=_wref)
+                mpc.latest_tau = guard.apply(mpc.latest_tau, _gsw_now, _com_xy, wheel_y=_wy, wheel_z=_wz, terrain_z=_terr, prox=_prox)
             d.ctrl[:] = np.asarray(mpc.latest_tau, dtype=np.float64)
             if os.environ.get('S10_STAIR_JOINT_DEBUG', '0') == '1' and step % 20 == 0:
                 _qleg = np.asarray(d.qpos[7:23]).reshape(-1,1).flatten()

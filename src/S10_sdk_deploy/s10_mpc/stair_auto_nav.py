@@ -770,8 +770,6 @@ class AutoNavFollower:
                   f"y={robot_xy[1]:.1f}", flush=True)
         self.mode = "CRUISE"
 
-        self.mode = "CRUISE"
-
     def _stair_confirmed(self, robot_xy, yaw, local_map):
         """感知确认：机器人前方 0.3~1.5m 窗口内高程图 step_flag ≥1 处
         （离散台阶）才算连续楼梯；陡坡/缓坡无 step_flag → False。"""

@@ -2,7 +2,9 @@ build/
 install/
 log/
 vscode/
-tmp/
+tmp/*
+!tmp/run_*.sh
+!tmp/patch_*.py
 .venv/
 AGENTS.md
 __pycache__/

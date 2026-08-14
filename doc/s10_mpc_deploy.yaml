@@ -15,7 +15,7 @@ mode: auto_nav
 
 # ---- dial-mpc 核心参数（可按 hardware_profile 自动覆盖，见下方 profile）----
 env_name: s10_wheeled
-Nsample: 2048
+Nsample: 1024   # P1-5: 2048->1024 提频（~12->~20Hz）；需要质量用 S10_MPC_NSAMPLE=2048
 Hsample: 14
 Hnode: 4
 Ndiffuse: 1                 # 高频率版（2026-08-05 定稿）：8.3→17.7Hz；见 0806 §3.3

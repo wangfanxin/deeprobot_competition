@@ -1,0 +1,11 @@
+﻿from pathlib import Path
+p=Path('src/S10_sdk_deploy/s10_mpc/stair_stance_guard.py')
+s=p.read_text(encoding='utf-8')
+old="""    def apply(self, tau, gait_swing, com_xy, wheel_y=None, wheel_z=None, terrain_z=None):\n"""
+new="""    def apply(self, tau, gait_swing, com_xy, wheel_y=None, wheel_z=None, terrain_z=None, prox=None):\n"""
+s=s.replace(old,new)
+old2="""        request_swing = swing > 0.5\n\n        # Veto swing unless remaining contact wheels form a support polygon\n        # containing the projected CoM.\n        for i in range(4):\n            if not request_swing[i]:\n                continue\n            stance = [j for j in range(4) if j != i and contact[j]]\n            if len(stance) < 2:\n                request_swing[i] = False\n                continue\n            pts = np.array([self.d.xpos[self.wheel_body_ids[j]][:2] for j in stance])\n            if not self._point_in_support(np.asarray(com_xy, dtype=np.float64), pts, self.support_margin):\n                request_swing[i] = False\n"""
+new2="""        request_swing = swing > 0.5\n        if prox is None:\n            prox = np.full(4, 1e9, dtype=np.float64)\n        else:\n            prox = np.asarray(prox, dtype=np.float64)\n\n        # Veto swing unless remaining contact wheels form a support polygon\n        # containing the projected CoM. A wheel close to a riser face gets a\n        # physical reaction from that face, so two-wheel rear support is\n        # acceptable during the front-axle transition.\n        riser_prox = float(__import__('os').environ.get('S10_STANCE_RISER_PROX', '0.15'))\n        for i in range(4):\n            if not request_swing[i]:\n                continue\n            stance = [j for j in range(4) if j != i and contact[j]]\n            if len(stance) < 2:\n                request_swing[i] = False\n                continue\n            if prox[i] < riser_prox:\n                continue\n            pts = np.array([self.d.xpos[self.wheel_body_ids[j]][:2] for j in stance])\n            if not self._point_in_support(np.asarray(com_xy, dtype=np.float64), pts, self.support_margin):\n                request_swing[i] = False\n"""
+s=s.replace(old2,new2)
+p.write_text(s, encoding='utf-8')
+print('patched guard riser prox')

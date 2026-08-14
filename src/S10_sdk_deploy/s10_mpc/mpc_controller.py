@@ -52,7 +52,7 @@ if not os.environ.get("JAX_COMPILATION_CACHE_DIR"):
 
 # hardware_profile → dial-mpc 参数覆盖
 HARDWARE_PROFILES = {
-    "desktop_4090": dict(Nsample=2048, Hsample=14, Hnode=4, Ndiffuse=1,
+    "desktop_4090": dict(Nsample=1024, Hsample=14, Hnode=4, Ndiffuse=1,  # P1-5: 2048->1024 提频；需要质量可 S10_MPC_NSAMPLE=2048
                          dt=0.02, jax_platform="cuda"),
     "orin_agx": dict(Nsample=1024, Hsample=10, Hnode=4, Ndiffuse=1,
                      dt=0.025, jax_platform="cpu"),
@@ -663,14 +663,17 @@ class MPCController:
         info["mode_stair"] = jnp.array(
             1.0 if getattr(self, "_mode", None) == "STAIR" else 0.0,
             dtype=jnp.float32)
-        # v213/v214: 只有步态调度激活（S10_GAIT=1 固定序列 / S10_GAIT_UTIL=1
-        # utility 选腿）才注入 gait_swing；关闭时省略该键 → rollout 回退
-        # 纯 lift-need 启发式摆动相（v211 基线行为，防止默认全零静音摆动）。
+        # v213/v214: 步态调度（S10_GAIT=1 固定序列 / S10_GAIT_UTIL=1 utility
+        # 选腿）或 STAIR hard-mode 接触规划器（S10_STAIR_HARD_MODE=1，写
+        # _gait_swing 为 0/1 轴级摆动）激活时才注入 gait_swing。仅当存在
+        # 非零摆动信号时注入，否则省略该键 → rollout 回退纯 lift-need
+        # 启发式摆动相（v211 基线行为，防止全零静音摆动/CRUISE 抬脊失效）。
+        _gsw = getattr(self, "_gait_swing", np.zeros(4, dtype=np.float32))
+        _gsw_active = bool(np.any(np.asarray(_gsw) > 0.5))
         if (os.environ.get("S10_GAIT", "0") == "1"
-                or os.environ.get("S10_GAIT_UTIL", "0") == "1"):
-            info["gait_swing"] = jnp.asarray(
-                getattr(self, "_gait_swing", np.zeros(4, dtype=np.float32)),
-                dtype=jnp.float32)
+                or os.environ.get("S10_GAIT_UTIL", "0") == "1"
+                or (getattr(self, "_mode", None) == "STAIR" and _gsw_active)):
+            info["gait_swing"] = jnp.asarray(_gsw, dtype=jnp.float32)
         # v215d: 摆动邻近门控（轮距下一 riser 距离，m；默认 1e9=不启用）
         info["stair_prox"] = jnp.asarray(
             getattr(self, "_stair_prox", np.full(4, 1e9, dtype=np.float32)),

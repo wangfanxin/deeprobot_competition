@@ -1,12 +1,14 @@
 ﻿# DiAL 分层落脚点/步态方案（v2，20+200Hz）
 
+> ⚠️ **状态（2026-08-14）：本方案为备选/对照方案。代码默认实现为 hierarchical 硬 mode（`doc/stair_dial_hierarchical_plan_20260814.md`），hard-mode 摆动信号已注入 DiAL cost。**
+
 ## 0. 结论先放前面
 
 采用 **“上层连续相位/落脚点规划 + 下层 DiAL 扭矩采样”**，不把步态/落脚点塞进 DiAL 的暴力采样维度。
 
 - DiAL 是底层执行器，直接顶掉 `NMPC+WBC`，不是接在两者之间。
 - 步态和落脚点由 20Hz 上层输出**连续软权重与目标场**，DiAL 仍只搜索 16 维动作（12 腿 + 4 轮）。
-- 废弃 `s10_dial_mpc.py` 里的 DDP/SRBD 骨架，方向已经错了，不再修。
+- 废弃 `s10_dial_mpc.py` 里的 DDP/SRBD 骨架，方向已经错了，不再修（已归档 2026-08-14 → `s10_mpc/_archived/`）。
 
 ---
 
@@ -134,7 +136,7 @@ STAIR 内部不再有：
 
 ### 删除/归档的代码
 
-- `s10_dial_mpc.py`：DDP/SRBD 骨架，方向错误，归档或 `git rm`。
+- `s10_dial_mpc.py`：DDP/SRBD 骨架，方向错误，已归档（2026-08-14 → `s10_mpc/_archived/`）。
 - 旧 NMPC+WBC 的距离窗参数：`SWING_D`、`HOVER_*`、`Z_OFF`、`S10_NMPC_SWING_D` 等，不再进入新 STAIR 分支。
 - 旧 WBC 的位置基抬轮、力控软切换逻辑不在新链路里运行。
 
@@ -212,7 +214,7 @@ ground_phase      # 分相 ground 开关
 按 1→7 完成，逐步可回退。
 
 1. **归档 DDP 骨架**
-   `git mv` 或注释标记 `s10_dial_mpc.py` 废弃，不删历史。
+   [已完成] `git mv` 至 `s10_mpc/_archived/`，不删历史。
 
 2. **确认 MBDPI 基线**
    用 `tmp/run_v658_test.sh` 记录当前 STAIR 卡点，保存日志和参数快照。

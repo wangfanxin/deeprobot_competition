@@ -1,5 +1,7 @@
 ﻿# S10 轮足爬梯：DiAL 分层架构方案（2026-08-14）
 
+> ✅ **状态（2026-08-14）：当前实现方案（HEAD 33aa019，`S10_STAIR_HARD_MODE=1` 默认，200Hz StairStanceGuard）。hard-mode 摆动信号已注入 DiAL cost（P0 修复）。**
+
 ## 0. 结论
 
 DiAL-MPC 适合作为固定接触模式下的全阶扭矩执行器，不适合单独负责楼梯接触时序与落脚点规划。
@@ -122,6 +124,7 @@ u = [leg_hipx, leg_hipy, leg_knee] * 4 + [wheel] * 4
 ```
 
 接触 mode 在预测窗内固定，不进入采样搜索。
+> 2026-08-14 P0：hard-mode 的 `mode[4]` 作为软摆动权重（`_gait_swing`，非零时）注入 DiAL cost，guard 同步按同一信号锁轮——两层一致。
 
 ---
 

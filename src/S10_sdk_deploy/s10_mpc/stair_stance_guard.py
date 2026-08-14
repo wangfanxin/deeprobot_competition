@@ -1,4 +1,5 @@
 import numpy as np
+import os
 
 # Deterministic STAIR support/lock layer.
 # Runs at 200 Hz after MBDPI torque is computed. It does not add reward
@@ -16,12 +17,12 @@ class StairStanceGuard:
         self.wheel_body_ids = wheel_body_ids
         self.wheel_act_ids = wheel_act_ids
         self.contact_min_n = float(contact_min_n)
-        self.support_margin = float(__import__('os').environ.get('S10_STANCE_SUPPORT_MARGIN', str(support_margin)))
+        self.support_margin = float(os.environ.get('S10_STANCE_SUPPORT_MARGIN', str(support_margin)))
         self.wheel_tau_max = float(wheel_tau_max)
         self.mu = float(mu)
         self.wheel_radius = float(wheel_radius)
 
-    def apply(self, tau, gait_swing, com_xy, wheel_y=None, wheel_z=None, terrain_z=None, prox=None, wheel_ref_z=None):
+    def apply(self, tau, gait_swing, com_xy, wheel_y=None, wheel_z=None, terrain_z=None, prox=None):
         # tau: (16,) numpy torque vector.
         # gait_swing: (4,) continuous weights from the planner.
         # com_xy: (2,) world xy of the base link.
@@ -45,7 +46,7 @@ class StairStanceGuard:
         # containing the projected CoM. A wheel close to a riser face gets a
         # physical reaction from that face, so two-wheel rear support is
         # acceptable during the front-axle transition.
-        riser_prox = float(__import__('os').environ.get('S10_STANCE_RISER_PROX', '0.15'))
+        riser_prox = float(os.environ.get('S10_STANCE_RISER_PROX', '0.15'))
         for i in range(4):
             if not request_swing[i]:
                 continue
@@ -70,11 +71,11 @@ class StairStanceGuard:
                 limit = min(limit, self.wheel_tau_max)
                 tau[act_id] = float(np.clip(tau[act_id], -limit, limit))
 
-        if __import__('os').environ.get('S10_STANCE_BODY_CTRL', '0') == '1':
-            kp_roll = float(__import__('os').environ.get('S10_STANCE_BODY_KP_ROLL', '40.0'))
-            kd_roll = float(__import__('os').environ.get('S10_STANCE_BODY_KD_ROLL', '4.0'))
-            kp_pitch = float(__import__('os').environ.get('S10_STANCE_BODY_KP_PITCH', '40.0'))
-            kd_pitch = float(__import__('os').environ.get('S10_STANCE_BODY_KD_PITCH', '4.0'))
+        if os.environ.get('S10_STANCE_BODY_CTRL', '0') == '1':
+            kp_roll = float(os.environ.get('S10_STANCE_BODY_KP_ROLL', '40.0'))
+            kd_roll = float(os.environ.get('S10_STANCE_BODY_KD_ROLL', '4.0'))
+            kp_pitch = float(os.environ.get('S10_STANCE_BODY_KP_PITCH', '40.0'))
+            kd_pitch = float(os.environ.get('S10_STANCE_BODY_KD_PITCH', '4.0'))
             quat = np.asarray(self.d.xquat[1], dtype=np.float64)
             w, x, y, z = quat
             roll = float(np.arctan2(2.0*(w*x + y*z), 1.0 - 2.0*(x*x + y*y)))
@@ -84,7 +85,7 @@ class StairStanceGuard:
             pitch_err = -pitch
             tau_roll = kp_roll * roll_err - kd_roll * float(ang[0])
             tau_pitch = kp_pitch * pitch_err - kd_pitch * float(ang[1])
-            if __import__('os').environ.get('S10_STANCE_BODY_DEBUG', '0') == '1':
+            if os.environ.get('S10_STANCE_BODY_DEBUG', '0') == '1':
                 print(f'[BODY] roll={roll:.3f} pitch={pitch:.3f} ang={[round(float(v),3) for v in ang[:2]]} tau_roll={tau_roll:.1f} tau_pitch={tau_pitch:.1f}', flush=True)
             for i in range(4):
                 if not contact[i]:
@@ -102,7 +103,7 @@ class StairStanceGuard:
         for j in leg_ids:
             tau[j] = float(np.clip(tau[j], -48.0, 48.0))
 
-        if __import__('os').environ.get('S10_STANCE_GUARD_DEBUG', '0') == '1':
+        if os.environ.get('S10_STANCE_GUARD_DEBUG', '0') == '1':
             print(f'[GUARD] fn={[round(float(v),1) for v in fn]} contact={[bool(v) for v in contact]} swing={[bool(v) for v in request_swing]}', flush=True)
         return tau
 
@@ -110,14 +111,25 @@ class StairStanceGuard:
     def _point_in_support(p, pts, margin):
         pts = np.asarray(pts, dtype=np.float64)
         if pts.shape[0] == 2:
+            # Line (two-wheel) support: safe iff the CoM projection falls on
+            # the segment and stays within `margin` of it. The old
+            # `return dist >= margin` was inverted (CoM far from the support
+            # line was treated as safe). margin <= 0 (S10_STANCE_SUPPORT_MARGIN=0
+            # in the stair run scripts) keeps the historic always-allow
+            # behaviour: the riser-face reaction (see the prox check in
+            # apply()) supplies the extra support during the front-axle
+            # transition.
             a, b = pts[0], pts[1]
             ab = b - a
             denom = float(np.dot(ab, ab)) + 1e-9
             t = float(np.dot(p - a, ab) / denom)
-            t = min(max(t, 0.0), 1.0)
+            if margin <= 0.0:
+                return True
+            if t < 0.0 or t > 1.0:
+                return False
             closest = a + t * ab
             dist = float(np.linalg.norm(p - closest))
-            return dist >= margin
+            return dist <= margin
         if pts.shape[0] < 3:
             return False
         return StairStanceGuard._point_in_polygon(p, pts, margin)

@@ -1,6 +1,6 @@
 # S10 巡逻赛 · 总方案主文档（MASTER）
 
-> **维护中** · 创建 2026-08-13 · 更新 2026-08-14 · 基线 HEAD `cc70c19`（+ 工作树 StairStanceGuard 接线 WIP）
+> **维护中** · 创建 2026-08-13 · 更新 2026-08-14 · 基线 HEAD `33aa019`（+ P0 修复：hard-mode 摆动信号注入 DiAL cost、guard 两点支撑判定修正、清理 wheel_ref_z 死参数）
 > 本文件是全仓库唯一"总方案"入口：赛题 / 双技能方案 / 数据管线 / 实际控制频率 /
 > 参数表 / 进度 / 卡点 / 待办 / 维护日志。**每次实验后在此追加维护日志并更新参数表。**
 
@@ -80,7 +80,7 @@ graph LR
 | 导航 AutoNavFollower | **20Hz** | 50ms | `S10_NAV_HZ=20`（运行脚本均设 20） |
 | StairContactPlanner | **20Hz** | 50ms | `stair_dial_noros.py` 内 step%10 调用 |
 | 感知 LidarTerrainV2 / riser 检测 | **10Hz** | 100ms | `S10_LIDAR_FREQ=10`；step%20 调用 |
-| DiAL-MBDPI 规划（STAIR） | **20Hz** | 50ms | `S10_MPC_PLAN_INTERVAL_AUTO=10`；N=2048/H=14/N4 全阶扭矩采样 |
+| DiAL-MBDPI 规划（STAIR） | **20Hz（目标；P1-5 后 N=1024 待实测）** | 50ms | `S10_MPC_PLAN_INTERVAL_AUTO=10`；N=1024/H=14~20/N4 目标采样+PD；2026-08-14 实测 2048 档 ~12Hz（plan_ms≈82ms） |
 | act2tau + StairStanceGuard（STAIR） | **200Hz** | 5ms | 每主步；guard 做支撑多边形否决与轮锁 |
 | CarVMC（CRUISE） | **200Hz** | 5ms | 每主步 |
 | 历史 NmpcWBC（归档） | NMPC 20Hz / WBC 200Hz | — | 已由 DiAL 顶替，代码保留在 `s10_nmpc_wbc.py` |
@@ -141,9 +141,12 @@ lidar 高程图 (10Hz) → riser/高程特征 (10Hz) → AutoNavFollower (20Hz, 
 ```
 
 - DiAL 是底层执行器，**直接顶掉 NMPC+WBC**（不是接在两者之间）。
-- 废弃 `s10_dial_mpc.py` 的 DDP/SRBD 骨架（方向已错，计划归档/git rm）。
+- 废弃 `s10_dial_mpc.py` 的 DDP/SRBD 骨架（方向已错，已归档 → `src/S10_sdk_deploy/s10_mpc/_archived/s10_dial_mpc_ddp_20260814.py`）。
 
 ### 6.2 接触规划（StairContactPlanner，20Hz）
+> 当前实现（HEAD 33aa019）：默认 `S10_STAIR_HARD_MODE=1`（hierarchical 硬 mode，轴级 0/1 摆动 + 200Hz guard），
+> 即 `doc/stair_dial_hierarchical_plan_20260814.md`；连续软权重版（`S10_GAIT_UTIL=1`）保留为对照开关。
+> **P0 修复（2026-08-14）**：hard-mode 摆动信号（`_gait_swing` 非零时）已注入 DiAL cost，不再只进 guard。
 - **riser 检测（决策 2，lidar 唯一几何来源）**：LidarTerrainV2 沿导航路径窗口扫描，
   `rise=0.05, max_dh=0.16`，检测到后覆盖 `S10_STAIR_RISERS/TOPS`（follower 硬编码表仅作 fallback）。
 - **步态 = 连续 swing 权重**：`w_swing_i = sigmoid((d_i - d_trigger_i)/sigma)`，σ 默认 0.05m；
@@ -226,16 +229,17 @@ lidar 高程图 (10Hz) → riser/高程特征 (10Hz) → AutoNavFollower (20Hz, 
     "前轮登顶 riser2 + 后轮跟爬、yaw 0.60、body 0.70 无发射"。
   - 8-14 DiAL 落地 7 个提交：riser 表来自 lidar（决策 2）、已知地形/roll override/action bias/joint debug、
     DiAL lidar 接触规划器 + 无 ROS 测试台、轮锁 reward、AXLE 步态前后轴同步。
-  - 工作树 WIP：`stair_stance_guard.py`（新）+ `stair_dial_noros.py` 接线（支撑多边形否决/轮锁，未提交）。
+  - 已提交：`stair_stance_guard.py`（b229932）、hard mode 接触规划器（232a6e0）、前/后轴同步与可配置站姿（33aa019）；
+    P0 修复后 hard-mode 摆动信号已进 DiAL cost。
 - **速度目标**：70s 全程需均速 3.35 m/s（依赖台阶技能打通）。
 - **真机**：未迁移。**初赛材料**：8.20 技术方案 PDF + Demo + GitHub 链接（待做）。
 
 ## 9. 待办（按优先级）
 
 1. **DiAL 实施顺序（计划 1→7）**：
-   ① 归档 DDP 骨架（`s10_dial_mpc.py` git rm/归档）；② 确认 MBDPI 基线（`tmp/run_v658_test.sh` 记录卡点）；
+   ① [已完成] 归档 DDP 骨架（`s10_dial_mpc.py` → `s10_mpc/_archived/`，2026-08-14）；② 确认 MBDPI 基线（`tmp/run_v658_test.sh` 记录卡点）；
    ③ StairContactPlanner 离线单测（w_swing 连续、前后轴自然交替）；④ 接入 `stair_dial_noros.py` STAIR 分支；
-   ⑤ 打通 gait_swing+foothold 到 DiAL cost（确认软相位真正进 rollout）；⑥ 清理旧距离窗/HOVER/相位门参数；
+   ⑤ [已通 gait_swing] hard-mode 摆动已进 DiAL cost（2026-08-14 P0）；foothold 前拉仍未接（w_foothold=0，待调）；⑥ 清理旧距离窗/HOVER/相位门参数；
    ⑦ 真原图 wp6→7 验证。
 2. **STAIR 验收**：wp6→7 连续成功 4 次（前轮过 riser2、fn>10N、|yaw_err|<5°、|pitch|<0.5、|roll|<0.5、vx≥0.8、力矩合规）。
 3. 提交并验证 StairStanceGuard（工作树 WIP）。
