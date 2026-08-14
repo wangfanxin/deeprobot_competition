@@ -50,6 +50,9 @@ class S10RLCfg:
     q_off = 0.1
     v_off = 1.0
     spawn_x = 0.3
+    # spawn distance before first riser (for "close-spawn lift practice" stages 06:50)
+    spawn_back_lo: float = 0.5
+    spawn_back_hi: float = 2.0
 
     cmd_vx_lo, cmd_vx_hi = 0.8, 1.8
 
@@ -292,7 +295,7 @@ class S10RLEnv:
         jv = jax.random.uniform(k2, (n, 16), minval=-self.cfg.v_off, maxval=self.cfg.v_off)
 
         if self.first_riser_y is not None:
-            sy = self.first_riser_y - jax.random.uniform(k1, (n,), minval=0.5, maxval=2.0)
+            sy = self.first_riser_y - jax.random.uniform(k1, (n,), minval=self.cfg.spawn_back_lo, maxval=self.cfg.spawn_back_hi)
         else:
             sy = jax.random.uniform(k1, (n,), minval=-2.0, maxval=0.0)
 
@@ -409,7 +412,7 @@ class S10RLEnv:
         q_off = jax.random.uniform(k1, (n, 16), minval=-self.cfg.q_off, maxval=self.cfg.q_off)
         jv = jax.random.uniform(k2, (n, 16), minval=-self.cfg.v_off, maxval=self.cfg.v_off)
         if self.first_riser_y is not None:
-            sy = self.first_riser_y - jax.random.uniform(k1, (n,), minval=0.5, maxval=2.0)
+            sy = self.first_riser_y - jax.random.uniform(k1, (n,), minval=self.cfg.spawn_back_lo, maxval=self.cfg.spawn_back_hi)
         else:
             sy = jax.random.uniform(k1, (n,), minval=-2.0, maxval=0.0)
         qpos = jnp.broadcast_to(self.stand_qpos, (n, self.nq))

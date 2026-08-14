@@ -55,11 +55,18 @@ def make_stages(num_envs=1024):
         # 4x8cm added 02:35: 6.1->10 jump too steep (T2c 4x10 failed 3x at succ 0.000)
         c = _base_cfg(num_envs); c.terrain = stairs([0.08]*4, y0=1.5); return c
     def c2d():
-        c = _base_cfg(num_envs); c.terrain = stairs([0.10]*4, y0=1.5); return c
+        # close-spawn (0.3-0.8m before step): isolate the >8cm lift-climb skill (06:50)
+        c = _base_cfg(num_envs); c.terrain = stairs([0.10]*4, y0=1.5)
+        c.spawn_back_lo, c.spawn_back_hi = 0.3, 0.8
+        return c
     def c2e():
-        c = _base_cfg(num_envs); c.terrain = stairs([0.125]*4, y0=1.5); return c
+        c = _base_cfg(num_envs); c.terrain = stairs([0.125]*4, y0=1.5)
+        c.spawn_back_lo, c.spawn_back_hi = 0.3, 0.8
+        return c
     def c3():
-        c = _base_cfg(num_envs); c.terrain = stairs(COMPETITION_RISERS, y0=1.5); return c
+        c = _base_cfg(num_envs); c.terrain = stairs(COMPETITION_RISERS, y0=1.5)
+        c.spawn_back_lo, c.spawn_back_hi = 0.3, 0.8
+        return c
     def c4a():
         c = _base_cfg(num_envs); c.terrain = ridge(0.08, y0=1.5); return c
     def c4b():
