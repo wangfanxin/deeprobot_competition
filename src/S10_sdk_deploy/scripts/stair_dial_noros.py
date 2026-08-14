@@ -19,6 +19,7 @@ os.environ.setdefault('JAX_COMPILATION_CACHE_DIR',
 from s10_mpc.mpc_controller import MPCController
 from s10_mpc.stair_auto_nav import AutoNavFollower
 from s10_mpc.stair_contact_planner import StairContactPlanner
+from s10_mpc.stair_stance_guard import StairStanceGuard
 from s10_mpc.body_mppi import BodyMPPI
 
 DT = 0.005
@@ -132,6 +133,7 @@ def main():
         lookahead=float(os.environ.get('S10_AUTO_LOOKAHEAD', '1.5')),
     )
     planner = StairContactPlanner(m, d, fol)
+    guard = StairStanceGuard(m, d)
     mpc.set_yaw_gain_lo(float(os.environ.get('S10_AUTO_YAW_FF_GAIN', '20.0')))
     # 已知地图横脊预扫描（与节点 _scan_ridge_zones 同法）：段内 0.12m+ 棱限速
     try:
@@ -390,6 +392,13 @@ def main():
                 if t_cmd0 is None:
                     t_cmd0 = t
             mpc.latest_tau = mpc.compute_tau(last_act, qq, qqd)
+            if fol.mode == 'STAIR':
+                _gsw_now = np.asarray(getattr(mpc, '_gait_swing', np.zeros(4)), dtype=np.float64)
+                _com_xy = d.xpos[track_body][:2]
+                _wy = np.asarray([d.xpos[_wb, 1] for _wb in (5, 9, 13, 17)], dtype=np.float64)
+                _wz = np.asarray([d.xpos[_wb, 2] for _wb in (5, 9, 13, 17)], dtype=np.float64)
+                _terr = np.asarray(fol.stair_terrain(_wy), dtype=np.float64)
+                mpc.latest_tau = guard.apply(mpc.latest_tau, _gsw_now, _com_xy, wheel_y=_wy, wheel_z=_wz, terrain_z=_terr)
             d.ctrl[:] = np.asarray(mpc.latest_tau, dtype=np.float64)
             if os.environ.get('S10_STAIR_JOINT_DEBUG', '0') == '1' and step % 20 == 0:
                 _qleg = np.asarray(d.qpos[7:23]).reshape(-1,1).flatten()
