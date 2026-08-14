@@ -65,6 +65,7 @@ class S10RLCfg:
     r_riser = 3.0   # 1->3 (2026-08-15 04:00): 4x10cm排台阶卡3次 - 单级可靠率~50%需74%; riser奖励1.0相对tracking太弱, 强化跨台阶信号
     r_goal = 10.0
     r_termination = -0.8
+    r_speed = 2.0
     r_orientation = -2.0
     r_height = -0.5
     r_torque = -0.0001
@@ -81,6 +82,9 @@ class S10RLCfg:
     # Chamorro et al. (ICRA24 2402.06143): actor obs has goal-direction(2)+heading-error(1),
     # reward keeps yaw aligned to task axis. Our task axis = world +y (track), target yaw = pi/2.
     r_heading = 2.0
+    # r_speed (07:10): policy approaches steps at ~0.5m/s (cmd 0.8-1.8 untracked) -> no
+    # momentum to carry wheels over >radius steps. Dense forward-speed reward (user: improve
+    # climb time; momentum helps above-radius lift-climb). progress(4/m) too weak (0.04/step).
 
     terrain: Terrain = field(default_factory=flat)
 
@@ -269,6 +273,8 @@ class S10RLEnv:
         r += self.cfg.r_tracking_lin_vel * jnp.exp(-lin_err / self.cfg.tracking_sigma)
         ang_err = (state["cmd"][:, 1] - data.qvel[:, 5]) ** 2
         r += self.cfg.r_tracking_ang_vel * jnp.exp(-ang_err / self.cfg.tracking_sigma)
+        # dense forward-speed reward (momentum for >radius step clearing)
+        r += self.cfg.r_speed * jnp.maximum(0.0, vbx)
         # Chamorro-style heading alignment: keep yaw at task axis (+y). Directly
         # penalizes the measured "circling" (wz~0.4 rad/s, y_max capped ~3.8m).
         yaw = jnp.arctan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
