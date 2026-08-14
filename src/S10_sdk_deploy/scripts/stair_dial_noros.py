@@ -186,11 +186,20 @@ def main():
     try:
         if hasattr(mpc, 'mbdpi_h20'):
             mpc.set_mode('STAIR')
+            # 预热同时编译 hard-mode 摆动激活态的 STAIR trace：运行中首次
+            # 激活 gait_swing 会触发 ~25s 重编译（2026-08-14 实测 max
+            # plan_ms 6.7~26s 尖峰），吃掉仿真时间并扰动爬梯。
+            _gsw_bak = getattr(mpc, '_gait_swing', None)
+            mpc._gait_swing = np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float32)
             for _k in range(3):
                 _t1 = time.time()
                 mpc.plan_once(_q0, _qd0, 0.02 * _k)
                 if time.time() - _t1 < 0.5:
                     break
+            if _gsw_bak is not None:
+                mpc._gait_swing = _gsw_bak
+            else:
+                mpc._gait_swing = np.zeros(4, dtype=np.float32)
             mpc.set_mode('CRUISE')
     except Exception:
         pass
