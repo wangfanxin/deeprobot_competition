@@ -46,11 +46,16 @@ def make_stages(num_envs=1024):
         c = _base_cfg(num_envs); c.terrain = single_step(0.10, y0=1.5); return c
     def c1d():
         c = _base_cfg(num_envs); c.terrain = single_step(0.125, y0=1.5); return c
-    def c2():
-        # T2 eased 2026-08-15 00:20: second step 0.125->0.10 (0.081+0.125 too steep,
-        # 4 attempts cascaded std 0.45->0.58 and destabilized T1d/T1c). Still teaches
-        # two-step sequencing; full 0.125x5 risers stay in T3 (competition stairs).
-        c = _base_cfg(num_envs); c.terrain = stairs([0.081, 0.10], y0=1.5); return c
+    def c2a():
+        # USER-DIRECTED 2026-08-15 01:40: T2 split into a ROW of low steps, then raise
+        # height gradually. Learn multi-step sequencing rhythm at easy heights first.
+        c = _base_cfg(num_envs); c.terrain = stairs([0.05]*4, y0=1.5); return c
+    def c2b():
+        c = _base_cfg(num_envs); c.terrain = stairs([0.061]*4, y0=1.5); return c
+    def c2c():
+        c = _base_cfg(num_envs); c.terrain = stairs([0.10]*4, y0=1.5); return c
+    def c2d():
+        c = _base_cfg(num_envs); c.terrain = stairs([0.125]*4, y0=1.5); return c
     def c3():
         c = _base_cfg(num_envs); c.terrain = stairs(COMPETITION_RISERS, y0=1.5); return c
     def c4a():
@@ -77,7 +82,10 @@ def make_stages(num_envs=1024):
         Stage("T1b_step081", c1b, advance_at=0.4, min_iters=50),
         Stage("T1c_step010", c1c, advance_at=0.4, min_iters=50),
         Stage("T1d_step0125", c1d, advance_at=0.35, min_iters=80),
-        Stage("T2_two_step", c2, advance_at=0.3, min_iters=80),
+        Stage("T2a_stairs4x005", c2a, advance_at=0.4, min_iters=50),
+        Stage("T2b_stairs4x0061", c2b, advance_at=0.35, min_iters=80),
+        Stage("T2c_stairs4x010", c2c, advance_at=0.3, min_iters=80),
+        Stage("T2d_stairs4x0125", c2d, advance_at=0.3, min_iters=100),
         Stage("T3_stairs6", c3, advance_at=0.3, min_iters=200),
         Stage("T4a_ridge008", c4a, advance_at=0.5, min_iters=50),
         Stage("T4b_ridge012", c4b, advance_at=0.4, min_iters=80),
