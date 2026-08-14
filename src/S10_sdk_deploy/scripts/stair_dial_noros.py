@@ -421,7 +421,15 @@ def main():
                 _tfr = _tleg[4:8]
                 _thl = _tleg[8:12]
                 _thr = _tleg[12:16]
-                print(f'[JOINT] t={t:.1f} FLq={[round(float(v),2) for v in _qleg[0:4]]} FRq={[round(float(v),2) for v in _qfr]} HLq={[round(float(v),2) for v in _qhl]} HRq={[round(float(v),2) for v in _qhr]} FLt={[round(float(v),1) for v in _tleg[0:4]]} FRt={[round(float(v),1) for v in _tfr]} HLt={[round(float(v),1) for v in _thl]} HRt={[round(float(v),1) for v in _thr]} mode={fol.mode}', flush=True)
+                _qb = d.xquat[track_body]
+                _proll = float(np.arctan2(
+                    2.0*(_qb[0]*_qb[1]+_qb[2]*_qb[3]),
+                    1.0-2.0*(_qb[1]*_qb[1]+_qb[2]*_qb[2])))
+                _ppitch = float(np.arcsin(np.clip(
+                    2.0*(_qb[0]*_qb[2]-_qb[3]*_qb[1]), -1.0, 1.0)))
+                _bvx = float(np.asarray(d.cvel[track_body, 3:6]).dot(
+                    np.asarray(d.xmat[track_body]).reshape(3, 3).T)[0])
+                print(f'[JOINT] t={t:.1f} roll={_proll:.2f} pitch={_ppitch:.2f} vx={_bvx:.2f} FLq={[round(float(v),2) for v in _qleg[0:4]]} FRq={[round(float(v),2) for v in _qfr]} HLq={[round(float(v),2) for v in _qhl]} HRq={[round(float(v),2) for v in _qhr]} FLt={[round(float(v),1) for v in _tleg[0:4]]} FRt={[round(float(v),1) for v in _tfr]} HLt={[round(float(v),1) for v in _thl]} HRt={[round(float(v),1) for v in _thr]} mode={fol.mode}', flush=True)
 
         mujoco.mj_step(m, d)
         t += DT

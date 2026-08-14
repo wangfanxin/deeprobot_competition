@@ -28,6 +28,9 @@ class StairContactPlanner:
         # hard-mode swing 起止时刻（到位/超时释放用，2026-08-14）
         self._front_swing_t0 = None
         self._rear_swing_t0 = None
+        # 本次摆动要越过的棱位置（水平释放判据用，2026-08-14）
+        self._front_swing_riser = None
+        self._rear_swing_riser = None
 
     def update_perception(self, t):
         self.lidar.update()
@@ -185,9 +188,19 @@ class StairContactPlanner:
                       >= front_target - release)
         front_trigger = (d_min_front < float(os.environ.get('S10_HARD_FRONT_PROX', '0.15'))
                          and need_front > 0.02)
+        # 水平释放：越过本次棱即释放（不再要求精确到位 0.848）——前轮抬到
+        # 近清障（轮底离台面顶 ~1cm）后随车身前进滚过棱角，纯高度±margin
+        # 判据要么锁死（release=0）要么提前回落到当前台面（-0.04）。
+        _fswr = self._front_swing_riser
+        front_past = (_fswr is not None
+                      and float(min(wheel_y[0], wheel_y[1])) >= _fswr + 0.10)
+        front_done = front_past or front_done
         if front_trigger and not front_done:
             if self._front_swing_t0 is None:
                 self._front_swing_t0 = float(t)
+                _fi = front_idx[int(np.argmin(front_d))]
+                self._front_swing_riser = (
+                    float(rs[_fi]) if _fi < len(rs) else None)
             if (float(t) - self._front_swing_t0) <= timeout:
                 mode[0] = mode[1] = 1.0
                 foothold_z[0] = foothold_z[1] = front_target
@@ -195,6 +208,7 @@ class StairContactPlanner:
                 self._front_swing_t0 = None   # 超时释放，下一轮重试
         else:
             self._front_swing_t0 = None
+            self._front_swing_riser = None
         # Rear wheels swing after the front wheels have reached a higher tread.
         front_terr = max(float(fol.stair_terrain(np.array([wheel_y[0]]))[0]),
                          float(fol.stair_terrain(np.array([wheel_y[1]]))[0]))
@@ -213,9 +227,15 @@ class StairContactPlanner:
         rear_trigger = ((front_terr - rear_terr) > 0.06
                         and min(rear_d) < float(os.environ.get('S10_HARD_REAR_PROX', '0.15'))
                         and need_rear > 0.02)
+        _rswr = self._rear_swing_riser
+        rear_past = (_rswr is not None
+                     and float(min(wheel_y[2], wheel_y[3])) >= _rswr + 0.10)
+        rear_done = rear_past or rear_done
         if rear_trigger and not rear_done:
             if self._rear_swing_t0 is None:
                 self._rear_swing_t0 = float(t)
+                self._rear_swing_riser = float(
+                    rs[int(np.searchsorted(rs, float(min(wheel_y[2], wheel_y[3]))))] if len(rs) else None)
             if (float(t) - self._rear_swing_t0) <= timeout:
                 mode[2] = mode[3] = 1.0
                 foothold_z[2] = foothold_z[3] = target_z_rear
@@ -223,15 +243,17 @@ class StairContactPlanner:
                 self._rear_swing_t0 = None   # 超时释放，下一轮重试
         else:
             self._rear_swing_t0 = None
+            self._rear_swing_riser = None
         # 永不双轴同抬（v11 实测 mode=[1,1,1,1] 四轮全抬 -> 无支撑 -> 卡死）。
         # 交替爬升：后轴"待跨"（trigger 且未到位）时后轴优先——前轴已在
         # 更高台面、后轴卡在低一级时，若前轴还优先空摆下一级，后轴永远
         # 过不了当前棱（wp7 riser2 死锁）。后轴先跨，前轴再跨下一级。
-        if (mode[2] or mode[3]
-                or (rear_trigger and not rear_done)):
-            mode[0] = mode[1] = 0.0
-        elif mode[0] or mode[1]:
+        # 前轴优先（轮距 0.456 > 踏面 0.4：前轴永远领先一级，先跨当前棱，
+        # 车身前进时后轴再跨上一级）。
+        if mode[0] or mode[1]:
             mode[2] = mode[3] = 0.0
+        elif mode[2] or mode[3]:
+            mode[0] = mode[1] = 0.0
         if os.environ.get('S10_HARD_MODE_DEBUG', '0') == '1':
             print(f'[HARD] wy={[round(float(v),2) for v in wheel_y]} wz={[round(float(v),2) for v in wheel_z]} mode={[int(v) for v in mode]} fz={[round(float(v),2) for v in foothold_z]}', flush=True)
         return mode, foothold_z.astype(np.float32)
