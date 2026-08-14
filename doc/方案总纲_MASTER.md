@@ -1,6 +1,6 @@
 # S10 巡逻赛 · 总方案主文档（MASTER）
 
-> **维护中** · 创建 2026-08-13 · 更新 2026-08-14 · 基线 HEAD `33aa019`（+ P0 修复：hard-mode 摆动信号注入 DiAL cost、guard 两点支撑判定修正、清理 wheel_ref_z 死参数）
+> **维护中** · 创建 2026-08-13 · 更新 2026-08-14 · 基线 HEAD `7386c5b`（lidar res 0.05 + 96×48 射线；wp0-6 复测 13.5s 一致性确认；riser 跳变点/台面顶修复）
 > 本文件是全仓库唯一"总方案"入口：赛题 / 双技能方案 / 数据管线 / 实际控制频率 /
 > 参数表 / 进度 / 卡点 / 待办 / 维护日志。**每次实验后在此追加维护日志并更新参数表。**
 
@@ -13,7 +13,7 @@
 2. **每次会话收尾**：在 §10 维护日志追加一行（日期 / HEAD / 做了什么 / 结果），
    并同步更新 §7 参数表、§8 进度、§9 待办；然后 `git add doc && git commit && git push`。
 3. **相关文档**：`doc/0808.md`（逐版本实验长记录）、`doc/S10_轮足爬梯_全方案总文档_20260813.md`（NmpcWBC 阶段总档）、
-   `doc/stair_dial_layered_plan_20260814.md`（DiAL 分层爬梯方案，当前）、`doc/carvmc_方案与数据管线_20260810.md`（巡航专项）、`README.md`。
+   `doc/stair_dial_hierarchical_plan_20260814.md`（DiAL 分层爬梯·当前实现）、`doc/stair_dial_layered_plan_20260814.md`（v2 方案）、`doc/carvmc_方案与数据管线_20260810.md`（巡航专项）、`README.md`。
 
 ---
 
@@ -52,7 +52,7 @@ CRUISE（CarVMC 车化巡航） ⇄ STAIR（DiAL 分层：StairContactPlanner + 
 
 ```mermaid
 graph LR
-    S["mujoco S10_track.xml (200Hz)"] -->|"lidar 扇形 64x32 前下45° 10Hz"| L["LidarTerrainV2 世界栅格累积高程图<br/>60x60 瓦片 res=0.10"]
+    S["mujoco S10_track.xml (200Hz)"] -->|"lidar 扇形 96x48 前下45° 10Hz"| L["LidarTerrainV2 世界栅格累积高程图<br/>60x60 瓦片 res=0.05"]
     L -->|"riser 表 y/top/dh<br/>rise=0.05 max_dh=0.16"| P["StairContactPlanner (20Hz)<br/>w_swing 连续权重 + foothold 目标场 + action bias"]
     L -->|"step_flag/高程"| N["AutoNavFollower (20Hz)<br/>Catmull-Rom 路径 + vx 剖面 + 航向锁"]
     P -->|"软相位/落脚点"| D["DiAL-MBDPI (20Hz)<br/>16D 扭矩采样 N=2048/H=14/N4"]
@@ -91,8 +91,8 @@ graph LR
 ### 5.1 感知（LidarTerrain）
 | 参数 | 值 | 说明 |
 |---|---|---|
-| 栅格 | x[-25,40] y[-5,55] res=0.10 | 覆盖全程 |
-| 射线 | th_n=64, phi_n=32 | 近场地面→远场高台 |
+| 栅格 | x[-25,40] y[-5,55] res=0.05（8-14 由 0.10 加密） | 覆盖全程，楼梯台面可见性↑ |
+| 射线 | th_n=96, phi_n=48（8-14 加密） | 近场地面→远场高台 |
 | 累积 | 世界坐标增量，min-z | SLAM 式；局部清空会丢数据（起步卡死根因 v223） |
 | 盲区 | 未覆盖格返回 0 | 真机近场盲区同款；横脊阴影由连续前瞻抬轮兜底 |
 
@@ -223,14 +223,15 @@ lidar 高程图 (10Hz) → riser/高程特征 (10Hz) → AutoNavFollower (20Hz, 
 ## 8. 当前进度（2026-08-14）
 
 - **CRUISE（稳定主线）**：wp0→4 ≈13.5s；wp0→5 稳定通过（v890）；wp0→33 分段验证通过 18 点，
-  卡点集中在坡底脊区与 wp17 大弯。最新图 `doc/final_wp0-6_xy_speed.png`。
+  卡点集中在坡底脊区与 wp17 大弯。8-14 复测确认一致性（1520702：wp0-6 13.5s 与历史逐航点同秒；控制环 221→209Hz 受 CPU 竞争微降、MPPI 仍 20Hz 达标；巡航代码=v890 未被 stair 污染）。最新图 `doc/final2_wp0-6_xy_speed.png`。
 - **STAIR（DiAL 分层，当前攻关）**：
   - NmpcWBC M1 系列 155 实验/23 提交已闭环（`S10_轮足爬梯_全方案总文档_20260813.md`），物理最远
     "前轮登顶 riser2 + 后轮跟爬、yaw 0.60、body 0.70 无发射"。
   - 8-14 DiAL 落地 7 个提交：riser 表来自 lidar（决策 2）、已知地形/roll override/action bias/joint debug、
     DiAL lidar 接触规划器 + 无 ROS 测试台、轮锁 reward、AXLE 步态前后轴同步。
-  - 已提交：`stair_stance_guard.py`（b229932）、hard mode 接触规划器（232a6e0）、前/后轴同步与可配置站姿（33aa019）；
+  - 已提交：`stair_stance_guard.py`（b229932）、hard mode 接触规划器（232a6e0）、前/后轴同步与可配置站姿（33aa019）、hierarchical DiAL 方案（7811a85）；
     P0 修复后 hard-mode 摆动信号已进 DiAL cost。
+  - 8-14 下午迭代：riser 台面顶取跳变后窗口最大值（a570db1）、riser 位置取跳变点 k（9651d35）、lidar res 0.05 + 96×48 射线（7386c5b）、前后轴互斥不双抬（8c83eeb）、v10-v13 迭代脚本入库（76d3e23）。
 - **速度目标**：70s 全程需均速 3.35 m/s（依赖台阶技能打通）。
 - **真机**：未迁移。**初赛材料**：8.20 技术方案 PDF + Demo + GitHub 链接（待做）。
 
@@ -253,6 +254,7 @@ lidar 高程图 (10Hz) → riser/高程特征 (10Hz) → AutoNavFollower (20Hz, 
 |---|---|---|
 | 2026-08-13 | 6cb4b05→61425a9 | 创建总方案主文档；归纳 CRUISE/STAIR 方案、数据管线、控制频率、参数表；清理 8-11 前旧归档；venv dial_mpc 改指向仓库内置副本；M1 多 knot NMPC 提交并由并行会话收口为 M1j |
 | 2026-08-14 | cc70c19 | 方案转向 DiAL 分层爬梯（StairContactPlanner + DiAL-MBDPI + StairStanceGuard）；更新本总方案（DiAL 数据管线/频率/参数表）；删除 8-12 前旧 stair 方案文档（6 篇 08-11 文档）与旧图 carvmc_vmax6_wp0-6_v730.png；README 进度更新 |
+| 2026-08-14 | 7386c5b | wp0-6 复测 13.5s 一致性确认（final2_wp0-6_xy_speed.png）；lidar res 0.05 + 96×48 射线；riser 跳变点/台面顶修复；hierarchical DiAL 方案落地（S10_STAIR_HARD_MODE=1 + 200Hz guard）；v10-v13 迭代脚本入库 |
 
 > 后续每次实验：在此表追加一行，并同步 §7/§8/§9。
 
@@ -267,5 +269,5 @@ lidar 高程图 (10Hz) → riser/高程特征 (10Hz) → AutoNavFollower (20Hz, 
 | 主入口 | `src/S10_sdk_deploy/scripts/cruise_vmc_noros.py`（CRUISE）、`stair_dial_noros.py`（STAIR DiAL，由 cruise_noros.py 复制）、`stair_vmc_noros.py`（旧 NmpcWBC 入口） |
 | 模型 | `src/S10_sdk_deploy/S10_description/s10_mjcf/mjcf/`（S10_track.xml、new_wp30.xml） |
 | 运行脚本 | `tmp/run_v850test.sh`（cruise v890）、`tmp/run_m1mmm3.sh`（NmpcWBC 历史最优）、`tmp/run_v658_test.sh`（DiAL MBDPI 基线） |
-| 文档 | `doc/0808.md`（工程总文档）、`doc/S10_轮足爬梯_全方案总文档_20260813.md`、`doc/stair_dial_layered_plan_20260814.md`（当前 DiAL 方案）、`doc/carvmc_方案与数据管线_20260810.md`（巡航专项）、`doc/s10_mpc_deploy.yaml`（DiAL 部署配置） |
+| 文档 | `doc/0808.md`（工程总文档）、`doc/S10_轮足爬梯_全方案总文档_20260813.md`、`doc/stair_dial_hierarchical_plan_20260814.md`（当前 DiAL 实现方案）、`doc/stair_dial_layered_plan_20260814.md`（v2）、`doc/carvmc_方案与数据管线_20260810.md`（巡航专项）、`doc/s10_mpc_deploy.yaml`（DiAL 部署配置） |
 | 官方材料 | `doc/比赛规则_赛道四_具身未来.md`、`doc/赛道四_具身未来.pdf`、`doc/hardware spec.pdf`、`doc/Airy*` |
