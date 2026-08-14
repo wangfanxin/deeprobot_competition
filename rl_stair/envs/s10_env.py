@@ -66,6 +66,9 @@ class S10RLCfg:
     r_tracking_lin_vel = 4.0
     r_tracking_ang_vel = 2.0
     tracking_sigma = 0.25
+    # Chamorro et al. (ICRA24 2402.06143): actor obs has goal-direction(2)+heading-error(1),
+    # reward keeps yaw aligned to task axis. Our task axis = world +y (track), target yaw = pi/2.
+    r_heading = 2.0
 
     terrain: Terrain = field(default_factory=flat)
 
@@ -105,14 +108,22 @@ class S10RLEnv:
         self.goal_y = float(cfg.terrain.goal_y)
         self.first_riser_y = float(cfg.terrain.riser_y[0]) if cfg.terrain.riser_y else None
 
-        # standing pose: go2w default [hipx=0, hipy=0.67, knee=-1.3, wheel=0] per leg.
-        # Verified statically stable with PD-hold at base_z ~0.355 (the old qpos0
-        # all-zeros pose + gravity-collapsed settle made the robot unable to stand).
-        self.default_dof = jnp.asarray(np.array([0.0, 0.67, -1.3, 0.0] * 4, dtype=np.float64))
+        # standing pose: S10 cruise half-squat pose_target (vmc_legs.py:841-846,
+        # S10_CAR_SQUAT=1 default; CarVMC + FootPlaceVMC both use it).
+        #   fl:[-0.05,-1.10, 1.90] fr:[ 0.05,-1.10, 1.90]
+        #   hl:[-0.05, 1.10,-1.90] hr:[ 0.05, 1.10,-1.90]   (wheel=0)
+        # Deployment handoff at wp6 arrives in this exact cruise half-squat, so RL
+        # default_dof must match it (go2w stance [0,0.67,-1.3,0] was copied from the
+        # method reference repo and is NOT the S10 pose - user-flagged 2026-08-14).
+        self.default_dof = jnp.asarray(np.array(
+            [-0.05, -1.10, 1.90, 0.0,
+              0.05, -1.10, 1.90, 0.0,
+             -0.05,  1.10, -1.90, 0.0,
+              0.05,  1.10, -1.90, 0.0], dtype=np.float64))
         self.stand_qpos = jnp.asarray(self._compute_stand())
         self.stand_z = float(np.asarray(self.stand_qpos)[2])
 
-        self.obs_dim = 3 + 3 + 2 + 12 + 12 + 16 + 4 + 1
+        self.obs_dim = 3 + 3 + 2 + 12 + 12 + 16 + 2 + 4 + 1   # +2 heading(Chamorro)
         self.priv_dim = self.obs_dim + 3 + 1 + 4 * 3 + 1
         self.action_size = 16
         # batched empty data (for reset.replace)
@@ -170,7 +181,7 @@ class S10RLEnv:
         if len(ry) == 0:
             return ctx
         nr = ry.shape[0]
-        for k, off in enumerate((0.228, -0.228)):
+        for k, off in enumerate((0.210, -0.210)):   # S10 half-squat measured half-wheelbase (was 0.228=go2w stance)
             ay = base_y + off
             idx = jnp.sum(ry[None, :] < ay[:, None], axis=-1)   # count risers passed
             nxt = jnp.minimum(idx, nr - 1)
@@ -192,9 +203,14 @@ class S10RLEnv:
         leg_err = q[:, self.leg_idx] - self.default_dof[self.leg_idx]
         leg_vel = qd[:, self.leg_idx] * 0.05
         rough = jnp.full((qpos.shape[0], 1), 1.0 if len(self.riser_y) > 0 else 0.0)
+        # Chamorro-style heading feedback: yaw error vs task axis (+y, target pi/2),
+        # encoded as [cos,sin] (wrap-safe, bounded). Deployment uses track heading.
+        yaw = jnp.arctan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
+        yaw_err = yaw - jnp.pi/2.0
+        heading = jnp.stack([jnp.cos(yaw_err), jnp.sin(yaw_err)], axis=-1)
         obs = jnp.concatenate([angvel, g, cmd,
                                leg_err, leg_vel, last_action,
-                               self._terrain_ctx(data), rough], axis=-1)
+                               heading, self._terrain_ctx(data), rough], axis=-1)
         return obs
 
     def _priv(self, data, obs):
@@ -222,10 +238,9 @@ class S10RLEnv:
                jnp.maximum(soft*self.jnt_range[:, 0] - q, 0.0)**2
         r += self.cfg.r_dof_limits * jnp.sum(over[:, self.leg_idx], axis=-1)
         r += self.cfg.r_hip_l2 * jnp.sum(action[:, self.hipx_idx]**2, axis=-1)
-        # velocity tracking (legged_gym: exp(-err/tracking_sigma); body-frame lin vel)
+        # velocity tracking: go2w/legged_gym body-frame lin vel, exp(-err/sigma)
         qw, qx, qy, qz = qpos[:, 3], qpos[:, 4], qpos[:, 5], qpos[:, 6]
         vl = data.qvel[:, 0:3]
-        # inverse-quat rotate world lin vel -> body frame
         tx = 2.0 * (-qy * vl[:, 2] + qz * vl[:, 1])
         ty = 2.0 * (-qz * vl[:, 0] + qx * vl[:, 2])
         tz = 2.0 * (-qx * vl[:, 1] + qy * vl[:, 0])
@@ -235,6 +250,11 @@ class S10RLEnv:
         r += self.cfg.r_tracking_lin_vel * jnp.exp(-lin_err / self.cfg.tracking_sigma)
         ang_err = (state["cmd"][:, 1] - data.qvel[:, 5]) ** 2
         r += self.cfg.r_tracking_ang_vel * jnp.exp(-ang_err / self.cfg.tracking_sigma)
+        # Chamorro-style heading alignment: keep yaw at task axis (+y). Directly
+        # penalizes the measured "circling" (wz~0.4 rad/s, y_max capped ~3.8m).
+        yaw = jnp.arctan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
+        yaw_err = yaw - jnp.pi/2.0
+        r += self.cfg.r_heading * jnp.exp(-(yaw_err**2) / self.cfg.tracking_sigma)
         if self.cfg.only_positive_rewards:
             r = jnp.clip(r, 0.0, None)
         r = r + self.cfg.r_termination * term
@@ -262,14 +282,15 @@ class S10RLEnv:
 
         qpos = jnp.broadcast_to(self.stand_qpos, (n, self.nq))
         c, s = jnp.cos(yaw*0.5), jnp.sin(yaw*0.5)
+        cy, sy = jnp.cos(yaw), jnp.sin(yaw)   # BUGFIX: 速度旋转用全角 yaw（quat 才用半角）
         qpos = qpos.at[:, 3:7].set(jnp.stack([c, jnp.zeros_like(c), jnp.zeros_like(c), s], axis=-1))
         qpos = qpos.at[:, 0].set(x_spawn)
         qpos = qpos.at[:, 1].set(sy)
         qpos = qpos.at[:, 2].set(self.stand_z + h_off)
         qpos = qpos.at[:, self.act2jnt].add(q_off)
         qvel = jnp.zeros((n, self.nv))
-        qvel = qvel.at[:, 0].set(c*vx - s*vy)
-        qvel = qvel.at[:, 1].set(s*vx + c*vy)
+        qvel = qvel.at[:, 0].set(cy*vx - sy*vy)
+        qvel = qvel.at[:, 1].set(sy*vx + cy*vy)
         qvel = qvel.at[:, 5].set(vyaw)
         qvel = qvel.at[:, self.act2vel].add(jv)
 
@@ -377,14 +398,15 @@ class S10RLEnv:
             sy = jax.random.uniform(k1, (n,), minval=-2.0, maxval=0.0)
         qpos = jnp.broadcast_to(self.stand_qpos, (n, self.nq))
         c, s = jnp.cos(yaw * 0.5), jnp.sin(yaw * 0.5)
+        cy, sy = jnp.cos(yaw), jnp.sin(yaw)   # BUGFIX: 速度旋转用全角 yaw
         qpos = qpos.at[:, 3:7].set(jnp.stack([c, jnp.zeros_like(c), jnp.zeros_like(c), s], axis=-1))
         qpos = qpos.at[:, 0].set(x_spawn)
         qpos = qpos.at[:, 1].set(sy)
         qpos = qpos.at[:, 2].set(self.stand_z + h_off)
         qpos = qpos.at[:, self.act2jnt].add(q_off)
         qvel = jnp.zeros((n, self.nv))
-        qvel = qvel.at[:, 0].set(c * vx - s * vy)
-        qvel = qvel.at[:, 1].set(s * vx + c * vy)
+        qvel = qvel.at[:, 0].set(cy * vx - sy * vy)
+        qvel = qvel.at[:, 1].set(sy * vx + cy * vy)
         qvel = qvel.at[:, 5].set(vyaw)
         qvel = qvel.at[:, self.act2vel].add(jv)
         cmd = jnp.stack([jax.random.uniform(rng, (n,), minval=self.cfg.cmd_vx_lo,

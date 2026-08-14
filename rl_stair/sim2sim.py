@@ -43,7 +43,7 @@ def main():
     default_dof = idx["default_dof"]
 
     # spawn before stairs, facing along track (+y), base z = ground + stand height
-    stand_z = 0.354   # == S10RLEnv._compute_stand (training env), same robot geometry
+    stand_z = 0.2626  # == S10RLEnv._compute_stand with S10 cruise half-squat stance
     cy, sy = math.cos(args.yaw / 2), math.sin(args.yaw / 2)
     d.qpos[0:3] = [args.x, args.y, GROUND + stand_z]
     d.qpos[3:7] = [cy, 0.0, 0.0, sy]

@@ -117,6 +117,8 @@ def main():
         t_iter = time.time()
         # rollout
         ppo.optim.zero_grad()
+        n_done_ep = 0
+        n_succ_ep = 0
         for s_i in range(ppo_cfg.num_steps_per_env):
             obs_t = to_torch(obs, device)
             obs_t = obs_t + (2*torch.rand_like(obs_t) - 1) * obs_noise
@@ -127,6 +129,13 @@ def main():
             a_np = a.detach().cpu().numpy()
             t0 = time.time()
             state, obs, priv, rew, done, succ = env.step_j(state, jnp.asarray(a_np))
+            # BUGFIX 2026-08-14: succ in log used last-rollout-step instantaneous flags only
+            # (envs reset on done -> successes mid-episode invisible -> gate never advances).
+            # Count done-events: every episode ends via success/fall/timeout; true rate =
+            # succ_dones / total_dones, aggregated over the rollout.
+            _d = np.asarray(done); _s = np.asarray(succ)
+            n_done_ep += int(_d.sum())
+            n_succ_ep += int((_d & _s).sum())
             dts = time.time() - t0
             if dts > 5.0:
                 log(f"WARN slow step {dts:.1f}s at s_i={s_i}")
@@ -149,7 +158,7 @@ def main():
         env_iters += 1
         tot_env_int += args.num_envs * ppo_cfg.num_steps_per_env
 
-        succ_window.append(float(np.asarray(succ).mean()))
+        succ_window.append(n_succ_ep / max(n_done_ep, 1))
         if len(succ_window) > 100:
             succ_window.pop(0)
         succ_rate = float(np.mean(succ_window)) if succ_window else 0.0
@@ -157,7 +166,16 @@ def main():
         el = time.time() - t_start
         eta = (args.max_iters - it) / max(iters_per_h, 1e-6)
         if it % ppo_cfg.log_every == 0:
-            log(f"iter={it} stage={stages[stage_idx].name} succ={succ_rate:.3f} "
+            _q = np.asarray(state["data"].qpos)
+            _by = _q[:, 1]; _qw,_qx,_qy2,_qz = _q[:,3],_q[:,4],_q[:,5],_q[:,6]
+            _yaw = np.arctan2(2*(_qw*_qz+_qx*_qy2), 1-2*(_qy2*_qy2+_qz*_qz))
+            _vl = np.asarray(state["data"].qvel)[:, 0:3]
+            _tx = 2.0*(-_qy2*_vl[:,2] + _qz*_vl[:,1]); _ty = 2.0*(-_qz*_vl[:,0] + _qx*_vl[:,2])
+            _tz = 2.0*(-_qx*_vl[:,1] + _qy2*_vl[:,0])
+            _vbx = _vl[:,0] + _qw*_tx + (-_qy2*_tz + _qz*_ty)
+            _wz = np.abs(np.asarray(state["data"].qvel)[:, 5])
+            log(f"iter={it} stage={stages[stage_idx].name} succ={succ_rate:.3f} done={n_done_ep}/{n_succ_ep} "
+                f"y_avg={float(_by.mean()):.2f} y_max={float(_by.max()):.2f} yaw={float(np.degrees(np.abs(_yaw).mean())):.0f} vbx={float(np.abs(_vbx).mean()):.2f} wz={float(_wz.mean()):.2f} "
                 f"rew={float(np.mean(np.asarray(rew))):.2f} env_int={tot_env_int/1e6:.1f}M "
                 f"steps/s={iters_per_h:.0f}/h eta={eta:.1f}h iter_dt={iter_dt:.1f}s upd={t_update:.1f}s "
                 f"std={stats['mean_std']:.3f} loss_a={stats['loss_actor']:.4f}")

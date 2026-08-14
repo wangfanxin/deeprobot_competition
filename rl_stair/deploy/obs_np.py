@@ -10,12 +10,15 @@ OBS_LAYOUT (must stay in this exact order):
   [8:20]  leg joint pos error (12) *1 (default 0/0.67/-1.3)
   [20:32] leg joint vel (12) *0.05
   [32:48] last action (16)
-  [48:52] terrain ctx: front/rear axle distance + height diff to next riser (4)
-  [52]    rough bool (stair OR ridge)
+  [48:50] heading [cos,sin](yaw-track_heading) (2) -- Chamorro
+  [50:54] terrain ctx: front/rear axle distance + height diff to next riser (4)
+  [54]    rough bool (stair OR ridge)
 """
 import numpy as np
 
-FRONT_REAR_OFFSET = 0.228   # half wheelbase (m) for front/rear axle terrain ctx
+TARGET_HEADING = 1.5708   # pi/2: task axis +y (track heading at stair section); deployment should pass track heading
+
+FRONT_REAR_OFFSET = 0.210   # half wheelbase (m) under S10 cruise half-squat stance (measured; go2w stance gave 0.228)
 
 
 def build_indices(mj_model):
@@ -31,11 +34,13 @@ def build_indices(mj_model):
     act2vel = act2jnt - 1
     names = [mj_model.joint(jid).name for jid in jids]
     leg_idx = np.array([j for j, nm in enumerate(names) if "wheel" not in nm])
-    # BUGFIX 2026-08-14: training env default_dof is the explicit go2w stance
-    # [0, 0.67, -1.3, 0]*4 (s10_env.py), NOT model qpos0 (S10 qpos0 = all-zeros straight
-    # legs). qpos0 here fed wrong leg-pos-error obs + held legs straight in PD.
-    # Must match s10_env.py exactly (actuator order verified == training order).
-    default_dof = np.array([0.0, 0.67, -1.3, 0.0] * 4, dtype=np.float64)
+    # default_dof must match s10_env.py EXACTLY = S10 cruise half-squat pose_target
+    # (vmc_legs.py:841-846, S10_CAR_SQUAT=1). NOT model qpos0 (all-zeros straight legs),
+    # NOT go2w stance. Actuator order verified == training order.
+    default_dof = np.array([-0.05, -1.10, 1.90, 0.0,
+                             0.05, -1.10, 1.90, 0.0,
+                            -0.05,  1.10, -1.90, 0.0,
+                             0.05,  1.10, -1.90, 0.0], dtype=np.float64)
     return {"act2jnt": act2jnt, "act2vel": act2vel, "leg_idx": leg_idx,
             "default_dof": default_dof}
 
@@ -54,6 +59,11 @@ def compute_obs_np(qpos, qvel, idx, last_action, cmd, riser_y, riser_top):
     angvel = (qvel[3:6] * 0.25).astype(np.float32)
     leg_err = (q[leg_idx] - default_dof[leg_idx]).astype(np.float32)
     leg_vel = (qd[leg_idx] * 0.05).astype(np.float32)
+    # Chamorro-style heading feedback (matches env _obs): yaw error vs TARGET_HEADING
+    qw, qx, qy, qz = qpos[3], qpos[4], qpos[5], qpos[6]
+    yaw = np.arctan2(2.0*(qw*qz + qx*qy), 1.0 - 2.0*(qy*qy + qz*qz))
+    yaw_err = yaw - TARGET_HEADING
+    heading = np.array([np.cos(yaw_err), np.sin(yaw_err)], dtype=np.float32)
     ctx = np.zeros(4, dtype=np.float32)
     riser_y = np.asarray(riser_y, dtype=np.float64)
     riser_top = np.asarray(riser_top, dtype=np.float64)
@@ -72,4 +82,4 @@ def compute_obs_np(qpos, qvel, idx, last_action, cmd, riser_y, riser_top):
     rough = np.array([1.0 if len(riser_y) > 0 else 0.0], dtype=np.float32)
     return np.concatenate([angvel, g, np.asarray(cmd, dtype=np.float32), leg_err,
                            leg_vel, np.asarray(last_action, dtype=np.float32),
-                           ctx, rough]).astype(np.float32)
+                           heading, ctx, rough]).astype(np.float32)
