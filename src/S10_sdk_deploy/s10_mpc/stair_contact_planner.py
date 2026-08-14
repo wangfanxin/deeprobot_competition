@@ -250,7 +250,8 @@ class StairContactPlanner:
         if os.environ.get('S10_STAIR_PLANNER_DEBUG', '0') == '1':
             wr = np.asarray(fol.stair_wheel_ref(np.asarray(wheel_y, dtype=np.float64)), dtype=np.float64)
             if int(t * 20) % 20 == 0:
-                print(f'[PLANNER] t={t:.1f} wy={[round(float(v),2) for v in wheel_y]} wz={[round(float(v),2) for v in wheel_z]} wr={[round(float(v),2) for v in wr]} prox={[round(float(v),2) if v < 1e8 else -1 for v in prox]}', flush=True)
+                _rs, _ts = fol._stair_tables()
+                print(f'[PLANNER] t={t:.1f} wy={[round(float(v),2) for v in wheel_y]} wz={[round(float(v),2) for v in wheel_z]} wr={[round(float(v),2) for v in wr]} prox={[round(float(v),2) if v < 1e8 else -1 for v in prox]} risers={[round(float(v),3) for v in _rs]} tops={[round(float(v),3) for v in _ts]}', flush=True)
 
         # Soft time-varying action bias: keep MBDPI sampling mean in the
         # direction of the geometric lift field. It is a prior, not a gate.

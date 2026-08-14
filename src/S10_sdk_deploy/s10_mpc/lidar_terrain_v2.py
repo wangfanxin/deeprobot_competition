@@ -126,9 +126,20 @@ class LidarTerrainV2:
                 n_rise += 1
         return n_rise >= need
 
-    def detect_risers(self, pts, cum, s_lo, s_hi, rise=0.05, max_dh=0.15):
+    def detect_risers(self, pts, cum, s_lo, s_hi, rise=0.05, max_dh=0.16,
+                      top_win=0.30):
+        """沿路径窗口检测 riser。
+
+        2026-08-14 精度修复：旧版把"跳变点 hmax"直接当台面顶，但后续
+        riser 会遮挡当前踏面（lidar 前下 45° 扇形），实测 riser2 顶低
+        0.05m -> wheel_ref 偏低 -> 前轮差 0.012m 卡在下一级立面。现在：
+          - riser 位置取跳变起点（k-1 与 k 的中点，更接近立面）；
+          - 台面顶 = 跳变后 top_win(0.30m) 内 hmax 最大值（踏面中段
+            无阴影处），窗口 < 阶距 0.4m 不会串到下一级。
+        """
         out = []
         n = len(cum)
+        res = float(cum[1] - cum[0]) if n > 1 else 0.1
         prev_h = None
         for k in range(n):
             s = float(cum[k])
@@ -143,6 +154,14 @@ class LidarTerrainV2:
             if prev_h is not None:
                 dh = float(h - prev_h)
                 if rise <= dh <= max_dh:
-                    out.append((s, dh, float(h)))
+                    top = float(h)
+                    n_win = int(top_win / max(res, 1e-3)) + 1
+                    for j in range(k, min(n, k + n_win)):
+                        hj = self.height_max_or_none(
+                            float(pts[j, 0]), float(pts[j, 1]))
+                        if hj is not None and float(hj) > top:
+                            top = float(hj)
+                    s_rise = float(cum[max(k - 1, 0)] + 0.5 * res)
+                    out.append((s_rise, dh, top))
             prev_h = h
         return out
