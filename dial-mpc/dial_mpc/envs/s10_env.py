@@ -936,7 +936,15 @@ def _reward_pure(cfg, ctx, d, info, ctrl):
         # （默认 0.25m）才锁轮（四轮锁死，只能腿抬放走楼梯）；接近段保持
         # 滚动（否则机器人滚不到楼梯）。软 cost 无门控。
         _lock_prox = float(os.environ.get("S10_WHEEL_LOCK_PROX", "0.25"))
-        _lock_on = (in_stairs > 0) & (_prox < _lock_prox)
+        # Lock only swing-phase wheels. Locking all near-riser wheels removes
+        # propulsion from the supporting axle and causes rear-wheel free-spin.
+        if _gsw is not None:
+            _sw_lock = _gsw * _prox_ok.astype(jnp.float32)
+        else:
+            _sw_lock = ((_ms > 0.5) & _wr_ok & _prox_ok & (
+                _wr - (h_terrain + cfg["wheel_radius"]) > _sw_th)
+            ).astype(jnp.float32)
+        _lock_on = (in_stairs > 0) & (_prox < _lock_prox) & (_sw_lock > 0.5)
         r_wheel_lock = -cfg["stair_wheel_lock_w"] * jnp.sum(
             jnp.square(qd_wheel) * _lock_on.astype(jnp.float32))
         # v214: 支撑稳定性软罚（Takahashi 2023 支撑多边形思想软版）——
