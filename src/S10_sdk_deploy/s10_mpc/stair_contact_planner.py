@@ -16,7 +16,7 @@ from perception.local_map import LocalMapTile, compute_terrain_features
 
 
 class StairContactPlanner:
-    def __init__(self, model, data, follower, tile_half=3.0, res=0.10):
+    def __init__(self, model, data, follower, tile_half=3.0, res=0.05):
         self.model = model
         self.data = data
         self.follower = follower
