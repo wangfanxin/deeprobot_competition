@@ -25,14 +25,18 @@ def _base_cfg(num_envs=1024):
 
 def make_stages(num_envs=1024):
     def c0():
-        c = _base_cfg(num_envs); c.terrain = flat(course=6.0)
+        # T0 warm-up gate lowered 6m->4.5m (2026-08-14 22:12, doc §3.12 fallback):
+        #   converged policy (std 0.38) sustains ~0.5 m/s -> reaches y~5.9 but only ~5-7%
+        #   cross 6.0 in 16s from spawn y[-2,0] (marginal 6-8m course). 4.5m passes at
+        #   0.28 m/s; REAL speed (0.8-1.8, incl 1.5 entry) is taught in T1+.
+        c = _base_cfg(num_envs); c.terrain = flat(course=4.5)
         # gentle start for WIP balancing: small initial speed / pose / vel perturbation
         c.vx_lo, c.vx_hi = 0.0, 0.5
         c.yaw_lo, c.yaw_hi = -0.1, 0.1
         c.q_off = 0.02
         c.v_off = 0.2
         c.cmd_vx_lo, c.cmd_vx_hi = 0.4, 0.9   # T0 target speed reachable -> succ achievable
-        c.max_ep_len = 800   # 16s: 6m needs 0.375 m/s (T0 = balance+roll warm-up, not speed test)
+        c.max_ep_len = 800   # 16s
         return c
     def c1a():
         c = _base_cfg(num_envs); c.terrain = single_step(0.05, y0=1.5); return c
