@@ -400,6 +400,9 @@ def main():
                 _terr = np.asarray(fol.stair_terrain(_wy), dtype=np.float64)
                 _prox = np.asarray(getattr(mpc, '_stair_prox', np.full(4, 1e9)), dtype=np.float64)
                 _wref = np.asarray(fol.stair_wheel_ref(_wy), dtype=np.float64)
+                _hard_fz = getattr(mpc, '_hard_foothold_z', None)
+                if _hard_fz is not None:
+                    _wref = np.asarray(_hard_fz, dtype=np.float64)
                 mpc.latest_tau = guard.apply(mpc.latest_tau, _gsw_now, _com_xy, wheel_y=_wy, wheel_z=_wz, terrain_z=_terr, prox=_prox, wheel_ref_z=_wref)
             d.ctrl[:] = np.asarray(mpc.latest_tau, dtype=np.float64)
             if os.environ.get('S10_STAIR_JOINT_DEBUG', '0') == '1' and step % 20 == 0:

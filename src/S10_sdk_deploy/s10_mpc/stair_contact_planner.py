@@ -121,6 +121,39 @@ class StairContactPlanner:
                     features[_key] = np.where(mk, kt[_key], features[_key])
         return out
 
+    def compute_hard_mode(self, wheel_y, wheel_z):
+        fol = self.follower
+        rs, ts = fol._stair_tables()
+        wheel_y = np.asarray(wheel_y, dtype=np.float64)
+        wheel_z = np.asarray(wheel_z, dtype=np.float64)
+        mode = np.zeros(4, dtype=np.float32)
+        foothold_z = fol.stair_terrain(wheel_y) + 0.081
+        # Front wheels swing when they are close to the next riser and the
+        # next tread is clearly above the current tread.
+        for i in (0, 1):
+            idx = int(np.searchsorted(rs, wheel_y[i]))
+            if idx < len(rs):
+                d = float(rs[idx]) - float(wheel_y[i])
+                target_z = float(ts[idx]) + 0.081
+                need = target_z - float(wheel_z[i])
+                if d < float(os.environ.get('S10_HARD_FRONT_PROX', '0.15')) and need > 0.02:
+                    mode[i] = 1.0
+                    foothold_z[i] = target_z
+        # Rear wheels swing after the front wheels have reached a higher tread.
+        front_terr = max(float(fol.stair_terrain(np.array([wheel_y[0]]))[0]),
+                         float(fol.stair_terrain(np.array([wheel_y[1]]))[0]))
+        rear_terr = float(fol.stair_terrain(np.array([wheel_y[2]]))[0])
+        for i in (2, 3):
+            idx = int(np.searchsorted(rs, wheel_y[i]))
+            if idx < len(rs):
+                d = float(rs[idx]) - float(wheel_y[i])
+                target_z = front_terr + 0.081
+                need = target_z - float(wheel_z[i])
+                if (front_terr - rear_terr) > 0.06 and d < float(os.environ.get('S10_HARD_REAR_PROX', '0.15')) and need > 0.02:
+                    mode[i] = 1.0
+                    foothold_z[i] = target_z
+        return mode, foothold_z.astype(np.float32)
+
     def stair_confirmed(self, robot_xy, yaw):
         """Small forward window over max-z detects at least one riser."""
         return self.lidar.stair_confirmed(robot_xy, yaw, rise=0.06,
