@@ -760,7 +760,7 @@ def _reward_pure(cfg, ctx, d, info, ctrl):
         _gt0 = h_terrain + cfg["wheel_radius"]
         _lift_need = jnp.clip(target_z - _gt0, 0.03, 0.25)
         _prog = jnp.clip((wheel_z - _gt0) / _lift_need, 0.0, 1.0)
-        _over = jnp.clip((wheel_z - target_z) / 0.05, 0.0, 1.0)
+        _over = jnp.clip((wheel_z - target_z) / 0.10, 0.0, 1.0)
         r_lift_prog = _wlp * jnp.sum(_sw3 * (_prog - _over))
         # 做功正奖（用户方案 2.4"后腿蹬"）：轮地法向力×前移速度 +
         # 髋伸矩×前移速度。纯物理、无感知依赖；前移速度 vb[0]（body 局部
