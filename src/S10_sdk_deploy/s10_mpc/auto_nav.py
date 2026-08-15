@@ -791,22 +791,43 @@ class AutoNavFollower:
         _dbg = os.environ.get("S10_MODE_DEBUG")
         _sz = None
         _d = None
-        # USER acceptance: elevation-map STAIR entry - detect stair/ridge AHEAD on the
-        # elevation map (0.5..S10_ELEV_LOOKAHEAD m), ramp decel_request as it approaches,
-        # enter STAIR once within S10_ELEV_ENTER m. Runs before the known-map path.
+        # USER-DIRECTED 2026-08-16: elevation-map gated SPEED control only
+        # ("高程图中（在路径上）有横脊楼梯出现再控速"). Detect a stair/ridge RISE
+        # AHEAD on the elevation map (path capsules only) and ramp decel_request by
+        # proximity. Mode switching (STAIR) stays with the known stair_zone logic
+        # below -- the 96-line lidar + smooth overlay capsules cannot reliably
+        # distinguish stairs from long ramps, so perception must not force RL onto a
+        # ramp. Runs before the known-map path (decel applies to ridges too).
         self.decel_request = 0.0
-        _elook = float(os.environ.get("S10_ELEV_LOOKAHEAD", "4.0"))
-        _eenter = float(os.environ.get("S10_ELEV_ENTER", "1.5"))
+        _elook = float(os.environ.get("S10_ELEV_LOOKAHEAD", "6.0"))
+        _eenter = float(os.environ.get("S10_ELEV_ENTER", "2.0"))
         if local_map is not None and yaw is not None:
             _ad = self._elev_stair_ridge_ahead(robot_xy, yaw, local_map, _elook)
+            if os.environ.get("S10_ELEV_DEBUG"):
+                print(f"[ELEV] t-pos={robot_xy[0]:.2f},{robot_xy[1]:.2f} ad={_ad} decel={self.decel_request:.2f}", flush=True)
             if _ad is not None:
                 self.decel_request = float(np.clip(
                     1.0 - (_ad - _eenter) / max(_elook - _eenter, 1e-3), 0.0, 1.0))
-                if _ad < _eenter:
-                    self.mode = "STAIR"
-                    if _dbg:
-                        print(f"[MODE] STAIR elev-ahead d={_ad:.2f} decel={self.decel_request:.2f}", flush=True)
-                    return
+        # USER-DIRECTED 2026-08-16: reliable backbone - KNOWN stair-zone proximity
+        # decel (allowed wp-z info, same source as the approved stair_zone mode
+        # switch). The 96-line lidar map is sparse (proven), so perception alone can
+        # drop the signal 1-2m before the steps; this ramp keeps decel on through the
+        # approach (y~33 -> ~38), max() with the perception term.
+        _seg_i = next_idx - 1
+        if (next_idx >= 1 and _seg_i < len(self.stair_zone) and self.stair_zone[_seg_i]
+                and next_idx < len(self.wp)):
+            _sa = self.wp[_seg_i, :2]; _sb = self.wp[next_idx, :2]
+            _dv = _sb - _sa
+            _L2 = max(float(np.dot(_dv, _dv)), 1e-6)
+            _t = float(np.clip(np.dot(np.asarray(robot_xy) - _sa, _dv) / _L2, 0.0, 1.0))
+            _along = _t * np.sqrt(_L2)
+            _off = float(os.environ.get("S10_ELEV_KNOWN_OFF", "1.0"))
+            _ramp = float(os.environ.get("S10_ELEV_KNOWN_RAMP", "5.0"))
+            if _along >= _off:
+                _kd = float(np.clip((_along - _off) / max(_ramp, 1e-3), 0.0, 1.0))
+                self.decel_request = max(self.decel_request, _kd)
+                if os.environ.get("S10_ELEV_DEBUG"):
+                    print(f"[ELEV-KNOWN] t-pos={robot_xy[0]:.2f},{robot_xy[1]:.2f} along={_along:.2f} decel={self.decel_request:.2f}", flush=True)
         if (next_idx >= 1 and next_idx - 1 < len(self.stair_zone)
                 and self.stair_zone[next_idx - 1]):
             _sz = bool(self.stair_zone[next_idx - 1])
@@ -874,14 +895,14 @@ class AutoNavFollower:
 
     def _elev_stair_ridge_ahead(self, robot_xy, yaw, local_map, lookahead=4.0, start=0.5,
                                  rise_th=0.30):
-        """Elevation-map lookahead: return distance (m) to the stair/ridge RISE ahead.
+        """Elevation-map lookahead along the PATH (wp-derived): return distance (m) to the
+        first stair/ridge RISE on the robot's path.
 
-        The competition's elevation source (lidar -> track path profile, group-2 capsules)
-        rises GRADUALLY (capsule radius), so a per-cell step_flag misses it. Detect the
-        HEIGHT RISE instead: hmax(far) - hmax(near baseline) > rise_th (0.3m) => stairs.
-        Scans from `start` (0.5 entry / 0.0 exit). Returns the distance where the rise
-        first exceeds baseline+rise_th, or None. Deployable (local elevation map only)."""
-        if local_map is None or yaw is None:
+        USER-DIRECTED 2026-08-16: only control speed when the elevation map shows a
+        ridge/stairs ON THE PATH (not off-path noise). Samples along self.path_pts
+        (built from wp absolute coords, allowed) ahead of the robot's arc-length s_cur,
+        and detects a height rise (far max - near min > rise_th)."""
+        if local_map is None:
             return None
         hm = local_map.get("heightmap")
         valid = local_map.get("valid")
@@ -889,36 +910,51 @@ class AutoNavFollower:
             return None
         ox = float(local_map["origin"][0]); oy = float(local_map["origin"][1])
         res = float(local_map["resolution"])
-        fwd = np.array([np.cos(yaw), np.sin(yaw)])
-        # lateral search window: the path lane can be offset from the robot's heading
-        # (stairs at x~-13.3 vs robot x~-15); scan x +- lat_win around the ray.
-        lat_win = float(os.environ.get("S10_ELEV_LAT_WIN", "1.5"))
-        lat_n = max(3, int(round(2 * lat_win / res)) + 1)
-        lats = np.linspace(-lat_win, lat_win, lat_n)
+        s_cur = float(getattr(self, "_s_cur", 0.0))
+        if s_cur <= 0.0:
+            k0 = int(np.argmin(np.sum((self.path_pts[:, :2] - np.asarray(robot_xy)) ** 2, axis=1)))
+            s_cur = float(self.path_cum[k0])
 
-        def h_at(d):
-            p0 = np.asarray(robot_xy) + fwd * d
-            best = None
-            for lx in lats:
-                p = p0 + np.array([-fwd[1], fwd[0]]) * lx   # lateral offset
-                i = int(np.floor((p[1] - oy) / res)); j = int(np.floor((p[0] - ox) / res))
-                if 0 <= i < hm.shape[0] and 0 <= j < hm.shape[1] and valid[i, j]:
-                    hv = float(hm[i, j])
-                    if best is None or hv > best:
-                        best = hv
-            return best
-        # robust baseline = MIN over the first 1.0m (the path capsule near the robot can
-        # be high, then dip before the stairs); detect any far point > baseline+rise_th.
-        _ds = list(np.arange(start, min(start + 2.0, lookahead) + 1e-3, res))
-        _near = [h_at(d) for d in _ds]
-        _near = [x for x in _near if x is not None]
-        if not _near:
+        # USER-DIRECTED 2026-08-16: CELL-based corridor detection on the 96-line lidar
+        # elevation map. The lidar (group-2 path capsules only, markers/robot filtered)
+        # yields SPARSE cells along the path corridor, so per-sample probing fails. Use
+        # every valid map cell: project to the path ONLY within the ahead window
+        # [s_cur, s_cur+lookahead] (global argmin picks the RETURN loop which runs
+        # physically adjacent to the stairs -> wrong arc-length), keep cells within
+        # +-lat_win cross-track, then rise = far cell max - near-cell min > rise_th.
+        rise_th = float(os.environ.get("S10_ELEV_RISE_TH", str(rise_th)))
+        lat_win = float(os.environ.get("S10_ELEV_LAT_WIN", "1.5"))
+        lo = int(np.searchsorted(self.path_cum, s_cur, side="right") - 1)
+        lo = max(0, lo)
+        hi = int(np.searchsorted(self.path_cum, s_cur + lookahead + 1.5, side="left"))
+        hi = min(hi, len(self.path_pts))
+        if hi - lo < 2:
             return None
-        base = min(_near)
-        for d in np.arange(start, lookahead + 1e-3, res):
-            hv = h_at(d)
-            if hv is not None and (hv - base) > rise_th:
-                return float(d)
+        pseg = self.path_pts[lo:hi, :2]
+        cseg = self.path_cum[lo:hi]
+        idxs = np.argwhere(np.asarray(valid) > 0)
+        cells = []
+        for i, j in idxs:
+            gx = ox + int(j) * res
+            gy = oy + int(i) * res
+            d2 = (pseg[:, 0] - gx) ** 2 + (pseg[:, 1] - gy) ** 2
+            krel = int(np.argmin(d2))
+            ds = float(cseg[krel]) - s_cur
+            if ds < -0.5 or ds > lookahead + 1.0:
+                continue
+            cross = float(np.sqrt(d2[krel]))
+            if cross > lat_win:
+                continue
+            cells.append((ds, cross, float(hm[i, j])))
+        if not cells:
+            return None
+        near_cells = [h for (ds, cr, h) in cells if ds <= 2.0]
+        if not near_cells:
+            return None
+        base = min(near_cells)
+        for (ds, cr, h) in sorted(cells):
+            if ds >= 0.5 and h > base + rise_th:
+                return float(ds)
         return None
 
     def _elev_region_passed(self, robot_xy, yaw, local_map):

@@ -31,7 +31,9 @@ class LidarTerrainV2:
             raise ValueError('lidar_site not found in model')
         self.cutoff = float(cutoff)
         if fov_h is None:
-            fov_h = float(np.radians(55))
+            # USER-DIRECTED 2026-08-16: increase lidar scan area (55deg -> 90deg) so the
+            # elevation map covers the path ahead (incl. the wp4->5 turn where the robot drifts).
+            fov_h = float(np.radians(float(os.environ.get("S10_LIDAR_FOV_H", "90"))))
         ths = np.linspace(-fov_h, fov_h, int(th_n))
         phs = np.linspace(np.radians(45.0), np.radians(-55.0), int(phi_n))
         dirs = []
@@ -67,10 +69,22 @@ class LidarTerrainV2:
                            self.geomgroup, True, 1, geomid, dist, norm,
                            n, self.cutoff)
         hit = dist > 0.0
-        pts = pos + dist[:, None] * vec
+        # USER-DIRECTED 2026-08-16: keep ONLY the path capsules (track_segment_*).
+        # Waypoint spheres / height posts (track_waypoint_*/track_height_post_*) and
+        # the robot's own group-2 body geoms ('?' unnamed) create false "rises" in the
+        # elevation map (e.g. STAIR trigger right at a waypoint). The path capsules ARE
+        # the track profile -> "只认路径上的上升". 96-line lidar unchanged.
+        _seg = []
+        for _i in np.where(hit)[0]:
+            _gid = int(geomid[_i])
+            _nm = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, _gid) if _gid >= 0 else None
+            if _nm is not None and _nm.startswith("track_segment_"):
+                _seg.append(_i)
+        hit_idx = _seg
+        pts = pos + dist[hit_idx, None] * vec[hit_idx]
         fresh = []
-        for i in np.where(hit)[0]:
-            p = pts[i]
+        for i in hit_idx:
+            p = pos + dist[i] * vec[i]
             if p[2] > pos[2] + 0.5:
                 continue
             ix = int(np.floor((p[0] - self.ox) / self.res))

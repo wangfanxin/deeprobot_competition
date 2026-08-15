@@ -54,8 +54,11 @@ class RLStairCtrl:
         from rl_stair.deploy.obs_np import compute_obs_np
         qpos = np.asarray(qpos, dtype=np.float64)
         qvel = np.asarray(qvel, dtype=np.float64)
+        # USER-DIRECTED 2026-08-16: stair section does NOT track the nav ref_v;
+        # the RL policy controls its own speed (self.cmd set by set_cmd). Ignore
+        # the nav vx passed in so the policy's learned speed profile is used.
         if cmd is not None:
-            self.cmd[0] = float(cmd.get("vx", self.cmd[0]))
+            pass  # RL self-speed only
         obs = compute_obs_np(qpos, qvel, self.idx, self.last_action, self.cmd,
                              self.riser_y, self.riser_top)
         with torch.no_grad():

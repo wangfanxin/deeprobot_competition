@@ -15,6 +15,9 @@ except Exception:
 
 PKG = '/home/wfx/DR_competition/0810new/deeprobot_competition/src/S10_sdk_deploy'
 sys.path.insert(0, PKG)
+# BUGFIX 2026-08-16: `python script.py` puts the script dir (not repo root) on
+# sys.path, so `from rl_stair... import` failed and S10_RL_ELEV silently disabled.
+sys.path.insert(0, os.path.dirname(os.path.dirname(PKG)))   # repo root (rl_stair)
 from s10_mpc.auto_nav import AutoNavFollower
 from s10_mpc.body_mppi import BodyMPPI
 from s10_mpc.vmc_legs import (VMCController, CarVMC, LEG_ATTACH, WHEEL_BODY,
@@ -416,7 +419,9 @@ def main():
             # USER acceptance: decelerate when a stair/ridge is detected AHEAD on the
             # elevation map (AutoNavFollower.decel_request, ramped by proximity).
             if fol.decel_request > 0.0:
-                _dv = float(os.environ.get('S10_ELEV_DECEL_VX', '1.2'))
+                # USER-DIRECTED 2026-08-16: don't slow too much - perception decel
+                # target 2.5 m/s (was 1.2), only triggered by a rise ON the path.
+                _dv = float(os.environ.get('S10_ELEV_DECEL_VX', '2.5'))
                 vx = vx * (1.0 - fol.decel_request) + _dv * fol.decel_request
             v_ref = fol._last_vlim
             # 路径参考轨迹（弧长采样：当前位置起 8m，步长 0.5m）
