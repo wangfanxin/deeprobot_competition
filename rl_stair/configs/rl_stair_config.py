@@ -80,7 +80,9 @@ def make_stages(num_envs=1024):
         c = _base_cfg(num_envs)
         c.terrain = mixed([("ridge", dict(height=0.12, y0=1.5)),
                            ("stairs", dict(risers=COMPETITION_RISERS, y0=4.5)),
-                           ("ridge", dict(height=0.15, y0=12.0))])
+                           # 2nd ridge eased 10:20: 0.15->0.12 + y0 12->13 (stairs platform ends
+                           # ~11.3; 0.7m gap+15cm ridge too tight, robot fell on flat at y~14)
+                           ("ridge", dict(height=0.12, y0=13.0))])
         # 17m course: 10s->1.7m/s too fast; 20s->0.85m/s (09:05, 3 obstacle groups eat ~9s)
         c.max_ep_len = 1000
         return c
@@ -88,7 +90,9 @@ def make_stages(num_envs=1024):
         c = _base_cfg(num_envs)
         c.terrain = mixed([("ridge", dict(height=0.12, y0=1.5)),
                            ("stairs", dict(risers=COMPETITION_RISERS, y0=4.5)),
-                           ("ridge", dict(height=0.15, y0=12.0))])
+                           # 2nd ridge eased 10:20: 0.15->0.12 + y0 12->13 (stairs platform ends
+                           # ~11.3; 0.7m gap+15cm ridge too tight, robot fell on flat at y~14)
+                           ("ridge", dict(height=0.12, y0=13.0))])
         c.max_ep_len = 1000
         c.yaw_lo, c.yaw_hi = -1.0, 1.0   # handoff worst-case approach angle
         return c
