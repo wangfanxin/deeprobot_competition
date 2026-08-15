@@ -112,12 +112,12 @@ def make_stages(num_envs=1024):
         Stage("T2b_stairs4x0061", c2b, advance_at=0.35, min_iters=80),
         Stage("T2c_stairs4x008", c2c, advance_at=0.35, min_iters=80),
         Stage("T2d_stairs4x010", c2d, advance_at=0.3, min_iters=80),
-        Stage("T2e_stairs4x0125", c2e, advance_at=0.3, min_iters=100),
-        Stage("T3_stairs6", c3, advance_at=0.3, min_iters=200),
+        Stage("T2e_stairs4x0125", c2e, advance_at=0.6, min_iters=150),   # gate raised 12:20 (transfer margin)
+        Stage("T3_stairs6", c3, advance_at=0.6, min_iters=300),   # gate raised 12:20 (sim2sim: 0.30->1/6 transfer fail)
         Stage("T4a_ridge008", c4a, advance_at=0.5, min_iters=50),
         Stage("T4b_ridge012", c4b, advance_at=0.4, min_iters=80),
         Stage("T4c_ridge015", c4c, advance_at=0.35, min_iters=80),
-        Stage("T5_mixed", c5, advance_at=0.25, min_iters=200),
+        Stage("T5_mixed", c5, advance_at=0.5, min_iters=250),   # gate raised 12:20
         Stage("T6_handoff", c6, advance_at=0.0, min_iters=0, max_iters=999999),
     ]
 
