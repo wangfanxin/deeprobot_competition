@@ -74,6 +74,10 @@ class AutoNavFollower:
         self.mode = "CRUISE"
         self.stair_mode_dist = float(os.environ.get(
             "S10_STAIR_MODE_DIST", "3.0"))
+        # 2026-08-15 23:15 (USER acceptance): elevation-map STAIR entry/exit.
+        # decel_request [0,1]: cruise_vmc reads it to ramp vx toward stair_vx when
+        # a stair/ridge is detected AHEAD on the elevation map.
+        self.decel_request = 0.0
         # 全局平滑路径（2026-08-06 用户方向 1.1/1.2）：航点折线 → 圆角
         # 折线（弯道圆弧过渡）→ 密集弧长参数化路径 + 曲率/速度剖面。
         # dial-mpc 只做 locomotion，导航层（本类）负责"平滑全局路径 +
@@ -773,12 +777,36 @@ class AutoNavFollower:
                 self.mode = os.environ["S10_FORCE_MODE"]
             return
         if self.mode == "STAIR":
-            if next_idx > 7 or robot_xy[1] > 40.5:
+            # USER acceptance: elevation-map exit - confirm the robot crossed the
+            # stair/ridge region (no edge ahead on the elevation map) before CRUISE.
+            # Fixed-coordinate exit (next_idx>7 / y>40.5) is ONLY the map-free
+            # fallback; when local_map is present the elevation signal wins (the
+            # fixed y>40.5 would otherwise cut STAIR while the last riser is still
+            # ahead, e.g. a later ridge/step on the map).
+            _elev_ok = self._elev_region_passed(robot_xy, yaw, local_map)
+            if _elev_ok or (local_map is None and (next_idx > 7 or robot_xy[1] > 40.5)):
                 self.mode = "CRUISE"
+                self.decel_request = 0.0
             return
         _dbg = os.environ.get("S10_MODE_DEBUG")
         _sz = None
         _d = None
+        # USER acceptance: elevation-map STAIR entry - detect stair/ridge AHEAD on the
+        # elevation map (0.5..S10_ELEV_LOOKAHEAD m), ramp decel_request as it approaches,
+        # enter STAIR once within S10_ELEV_ENTER m. Runs before the known-map path.
+        self.decel_request = 0.0
+        _elook = float(os.environ.get("S10_ELEV_LOOKAHEAD", "4.0"))
+        _eenter = float(os.environ.get("S10_ELEV_ENTER", "1.5"))
+        if local_map is not None and yaw is not None:
+            _ad = self._elev_stair_ridge_ahead(robot_xy, yaw, local_map, _elook)
+            if _ad is not None:
+                self.decel_request = float(np.clip(
+                    1.0 - (_ad - _eenter) / max(_elook - _eenter, 1e-3), 0.0, 1.0))
+                if _ad < _eenter:
+                    self.mode = "STAIR"
+                    if _dbg:
+                        print(f"[MODE] STAIR elev-ahead d={_ad:.2f} decel={self.decel_request:.2f}", flush=True)
+                    return
         if (next_idx >= 1 and next_idx - 1 < len(self.stair_zone)
                 and self.stair_zone[next_idx - 1]):
             _sz = bool(self.stair_zone[next_idx - 1])
@@ -843,6 +871,34 @@ class AutoNavFollower:
                     and valid[i, j] and float(stepf[i, j]) > 0.3):
                 return True
         return False
+
+    def _elev_stair_ridge_ahead(self, robot_xy, yaw, local_map, lookahead=4.0, start=0.5):
+        """Elevation-map lookahead: return distance (m) to the nearest step_flag
+        (discrete stair/ridge edge) ahead along heading, or None. Deployable
+        (local elevation map only; no god-view). start=0.0 for exit checks so a
+        riser still at the robot counts as NOT yet crossed."""
+        if local_map is None or yaw is None:
+            return None
+        stepf = (local_map.get("features") or {}).get("step_flag")
+        valid = local_map.get("valid")
+        if stepf is None or valid is None:
+            return None
+        ox = float(local_map["origin"][0]); oy = float(local_map["origin"][1])
+        res = float(local_map["resolution"])
+        fwd = np.array([np.cos(yaw), np.sin(yaw)])
+        for d in np.arange(start, lookahead + 1e-3, res):
+            p = np.asarray(robot_xy) + fwd * d
+            i = int(np.floor((p[1] - oy) / res)); j = int(np.floor((p[0] - ox) / res))
+            if (0 <= i < stepf.shape[0] and 0 <= j < stepf.shape[1]
+                    and valid[i, j] and float(stepf[i, j]) > 0.3):
+                return float(d)
+        return None
+
+    def _elev_region_passed(self, robot_xy, yaw, local_map):
+        """Elevation-map exit: no stair/ridge edge within [0.0, 3.0]m ahead -> crossed."""
+        _ahead = self._elev_stair_ridge_ahead(robot_xy, yaw, local_map,
+                                              lookahead=3.0, start=0.0)
+        return _ahead is None
 
     def ref_path(self, robot_xy, next_idx, n_pts=10, spacing=0.5,
                  smooth=2):

@@ -26,8 +26,10 @@ TORQ_LEG, TORQ_WHEEL, ACTION_SCALE, VEL_SCALE = 48.0, 13.5, 0.7, 24.0
 def build_exact_terrain():
     class T: pass
     t = T(); t.boxes = []
-    t.boxes.append({"type":"box","size":[1.5, (37.9-36.4)/2, GROUND/2],
-                    "pos":[0.0, (36.4+37.9)/2, GROUND/2], "friction":1.0, "rgba":"0.6 0.65 0.6 1"})
+    # approach platform from wp6 (real track y=31.86, z~0.48/0.60) to the first riser,
+    # giving the robot runway to reach speed in C++ (weak wheels need distance to accelerate).
+    t.boxes.append({"type":"box","size":[1.5, (37.9-31.5)/2, GROUND/2],
+                    "pos":[0.0, (31.5+37.9)/2, GROUND/2], "friction":1.0, "rgba":"0.6 0.65 0.6 1"})
     for i in range(6):
         y0 = RISERS_Y[i]; tr = TREADS[i]; top = TOPS[i]
         t.boxes.append({"type":"box","size":[1.5, tr/2, top/2], "pos":[0.0, y0+tr/2, top/2],

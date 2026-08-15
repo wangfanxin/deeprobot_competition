@@ -222,6 +222,26 @@ def main():
         N=int(os.environ.get('VMC_MPPI_N', '4096')),
         H=int(os.environ.get('VMC_MPPI_H', '40')),
         vx_max=float(os.environ.get('S10_AUTO_VMAX', '6.0')))
+
+    # 2026-08-15 23:15 (USER acceptance): elevation-map STAIR entry/exit.
+    # S10_RL_ELEV=1 -> build local_map tile from lidar LidarTerrainV2 and feed
+    # AutoNavFollower.update_mode (detect stairs/ridge ahead -> decel -> STAIR,
+    # elevation-confirm crossed -> CRUISE). Default off: zero regression.
+    _elev_enabled = os.environ.get('S10_RL_ELEV', '0') == '1'
+    _lterr = None
+    _build_elev_tile = lambda: None
+    if _elev_enabled:
+        try:
+            from s10_mpc.lidar_terrain_v2 import LidarTerrainV2
+            from rl_stair.deploy.elev_tile import build_local_tile
+            _lterr = LidarTerrainV2(m, d)
+            def _build_elev_tile():
+                _lterr.update()
+                return build_local_tile(_lterr, float(body_pos[0]), float(body_pos[1]))
+            print('[VMC] 高程图 STAIR 判定启用 (S10_RL_ELEV=1)', flush=True)
+        except Exception as _e:
+            print('[VMC] 高程图初始化失败:', _e, flush=True)
+            _elev_enabled = False
     _vmode = os.environ.get('S10_VMC_MODE', 'wbc')
     if _vmode == 'pd':
         from s10_mpc.vmc_legs import LegPDDrive
@@ -255,6 +275,14 @@ def main():
             'S10_VMC_WBC_WHEEL_D', '0.02'))
         vmc = vmc_car
         print('[VMC] 双技能模式：CRUISE=CarVMC, STAIR=VMCController(WBC)', flush=True)
+    elif _vmode == 'rlstair':
+        # 2026-08-15 23:15 (USER acceptance): RL-stair skill (stairs only).
+        from rl_stair.deploy.rlstair_ctrl import RLStairCtrl
+        vmc = RLStairCtrl(m)
+        if stair_world:   # pre-scanned known-map risers -> RL obs
+            vmc.set_risers([float(w[0][1]) for w in stair_world],
+                           [float(w[4]) for w in stair_world])
+        print('[VMC] RL-stair 模式（policy.pt 腿PD+轮速, 楼梯专用）', flush=True)
     else:
         vmc = VMCController()
 
@@ -375,12 +403,18 @@ def main():
             # v462: 双模式判定（此前从未调用——STAIR 技能从不激活，wp6→7
             # 楼梯全程用巡航参数）
             try:
-                fol.update_mode(pos2, next_idx, yaw=yaw)
+                _lm = _build_elev_tile() if _elev_enabled else None
+                fol.update_mode(pos2, next_idx, yaw=yaw, local_map=_lm)
             except Exception:
                 pass
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
                 robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]))
+            # USER acceptance: decelerate when a stair/ridge is detected AHEAD on the
+            # elevation map (AutoNavFollower.decel_request, ramped by proximity).
+            if fol.decel_request > 0.0:
+                _dv = float(os.environ.get('S10_ELEV_DECEL_VX', '1.2'))
+                vx = vx * (1.0 - fol.decel_request) + _dv * fol.decel_request
             v_ref = fol._last_vlim
             # 路径参考轨迹（弧长采样：当前位置起 8m，步长 0.5m）
             _ref = []
