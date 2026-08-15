@@ -1,4 +1,4 @@
-"""Export a trained RL-stair actor to TorchScript (.pt) / optional ONNX.
+﻿"""Export a trained RL-stair actor to TorchScript (.pt) / optional ONNX.
 
 IMPORTANT (JIT lesson): trace the DETERMINISTIC forward path
 `forward() = tanh(MLP(obs))`. Do NOT trace `act()` -- it mutates `self.std`
@@ -15,15 +15,16 @@ import torch
 from rl_stair.ppo import Actor
 
 OBS_LAYOUT = (
-    "53-dim actor obs order (deploy must reproduce EXACTLY):\n"
+    "55-dim actor obs order (deploy must reproduce EXACTLY):\n"
     "  [0:3]   base ang vel (body) *0.25\n"
     "  [3:6]   projected gravity\n"
     "  [6:8]   cmd [vx, yaw]\n"
-    "  [8:20]  leg joint pos error (12) *1 (default 0/0.67/-1.3)\n"
+    "  [8:20]  leg joint pos error (12) *1 (default S10 tall stance [∓0.05,∓0.60,±1.20])\n"
     "  [20:32] leg joint vel (12) *0.05\n"
     "  [32:48] last action (16)\n"
-    "  [48:52] terrain ctx: front/rear axle distance + height diff to next riser (4)\n"
-    "  [52]    rough bool (stair OR ridge)\n"
+    "  [48:50] heading [cos,sin](yaw-track_heading) (2) -- Chamorro\n"
+    "  [50:54] terrain ctx: front/rear axle distance + height diff to next riser (4)\n"
+    "  [54]    rough bool (stair OR ridge)\n"
 )
 
 

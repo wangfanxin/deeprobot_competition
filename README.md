@@ -19,7 +19,7 @@
 - 申报模式：**自主跟随（÷1.3）**——航点跟随 + 感知地形限速/爬坡 + roll 安全，
   不强制全局 A\*。
 
-## 已实现（2026-08-10，CarVMC 车化巡航）
+## 已实现（2026-08-15）
 
 ```mermaid
 graph LR
@@ -27,6 +27,7 @@ graph LR
     P -->|"高程"| N["AutoNavFollower (20Hz): 平滑路径+速度剖面+判点"]
     N -->|"[vx,ω]"| C["CarVMC (200Hz): 轮驱动/差速 + 腿=主动悬架"]
     C -->|"tau 200Hz"| S
+    T["RL-Stair (rl_stair/): MJX PPO 训练 T1-T6 课程"] -->|"策略导出 policy.pt"| D["sim2sim 部署 (C++ MuJoCo S10_track.xml)"]
 ```
 
 - **感知**：mujoco-lidar 扇形射线（lidar_site 前下 45°，64×32 加密）→
@@ -36,14 +37,17 @@ graph LR
 - **导航**：Catmull-Rom 平滑路径（切线因子）+ 曲率/横脊/高架限速速度剖面
   + 单调弧长游标/切线投影 + 航点严格判点（S10_WP_ADVANCE_DIST=1.0），
   20Hz 输出 [vx, ω]（S10_VMC_USE_NAV=1 直通，绕开身体层 MPPI 随机性）。
-- **控制**：CarVMC（车化，200Hz）——轮=驱动+差速转向（yaw 比例+阻尼、
-  动态抓地钳制按载荷），腿=主动悬架（mg/4+roll/pitch 分配+地形阻抗，
+- **控制（巡航）**：CarVMC（车化，200Hz）——轮=驱动+差速转向（yaw 比例+
+  阻尼、动态抓地钳制按载荷），腿=主动悬架（mg/4+roll/pitch 分配+地形阻抗，
   半蹲降质心、微 roll 内倾压弯），横脊单步跨越/抬轮前馈；无门控、连续
-  地形响应。
+  地形响应。wp0→4 ≈13.5s、wp0→5 稳定通过（v890）。
+- **控制（爬梯，当前主线 = RL）**：`rl_stair/`（MJX 并行 PPO，T1-T6 课程，
+  含混合楼梯/横脊/入梯角度随机化/域随机化 DR），策略导出后经
+  `sim2sim.py` 部署到 C++ MuJoCo 真实赛道；迁移达标方案
+  [doc/RL_stair_迁移达标方案_95percent.md](doc/RL_stair_迁移达标方案_95percent.md)。
 - **历史（已归档）**：dial-mpc MBDPI 巡航（3.50 m/s wp0→5、new_wp30 33 点
-  2.04 m/s 全通）见 `_archive_20260810/dial_mpc_cruise/` 与 doc/0808.md §9-43。
-- **台阶（stair session）**：v216 轮锁 v4（8 跑 0 翻车，前轮 2~3 级）；wp7
-  连续台阶为当前硬阻塞（左后轮 HL 抬升，~280 组软参数穷尽，见 0808.md §27-43）。
+  2.04 m/s 全通）、StairWBC/位置基/DiAL 分层方案实验链，见
+  `_archive_20260810/` 与 `_archive_20260815/`。
 
 ## 目录结构
 
@@ -53,6 +57,7 @@ DR_competition/
 ├── deeprobot_competition/       # 本仓库：ROS2 工作空间
 │   ├── dial-mpc/                # dial-mpc 采样 MPC 库（S10 补丁内置，clone 即用）
 │   ├── src/S10_sdk_deploy/      # 仿真节点/感知/导航/控制器/模型
+│   ├── rl_stair/                 # RL 爬梯训练（MJX PPO + sim2sim 迁移）
 │   ├── doc/                     # 0808.md + requirements.md + 部署 yaml + 官方材料
 │   └── tmp/                     # 核心测试入口与结果分析脚本
 （refs/ 参考仓库与 _archive_* / backups 旧归档已于 2026-08-13 清理，参考仓库可从 GitHub 重新 clone）
@@ -120,30 +125,32 @@ S10_MUJOCO_XML=/absolute/path/to/model.xml \
   文件 `src/S10_sdk_deploy/S10_description/s10_mjcf/mjcf/new_wp30.xml`，
   路径图 [new_wp30_path.png](doc/new_wp30_path.png)，说明见 doc/0808.md §9.1。
 
-## 当前进度与待办（2026-08-14）
+## 当前进度与待办（2026-08-15）
 
-- **CarVMC 巡航**（主线，稳定）：
-  - wp0→4 ≈13.5s、wp0→5 稳定通过（v890：高架伪影过滤 + 加速度限幅）；
-    wp0→33 分段验证通过 18 点（wp0-6/8/10/12/14-16/18/20/22/26-27，跳过
-    台阶 wp6-7 与横脊/墙区），卡点集中在坡底脊区与 wp17 大弯。
-- **台阶**（stair session，当前攻关 = DiAL 分层方案）：
-  - 演进：StairWBC 位置基（08-11）→ NmpcWBC M1 系列（155 实验/23 提交闭环，几何盲区
-    轴距≥踏面 → 25° 同踏面位形）→ **DiAL 分层（08-14 当前）**：上层 StairContactPlanner
-    （连续 swing 权重 + 落脚点目标场，20Hz）+ 下层 DiAL-MBDPI（16D 扭矩采样，20Hz）
-    + StairStanceGuard（200Hz 支撑多边形否决/轮锁，WIP）。方案见
-    [doc/stair_dial_layered_plan_20260814.md](doc/stair_dial_layered_plan_20260814.md)。
-- 待办：DiAL 实施 1→7（归档 DDP 骨架/基线/planner 接入/cost 打通/清旧参数/真原图验证）、
-  wp6→7 连续成功 4 次、33 航点全程、真机迁移（vel_scale 50、IMU 闭环、Orin 实测）、
-  初赛材料（8.20 技术方案 PDF + Demo + GitHub 链接）。
+- **CarVMC 巡航**（稳定）：wp0→4 ≈13.5s、wp0→5 稳定通过（v890）；
+  wp0→33 分段验证通过 18 点，卡点集中在坡底脊区与 wp17 大弯。
+- **RL-Stair 爬梯（当前主线）**：
+  - MJX 并行 PPO 训练（T1-T6 课程：单阶→混合楼梯+双横脊，入梯角度随机化，
+    DR 域随机化 PD/扭矩/质量/摩擦/观测噪声）——T3（比赛六级）训练可靠 0.72。
+  - **sim2sim 迁移是当前瓶颈**：训练=胶囊轮/box 台阶（MJX），部署=圆柱轮/
+    mesh 台阶（C++），接触/摩擦差异导致旧策略真实赛道仅 1/6 级；MJX 与
+    C++ 解算器存在约 2.7x 行为差距（§3.36 验证）。
+  - 执行 `doc/RL_stair_迁移达标方案_95percent.md`：阶段0 基线 → 阶段1 DR
+    （已实现）→ 阶段2/3 解算器对齐验证，目标真实赛道 ≥95%（多 seed）。
+- 待办：迁移达标 ≥95%、wp6→7 连续成功、33 航点全程、真机迁移（vel_scale 50、
+  IMU 闭环、Orin 实测）、初赛材料（8.20 技术方案 PDF + Demo + GitHub 链接）。
 
-详细实验记录与参数演进见 `doc/0808.md`（§9 起）与总方案 `doc/方案总纲_MASTER.md`。
+详细实验记录与参数演进见 `doc/0808.md`（§9 起）与总方案 `doc/方案总纲_MASTER.md`；
+RL 训练/迁移细节见 `rl_stair/README.md` 与 `doc/RL_stair_*` 文档。
 
 ## 相关文档
 
 - **[doc/方案总纲_MASTER.md](doc/方案总纲_MASTER.md) —— 总方案主文档（方案/数据管线/控制频率/参数表/维护日志）**
 - [doc/0808.md](doc/0808.md) —— 工程总文档（环境配置/架构/参数/进度/待办）
+- [doc/RL_stair_迁移达标方案_95percent.md](doc/RL_stair_迁移达标方案_95percent.md) —— RL 爬梯迁移达标方案（阶段0-3）
+- [doc/S10_轮足爬梯_全方案总文档_20260813.md](doc/S10_轮足爬梯_全方案总文档_20260813.md) —— 轮足爬梯全方案总文档
 - [doc/s10_mpc_deploy.yaml](doc/s10_mpc_deploy.yaml) —— 部署配置
 - [doc/requirements.md](doc/requirements.md) —— Ubuntu 22.04（非 WSL）安装要求
 - `doc/比赛规则_赛道四_具身未来.md`、`doc/赛道四_具身未来.pdf` —— 官方规则
 - `doc/Airy雷达用户手册.pdf`、`doc/hardware spec.pdf` —— 真机硬件资料
-- `doc/final_wp0-6_xy_speed.png` —— 最新巡航结果图
+- `doc/final_wp0-6_xy_speed.png` —— 巡航结果图

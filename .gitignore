@@ -16,3 +16,7 @@ reasonix.toml
 .pytest_cache/
 MUJOCO_LOG.TXT
 *.log
+rl_stair/logs*/
+nohup.out
+*.bak_*
+_*.py

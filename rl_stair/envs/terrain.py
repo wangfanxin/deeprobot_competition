@@ -166,3 +166,32 @@ def build_model_xml(terrain: Terrain, robot_xml=ROBOT_XML, mesh_dir=MESH_DIR,
         geo.append(f'<geom type="box" size="{sz}" pos="{b["pos"][0]:.4f} {b["pos"][1]:.4f} {b["pos"][2]:.4f}" '
                    f'rgba="{b["rgba"]}" friction="{fric} 0.8 0.001" conaffinity="3"/>')
     return xml.replace("</worldbody>", "\n".join(geo) + "\n</worldbody>")
+
+
+
+def box_mesh(cx, cy, cz, hx, hy, hz):
+    """Closed box mesh (8 verts, 12 faces) centered at (cx,cy,cz) with half-extents."""
+    v = np.array([[cx-hx,cy-hy,cz-hz],[cx+hx,cy-hy,cz-hz],[cx+hx,cy+hy,cz-hz],[cx-hx,cy+hy,cz-hz],
+                  [cx-hx,cy-hy,cz+hz],[cx+hx,cy-hy,cz+hz],[cx+hx,cy+hy,cz+hz],[cx-hx,cy+hy,cz+hz]])
+    f = [[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[2,3,7],[2,7,6],[0,4,7],[0,7,3],[1,2,6],[1,6,5]]
+    return v, np.array(f)
+
+
+def mesh_stairs_meshes(risers, y0=1.5, tread=0.4, width_x=3.0, top_len=4.0):
+    """Closed box-meshes for each step + top platform (capsule-mesh MJX contact).
+
+    go2w/legged_gym terrain is trimesh; the track stairs are mesh geoms. Box steps were a
+    training-side deviation. Each step/platform is a separate closed box mesh.
+    Returns list of (name, verts, faces).
+    """
+    meshes = []
+    z = 0.0
+    y = y0
+    for i, dh in enumerate(risers):
+        z += dh
+        v, f = box_mesh(0.0, y + tread/2.0, z/2.0, width_x/2.0, tread/2.0, z/2.0)
+        meshes.append((f"step{i}", v, f))
+        y += tread
+    v, f = box_mesh(0.0, y + top_len/2.0, z/2.0, width_x/2.0, top_len/2.0, z/2.0)
+    meshes.append(("platform", v, f))
+    return meshes

@@ -65,14 +65,42 @@ class S10RLCfg:
     r_riser = 3.0   # 1->3 (2026-08-15 04:00): 4x10cm排台阶卡3次 - 单级可靠率~50%需74%; riser奖励1.0相对tracking太弱, 强化跨台阶信号
     r_goal = 10.0
     r_termination = -0.8
-    r_speed = 2.0
+    r_speed = 3.0   # 2->3 (2026-08-15 22:55): C++ wheel drive is 2.7x weaker (§3.36);
+    # force speed so the policy does not slow-crawl and time out before wp7 in C++
     # Domain randomization (Phase 1, 95% plan): per-episode PD/torque scales + push.
     dr_kp_leg_lo, dr_kp_leg_hi = 0.8, 1.2
     dr_kd_leg_lo, dr_kd_leg_hi = 0.8, 1.2
-    dr_kp_wheel_lo, dr_kp_wheel_hi = 0.8, 1.2
-    dr_tclip_lo, dr_tclip_hi = 0.8, 1.2
+    # 2026-08-15 22:45 (sim2sim): MJX<->C++ wheel drive measured 2.7x gap (§3.36);
+    # widen WHEEL DR to cover it so the policy stays fast/robust with weak wheels.
+    dr_kp_wheel_lo, dr_kp_wheel_hi = 0.3, 1.2
+    dr_tclip_lo, dr_tclip_hi = 0.8, 1.2          # legs keep narrow
+    dr_tclip_wheel_lo, dr_tclip_wheel_hi = 0.3, 1.2  # wheels cover weak-drive
     push_interval_steps: int = 750
     push_vel: float = 1.0
+    # ---- 4-item stair shaping (2026-08-15, doc RL_stair_奖励增强_4项_20260815.md, APPROVED plan b) ----
+    # 1.1 base-contact termination (geometric; Isaac Lab base_contact->done; stand clearance ~0.28m)
+    enable_base_contact: bool = True
+    base_contact_margin: float = 0.04
+    # 1.2 knee/leg scrape penalty (geometric proxy of Isaac Lab undesired_contacts .*THIGH -1.0)
+    enable_scrape: bool = True
+    r_scrape: float = -1.0
+    scrape_margin: float = 0.02
+    # 1.3 front-wheel edge clearance shaping (target-height gaussian, NOT 'higher is better')
+    enable_wheel_clear: bool = True
+    r_wheel_clear: float = 0.5
+    wheel_clear_window: float = 0.15
+    wheel_clear_sigma: float = 0.05
+    # motion gate: only reward clearance while advancing (checklist: "low-speed/standing
+    # must not reward idle lift"; prevents hovering-next-to-step local optimum at small
+    # risers where R(8.1cm) > riser(5cm) -> normal wheel height already above top)
+    wheel_clear_min_vx: float = 0.3
+    # 1.4 wheel-stuck-at-riser-face penalty (narrow window; must not punish legit roll-up climb)
+    enable_wheel_stumble: bool = True
+    r_wheel_stumble: float = -1.0
+    wheel_stumble_margin: float = 0.02
+    wheel_stumble_window: float = 0.10
+    # critic real contact forces via MJX efc_force (critic-only, deploy unaffected)
+    use_real_cfrc: bool = True
     r_orientation = -2.0
     r_height = -0.5
     r_torque = -0.0001
@@ -85,7 +113,8 @@ class S10RLCfg:
     # velocity tracking (legged_gym/go2w_rl_gym primary locomotion reward)
     r_tracking_lin_vel = 4.0
     r_tracking_ang_vel = 2.0
-    tracking_sigma = 0.25
+    tracking_sigma = 0.15   # 0.25->0.15 (2026-08-15 22:55): tighten speed tracking so the policy
+    # tracks cmd vx tightly (slow-crawl models time out in C++ before wp7 handoff)
     # Chamorro et al. (ICRA24 2402.06143): actor obs has goal-direction(2)+heading-error(1),
     # reward keeps yaw aligned to task axis. Our task axis = world +y (track), target yaw = pi/2.
     r_heading = 2.0
@@ -130,6 +159,25 @@ class S10RLEnv:
         self.start_y = float(cfg.terrain.start_y)
         self.goal_y = float(cfg.terrain.goal_y)
         self.first_riser_y = float(cfg.terrain.riser_y[0]) if cfg.terrain.riser_y else None
+
+        # exact terrain height from box list (covers stairs/ridge/mixed; flat -> 0)
+        _bx = cfg.terrain.boxes
+        if len(_bx) > 0:
+            self.box_y_lo = jnp.asarray([b["pos"][1] - b["size"][1] for b in _bx], dtype=jnp.float32)
+            self.box_y_hi = jnp.asarray([b["pos"][1] + b["size"][1] for b in _bx], dtype=jnp.float32)
+            self.box_x_lo = jnp.asarray([b["pos"][0] - b["size"][0] for b in _bx], dtype=jnp.float32)
+            self.box_x_hi = jnp.asarray([b["pos"][0] + b["size"][0] for b in _bx], dtype=jnp.float32)
+            self.box_top = jnp.asarray([b["pos"][2] + b["size"][2] for b in _bx], dtype=jnp.float32)
+        else:
+            self.box_y_lo = self.box_y_hi = self.box_x_lo = self.box_x_hi = self.box_top = jnp.zeros(0, dtype=jnp.float32)
+
+        # body ids for knees/wheels (contact force grouping + scrape/clearance geometry)
+        _mjb = mujoco.mjtObj.mjOBJ_BODY
+        self.knee_body_ids = jnp.asarray([mujoco.mj_name2id(self.mj_model, _mjb, n)
+                                          for n in ("fl_knee","fr_knee","hl_knee","hr_knee")], dtype=jnp.int32)
+        self.wheel_body_ids = jnp.asarray([mujoco.mj_name2id(self.mj_model, _mjb, n)
+                                           for n in ("fl_wheel","fr_wheel","hl_wheel","hr_wheel")], dtype=jnp.int32)
+        self.geom_bodyid = jnp.asarray(self.mj_model.geom_bodyid, dtype=jnp.int32)
 
         # standing pose = S10 stair-appropriate TALL stance (USER-DIRECTED 2026-08-14:
         # do NOT copy the cruise half-squat - that pose presses the body low for speed;
@@ -200,6 +248,32 @@ class S10RLEnv:
         tau = tau.at[:, self.wheel_idx].set(w_tau[:, self.wheel_idx])
         return tau
 
+    def _terrain_h(self, ys):
+        """Exact terrain top height at world-y positions (boxes span full track width)."""
+        if self.box_top.shape[0] == 0:
+            return jnp.zeros_like(ys, dtype=jnp.float32)
+        inside = (self.box_y_lo[None, :] <= ys[..., None]) & (ys[..., None] <= self.box_y_hi[None, :])
+        return jnp.max(jnp.where(inside, self.box_top[None, :], 0.0), axis=-1)
+
+    def _wheel_contact_forces(self, data):
+        """Per-wheel contact force (n,12) from MJX efc_force + contact frame (critic-only).
+        Handles batched (n,ncon) and unbatched (ncon,) arrays (pre-step reset)."""
+        n = data.qpos.shape[0]
+        zeros = jnp.zeros((n, 12), dtype=jnp.float32)
+        c = data.contact
+        g1, g2 = c.geom1, c.geom2
+        if g1.ndim == 1:      # pre-step data: no forces yet
+            return zeros
+        nefc = data.efc_force.shape[-1]
+        addr = jnp.clip(c.efc_address, 0, nefc - 1)          # (ncon,) shared layout
+        valid = (c.efc_address >= 0)[None, :, None]          # (1,ncon,1)
+        F = jnp.where(valid, data.efc_force[:, addr][..., None], 0.0) * c.frame[..., 0, :]  # normal = first row
+        out = []
+        for b in self.wheel_body_ids:
+            mask = (self.geom_bodyid[g1] == b) | (self.geom_bodyid[g2] == b)
+            out.append(jnp.sum(jnp.where(mask[..., None], F, 0.0), axis=1))
+        return jnp.concatenate(out, axis=-1)
+
     def _terrain_ctx(self, data):
         base_y = data.qpos[:, 1]
         n = base_y.shape[0]
@@ -247,7 +321,13 @@ class S10RLEnv:
         return obs
 
     def _priv(self, data, obs):
-        cfrc = jnp.zeros((obs.shape[0], 12), dtype=jnp.float32)
+        if self.cfg.use_real_cfrc:
+            # Chamorro ICRA24: contact force x0.01 in critic; go2w normalizes or omits;
+            # legged_gym clip_observations=100. Raw N (~240) would badly condition the
+            # critic -> scale 0.01 + clip +-5 (raw +-500N).
+            cfrc = jnp.clip(self._wheel_contact_forces(data) * 0.01, -5.0, 5.0)
+        else:
+            cfrc = jnp.zeros((obs.shape[0], 12), dtype=jnp.float32)
         priv = jnp.concatenate([obs, data.qvel[:, 0:3], data.qpos[:, 2:3], cfrc,
                                 jnp.full((obs.shape[0], 1), 0.8)], axis=-1)
         return priv
@@ -297,6 +377,38 @@ class S10RLEnv:
         yaw = jnp.arctan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
         yaw_err = yaw - jnp.pi/2.0
         r += self.cfg.r_heading * jnp.exp(-(yaw_err**2) / self.cfg.tracking_sigma)
+        # ---- 4-item stair shaping (doc RL_stair_奖励增强_4项_20260815.md) ----
+        if self.cfg.enable_scrape:
+            kx = data.xpos[:, self.knee_body_ids, 0]
+            ky = data.xpos[:, self.knee_body_ids, 1]
+            kz = data.xpos[:, self.knee_body_ids, 2]
+            th_k = self._terrain_h(ky)
+            scrape = jnp.sum(jnp.clip(th_k + self.cfg.scrape_margin - kz, 0, None), axis=-1)
+            r += self.cfg.r_scrape * scrape
+        nr = self.riser_y.shape[0]
+        if nr > 0:
+            wy = data.xpos[:, self.wheel_body_ids, 1]
+            wz = data.xpos[:, self.wheel_body_ids, 2]
+            idx = jnp.sum(self.riser_y[None, :] < wy[:, :, None], axis=-1)
+            nxt = jnp.minimum(idx, nr - 1)
+            ry_next = self.riser_y[nxt]
+            top_next = self.riser_top[nxt]
+            d = wy - ry_next
+            if self.cfg.enable_wheel_clear:
+                # body-frame forward speed (same transform as tracking reward below)
+                _qw,_qx,_qy,_qz = data.qpos[:,3], data.qpos[:,4], data.qpos[:,5], data.qpos[:,6]
+                _vl = data.qvel[:, 0:3]
+                _tx = 2.0*(-_qy*_vl[:,2] + _qz*_vl[:,1]); _ty = 2.0*(-_qz*_vl[:,0] + _qx*_vl[:,2])
+                _tz = 2.0*(-_qx*_vl[:,1] + _qy*_vl[:,0])
+                _vbx = _vl[:,0] + _qw*_tx + (-_qy*_tz + _qz*_ty)
+                moving = _vbx > self.cfg.wheel_clear_min_vx
+                in_win = jnp.abs(d) < self.cfg.wheel_clear_window
+                clear = jnp.exp(-((wz - top_next) / self.cfg.wheel_clear_sigma) ** 2)
+                r += self.cfg.r_wheel_clear * jnp.sum(jnp.where(in_win & moving[:, None], clear, 0.0), axis=-1)
+            if self.cfg.enable_wheel_stumble:
+                stuck = (d > 0) & (d < self.cfg.wheel_stumble_window) & (wz < top_next - self.cfg.wheel_stumble_margin)
+                r += self.cfg.r_wheel_stumble * jnp.sum(
+                    jnp.where(stuck, jnp.clip(top_next - wz, 0, None), 0.0), axis=-1)
         if self.cfg.only_positive_rewards:
             r = jnp.clip(r, 0.0, None)
         r = r + self.cfg.r_termination * term
@@ -347,7 +459,7 @@ class S10RLEnv:
             "kd_leg": jax.random.uniform(jax.random.fold_in(k3, 1), (n,), minval=self.cfg.dr_kd_leg_lo, maxval=self.cfg.dr_kd_leg_hi),
             "kp_wheel": jax.random.uniform(jax.random.fold_in(k3, 2), (n,), minval=self.cfg.dr_kp_wheel_lo, maxval=self.cfg.dr_kp_wheel_hi),
             "tclip_leg": jax.random.uniform(jax.random.fold_in(k3, 3), (n,), minval=self.cfg.dr_tclip_lo, maxval=self.cfg.dr_tclip_hi),
-            "tclip_wheel": jax.random.uniform(jax.random.fold_in(k3, 4), (n,), minval=self.cfg.dr_tclip_lo, maxval=self.cfg.dr_tclip_hi),
+            "tclip_wheel": jax.random.uniform(jax.random.fold_in(k3, 4), (n,), minval=self.cfg.dr_tclip_wheel_lo, maxval=self.cfg.dr_tclip_wheel_hi),
             "push_angle": jax.random.uniform(jax.random.fold_in(k3, 5), (n,), minval=0.0, maxval=2.0*np.pi),
         }
         state = {
@@ -395,6 +507,9 @@ class S10RLEnv:
         fall = base_z < self.cfg.fall_z
         backtrack = base_y < self.start_y - self.cfg.reset_backtrack
         term = fall | backtrack | (roll > self.cfg.tilt_limit) | (pitch > self.cfg.tilt_limit)
+        if self.cfg.enable_base_contact:
+            body_contact = base_z < self._terrain_h(base_y) + self.cfg.base_contact_margin
+            term = term | body_contact
         ep_len = state["ep_len"] + 1
         timeout = ep_len >= self.cfg.max_ep_len
         done = term | timeout | success
@@ -479,7 +594,7 @@ class S10RLEnv:
             "kd_leg": jax.random.uniform(jax.random.fold_in(k3, 1), (n,), minval=self.cfg.dr_kd_leg_lo, maxval=self.cfg.dr_kd_leg_hi),
             "kp_wheel": jax.random.uniform(jax.random.fold_in(k3, 2), (n,), minval=self.cfg.dr_kp_wheel_lo, maxval=self.cfg.dr_kp_wheel_hi),
             "tclip_leg": jax.random.uniform(jax.random.fold_in(k3, 3), (n,), minval=self.cfg.dr_tclip_lo, maxval=self.cfg.dr_tclip_hi),
-            "tclip_wheel": jax.random.uniform(jax.random.fold_in(k3, 4), (n,), minval=self.cfg.dr_tclip_lo, maxval=self.cfg.dr_tclip_hi),
+            "tclip_wheel": jax.random.uniform(jax.random.fold_in(k3, 4), (n,), minval=self.cfg.dr_tclip_wheel_lo, maxval=self.cfg.dr_tclip_wheel_hi),
             "push_angle": jax.random.uniform(jax.random.fold_in(k3, 5), (n,), minval=0.0, maxval=2.0*np.pi),
         }
         return {

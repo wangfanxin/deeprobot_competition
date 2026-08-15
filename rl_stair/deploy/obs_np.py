@@ -1,4 +1,4 @@
-"""Deployment-side 53-dim actor observation encoder (numpy, verified == MJX env).
+﻿"""Deployment-side 55-dim actor observation encoder (numpy, verified == MJX env).
 
 Verified 2026-08-14: max abs diff vs rl_stair/envs/s10_env.py `_obs` = 3.7e-9
 (float32 precision). Single source of truth for competition-sim / deploy encoding.
@@ -7,7 +7,7 @@ OBS_LAYOUT (must stay in this exact order):
   [0:3]   base ang vel (body) *0.25
   [3:6]   projected gravity
   [6:8]   cmd [vx, yaw]
-  [8:20]  leg joint pos error (12) *1 (default 0/0.67/-1.3)
+  [8:20]  leg joint pos error (12) *1 (default S10 tall stance [∓0.05,∓0.60,±1.20])
   [20:32] leg joint vel (12) *0.05
   [32:48] last action (16)
   [48:50] heading [cos,sin](yaw-track_heading) (2) -- Chamorro
@@ -34,8 +34,8 @@ def build_indices(mj_model):
     act2vel = act2jnt - 1
     names = [mj_model.joint(jid).name for jid in jids]
     leg_idx = np.array([j for j, nm in enumerate(names) if "wheel" not in nm])
-    # default_dof must match s10_env.py EXACTLY = S10 cruise half-squat pose_target
-    # (vmc_legs.py:841-846, S10_CAR_SQUAT=1). NOT model qpos0 (all-zeros straight legs),
+# default_dof must match s10_env.py EXACTLY = S10 tall stair stance (USER-DIRECTED 2026-08-14)
+# NOT model qpos0 (all-zeros straight legs); NOT go2w stance; NOT cruise half-squat.
     # NOT go2w stance. Actuator order verified == training order.
     default_dof = np.array([-0.05, -0.60, 1.20, 0.0,
                              0.05, -0.60, 1.20, 0.0,

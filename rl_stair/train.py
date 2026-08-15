@@ -44,6 +44,7 @@ def main():
     ap.add_argument("--max_iters", type=int, default=3000)
     ap.add_argument("--stage", type=str, default="")       # force a single stage
     ap.add_argument("--resume", type=str, default="")
+    ap.add_argument("--lr", type=float, default=1e-3, help="PPO lr (lower e.g. 3e-4 for refinement)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--logdir", type=str, default=os.path.join(REPO, "rl_stair/logs"))
     ap.add_argument("--steps_per_env", type=int, default=24)
@@ -69,7 +70,8 @@ def main():
         stages = [s for s in stages if s.name == args.stage] or [stages[0]]
 
     ppo_cfg = PPOCfg(num_envs=args.num_envs, num_steps_per_env=args.steps_per_env,
-                     num_minibatches=args.num_minibatches, num_epochs=args.epochs)
+                     num_minibatches=args.num_minibatches, num_epochs=args.epochs,
+                     lr=args.lr)
 
     # curriculum state
     stage_idx = 0
@@ -77,7 +79,11 @@ def main():
         try:
             _ck = torch.load(args.resume, map_location="cpu")
             stage_idx = int(_ck.get("stage", 0))
-            print("resume stage_idx =", stage_idx)
+            # BUGFIX 2026-08-15 21:55: config stage-list changes (e.g. ridge removal) can
+            # shift stage indices; clamp so both build_env AND the main-loop stages[idx]
+            # access stay in range (previously only build_env clamped -> IndexError).
+            stage_idx = min(stage_idx, len(stages) - 1)
+            print("resume stage_idx =", stage_idx, "(clamped to", len(stages), "stages)")
         except Exception as e:
             print("resume stage read failed:", e)
     env = None
@@ -88,14 +94,21 @@ def main():
     env_iters = 0
     succ_window = []
 
-    def build_env(stage):
+    def build_env(stage, fresh=False):
         nonlocal env, ppo, state, obs, priv
         env = S10RLEnv(stage.make_env_cfg())
         log(f"env built: {stage.name} stand_z={env.stand_z:.3f} obs={env.obs_dim}")
-        ppo = PPO(env.obs_dim, env.priv_dim, env.action_size, ppo_cfg, device)
-        if args.resume and os.path.exists(args.resume):
-            ppo.load(args.resume)
-            log(f"resumed from {args.resume} (iter {ppo.it})")
+        if fresh:
+            ppo = PPO(env.obs_dim, env.priv_dim, env.action_size, ppo_cfg, device)
+            if args.resume and os.path.exists(args.resume):
+                ppo.load(args.resume)
+                log(f"resumed from {args.resume} (iter {ppo.it})")
+        else:
+            # BUGFIX 2026-08-15 17:45: stage transitions previously recreated PPO and
+            # reloaded --resume (fixed base ckpt) -> within-stage learning discarded on
+            # every switch; any stage above base capability (T2b+) oscillated forever.
+            # Standard curriculum (legged_gym/go2w): KEEP weights, only swap terrain.
+            log(f"stage switched: KEEP policy weights (iter {ppo.it}) - curriculum carry-over")
         ppo.init_buffer(args.num_envs, ppo_cfg.num_steps_per_env,
                         env.obs_dim, env.priv_dim, env.action_size)
         reset_j = jax.jit(env.reset)
@@ -109,15 +122,16 @@ def main():
         state, obs, priv = reset_j(jax.random.PRNGKey(args.seed + stage_idx))
         log(f"stage reset compiled {time.time()-t0:.0f}s")
 
-    build_env(stages[min(stage_idx, len(stages)-1)])   # resume continues at restored stage, not T0
+    build_env(stages[min(stage_idx, len(stages)-1)], fresh=True)   # resume continues at restored stage, not T0
     obs_noise = torch.zeros(env.obs_dim, device=device)
     obs_noise[0:3] = 0.10   # DR: angvel noise doubled (95% plan)
     obs_noise[3:6] = 0.02
-    obs_noise[9:21] = 0.02
-    obs_noise[21:33] = 0.10
+    obs_noise[8:20] = 0.02   # leg joint pos err (obs layout [8:20]); off-by-one fixed 16:25
+    obs_noise[20:32] = 0.10  # leg joint vel (obs layout [20:32])
 
     tot_env_int = 0
     it = 0
+    best_succ = -1.0   # global best success rate -> model_best.pt (protects against post-peak drift)
     t_start = time.time()
     log("=== training start ===")
     while it < args.max_iters:
@@ -196,6 +210,11 @@ def main():
         if args.smoke and it >= 20:
             log("smoke done")
             break
+
+        if succ_rate > best_succ:
+            best_succ = succ_rate
+            ppo.save(os.path.join(args.logdir, "model_best.pt"), {"stage": stage_idx})
+            log(f"BEST succ={succ_rate:.3f} -> model_best.pt")
 
         # curriculum advance/regress
         st = stages[stage_idx]

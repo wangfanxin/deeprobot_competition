@@ -1,7 +1,7 @@
 """RL-stair training configs: env, PPO, curriculum stages."""
 from dataclasses import dataclass, field
 from rl_stair.envs.s10_env import S10RLCfg
-from rl_stair.envs.terrain import flat, single_step, stairs, ridge, mixed
+from rl_stair.envs.terrain import flat, single_step, stairs
 
 # ---------------------------------------------------------------------------
 # Curriculum stages (T0..T6). Each stage = env cfg override + success gate.
@@ -73,32 +73,14 @@ def make_stages(num_envs=1024):
         c = _base_cfg(num_envs); c.terrain = stairs(COMPETITION_RISERS, y0=1.5)
         c.spawn_back_lo, c.spawn_back_hi = 0.3, 0.8
         return c
-    def c4a():
-        c = _base_cfg(num_envs); c.terrain = ridge(0.08, y0=1.5); return c
-    def c4b():
-        c = _base_cfg(num_envs); c.terrain = ridge(0.12, y0=1.5); return c
-    def c4c():
-        c = _base_cfg(num_envs); c.terrain = ridge(0.15, y0=1.5); return c
-    def c5():
-        c = _base_cfg(num_envs)
-        _t5_stairs = [0.061, 0.125, 0.125, 0.125]   # shorter sequence for T5/T6 (11:20)
-        c.terrain = mixed([("ridge", dict(height=0.12, y0=1.5)),
-                           ("stairs", dict(risers=_t5_stairs, y0=4.5)),
-                           ("ridge", dict(height=0.12, y0=13.0))])
-        c.max_ep_len = 1000
-        # goal = past last ridge (13.2) + 1.8m, NOT y_cursor=18 (robot destabilizes ~14.6
-        # after 3-obstacle sequence; 10:35)
-        c.terrain.goal_y = 15.0
-        return c
+    # USER-DIRECTED 2026-08-15 21:50: ALL RIDGES REMOVED (T4a/b/c, T5 mixed).
+    # RL-stair covers STAIRS ONLY; sim2sim is the acceptance bar.
+    # T6 = competition 6-step staircase + worst-case handoff approach (yaw +-1.0, vx -0.5..2.5).
     def c6():
         c = _base_cfg(num_envs)
-        _t5_stairs = [0.061, 0.125, 0.125, 0.125]   # shorter sequence for T5/T6 (11:20)
-        c.terrain = mixed([("ridge", dict(height=0.12, y0=1.5)),
-                           ("stairs", dict(risers=_t5_stairs, y0=4.5)),
-                           ("ridge", dict(height=0.12, y0=13.0))])
+        c.terrain = stairs(COMPETITION_RISERS, y0=1.5)
         c.max_ep_len = 1000
         c.yaw_lo, c.yaw_hi = -1.0, 1.0   # handoff worst-case approach angle
-        c.terrain.goal_y = 15.0
         return c
     return [
         Stage("T0_flat", c0, advance_at=0.5, min_iters=30),
@@ -114,11 +96,10 @@ def make_stages(num_envs=1024):
         Stage("T2d_stairs4x010", c2d, advance_at=0.3, min_iters=80),
         Stage("T2e_stairs4x0125", c2e, advance_at=0.6, min_iters=150),   # gate raised 12:20 (transfer margin)
         Stage("T3_stairs6", c3, advance_at=0.6, min_iters=300),   # gate raised 12:20 (sim2sim: 0.30->1/6 transfer fail)
-        Stage("T4a_ridge008", c4a, advance_at=0.5, min_iters=50),
-        Stage("T4b_ridge012", c4b, advance_at=0.4, min_iters=80),
-        Stage("T4c_ridge015", c4c, advance_at=0.35, min_iters=80),
-        Stage("T5_mixed", c5, advance_at=0.5, min_iters=250),   # gate raised 12:20
-        Stage("T6_handoff", c6, advance_at=0.0, min_iters=0, max_iters=999999),
+        # T4a/b/c ridges + T5 mixed REMOVED (USER-DIRECTED 2026-08-15 21:50: no ridges)
+        # BUGFIX 2026-08-15 21:55: regress_below=0.0 - terminal stage must NOT bounce
+        # back to T3 (min_iters=0 + default regress_below 0.05 made it regress at once).
+        Stage("T6_handoff", c6, advance_at=0.0, min_iters=0, max_iters=999999, regress_below=0.0),
     ]
 
 # ---------------------------------------------------------------------------

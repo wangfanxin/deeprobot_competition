@@ -27,7 +27,7 @@ def to_torch(x, device):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", type=str, required=True)
-    ap.add_argument("--stages", type=str, default="T3_stairs6,T5_mixed,T6_handoff")
+    ap.add_argument("--stages", type=str, default="T3_stairs6,T6_handoff")
     ap.add_argument("--num_envs", type=int, default=128)
     ap.add_argument("--episodes", type=int, default=5)
     ap.add_argument("--max_steps", type=int, default=0)   # 0 -> cfg.max_ep_len
