@@ -65,16 +65,15 @@ class S10RLCfg:
     r_riser = 3.0   # 1->3 (2026-08-15 04:00): 4x10cm排台阶卡3次 - 单级可靠率~50%需74%; riser奖励1.0相对tracking太弱, 强化跨台阶信号
     r_goal = 10.0
     r_termination = -0.8
-    r_speed = 3.0   # 2->3 (2026-08-15 22:55): C++ wheel drive is 2.7x weaker (§3.36);
-    # force speed so the policy does not slow-crawl and time out before wp7 in C++
+    r_speed = 2.0
     # Domain randomization (Phase 1, 95% plan): per-episode PD/torque scales + push.
     dr_kp_leg_lo, dr_kp_leg_hi = 0.8, 1.2
     dr_kd_leg_lo, dr_kd_leg_hi = 0.8, 1.2
     # 2026-08-15 22:45 (sim2sim): MJX<->C++ wheel drive measured 2.7x gap (§3.36);
     # widen WHEEL DR to cover it so the policy stays fast/robust with weak wheels.
-    dr_kp_wheel_lo, dr_kp_wheel_hi = 0.3, 1.2
-    dr_tclip_lo, dr_tclip_hi = 0.8, 1.2          # legs keep narrow
-    dr_tclip_wheel_lo, dr_tclip_wheel_hi = 0.3, 1.2  # wheels cover weak-drive
+    dr_kp_wheel_lo, dr_kp_wheel_hi = 0.8, 1.2
+    dr_tclip_lo, dr_tclip_hi = 0.8, 1.2
+    dr_tclip_wheel_lo, dr_tclip_wheel_hi = 0.8, 1.2
     push_interval_steps: int = 750
     push_vel: float = 1.0
     # ---- 4-item stair shaping (2026-08-15, doc RL_stair_奖励增强_4项_20260815.md, APPROVED plan b) ----
@@ -113,8 +112,7 @@ class S10RLCfg:
     # velocity tracking (legged_gym/go2w_rl_gym primary locomotion reward)
     r_tracking_lin_vel = 4.0
     r_tracking_ang_vel = 2.0
-    tracking_sigma = 0.15   # 0.25->0.15 (2026-08-15 22:55): tighten speed tracking so the policy
-    # tracks cmd vx tightly (slow-crawl models time out in C++ before wp7 handoff)
+    tracking_sigma = 0.25
     # Chamorro et al. (ICRA24 2402.06143): actor obs has goal-direction(2)+heading-error(1),
     # reward keeps yaw aligned to task axis. Our task axis = world +y (track), target yaw = pi/2.
     r_heading = 2.0
