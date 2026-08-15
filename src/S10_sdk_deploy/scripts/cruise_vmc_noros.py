@@ -276,13 +276,16 @@ def main():
         vmc = vmc_car
         print('[VMC] 双技能模式：CRUISE=CarVMC, STAIR=VMCController(WBC)', flush=True)
     elif _vmode == 'rlstair':
-        # 2026-08-15 23:15 (USER acceptance): RL-stair skill (stairs only).
+        # 2026-08-15 23:15 (USER acceptance): RL-stair dual skill.
+        # CRUISE = CarVMC (tuned cruising); STAIR = RLStairCtrl (policy.pt).
         from rl_stair.deploy.rlstair_ctrl import RLStairCtrl
-        vmc = RLStairCtrl(m)
+        vmc_car = CarVMC()
+        vmc_rl = RLStairCtrl(m)
         if stair_world:   # pre-scanned known-map risers -> RL obs
-            vmc.set_risers([float(w[0][1]) for w in stair_world],
-                           [float(w[4]) for w in stair_world])
-        print('[VMC] RL-stair 模式（policy.pt 腿PD+轮速, 楼梯专用）', flush=True)
+            vmc_rl.set_risers([float(w[0][1]) for w in stair_world],
+                              [float(w[4]) for w in stair_world])
+        vmc = vmc_car
+        print('[VMC] 双技能 RL-stair：CRUISE=CarVMC, STAIR=RLStairCtrl(policy.pt)', flush=True)
     else:
         vmc = VMCController()
 
@@ -1288,6 +1291,8 @@ def main():
             vmc = vmc_wbc if fol.mode == 'STAIR' else vmc_car
         if os.environ.get('S10_VMC_MODE', 'wbc') == 'dual2':
             vmc = vmc_fp if fol.mode == 'STAIR' else vmc_car
+        if os.environ.get('S10_VMC_MODE', 'wbc') == 'rlstair':
+            vmc = vmc_rl if fol.mode == 'STAIR' else vmc_car
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         _tleg = float(np.abs(tau[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]]).max())
         _twh = float(np.abs(tau[[3, 7, 11, 15]]).max())
