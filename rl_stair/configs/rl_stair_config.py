@@ -78,12 +78,15 @@ def make_stages(num_envs=1024):
         c.terrain = mixed([("ridge", dict(height=0.12, y0=1.5)),
                            ("stairs", dict(risers=COMPETITION_RISERS, y0=4.5)),
                            ("ridge", dict(height=0.15, y0=12.0))])
+        # 17m course / 10s = 1.7m/s too fast; 16s -> 1.06m/s (08:20)
+        c.max_ep_len = 800
         return c
     def c6():
         c = _base_cfg(num_envs)
         c.terrain = mixed([("ridge", dict(height=0.12, y0=1.5)),
                            ("stairs", dict(risers=COMPETITION_RISERS, y0=4.5)),
                            ("ridge", dict(height=0.15, y0=12.0))])
+        c.max_ep_len = 800
         return c
     return [
         Stage("T0_flat", c0, advance_at=0.5, min_iters=30),
