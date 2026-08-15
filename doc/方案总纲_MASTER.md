@@ -220,7 +220,13 @@ lidar 高程图 (10Hz) → riser/高程特征 (10Hz) → AutoNavFollower (20Hz, 
 | 轮力矩限幅 | ≤13.5 Nm | 合规 |
 | 台阶几何 | 0.061 + 0.125×5 | wp6→7 连续 6 级，阶距 0.4m，踏面 0.399~0.448m |
 
-## 8. 当前进度（2026-08-14）
+## 8. 当前进度（2026-08-16，RL-stair 主线）
+
+- **CRUISE（v890 稳定）**：wp0→4 = 1.54/6.26/9.62/12.28/15.07s（基线零回归）；起步 6 m/s（修复已知楼梯区减速误压起步坡）。
+- **感知（目标 #1 完成）**：lidar 射线原点 +S10_LIDAR_RAISE_Z=0.6m（抬高安装，96×48 线不变）→ 浅角掠射不再穿透 STL mesh，高程图看到真实台阶（0.48→1.17）；group0 真实地形 + |nz|≥0.6 法向过滤（丢垂直门架/立墙）；检测改"台阶陡跳+爬升门控"（楼梯序列 ≥2 级且净升 ≥0.4m 才减速）→ 楼梯早触发（y=32 起 ad≈6.7m 平滑递减）、起步缓坡/wp5→6 横脊零误报；性能：检测 87→3.3ms、lidar 4Hz 节流、控制环 53→182Hz。
+- **RL-Stair（当前主线，目标 #2 进行中）**：修复 RL 策略 50Hz decimation（训练 50Hz/仿真 200Hz，之前 4 倍频率）；接管站姿预热（S10_RL_WARMUP=200，匹配训练 warmup 解决 leg_err 超分布）；感知减速真正到达 MPPI（v_ref 修正）；已知楼梯区减速 stair_band 门控。T6_handoff 训练（MJX 1024 env，worst-case 交接 yaw±1.0/vx-0.5..2.5）重启运行中（succ 0.25↑，eta ~9h）。C++ 训练模型（logs_cpp_official 236 updates）未收敛暂不启用。
+- **阻塞**：wp4→5（发卡 71° + 0.125m 横脊，v890 已知边界）——MPPI 欠转向 + CarVMC 轮差速过冲（om -3.51）→ 漂西卡脊；感知减速适得其反（v890 设计靠动量冲脊）；全局参数破坏其他段；需专项 yaw 控制稳定性修复。RL 真实 mesh 爬梯 ~58%（sim2sim 迁移瓶颈，训练进行中）。
+
 
 - **CRUISE（稳定主线）**：wp0→4 ≈13.5s；wp0→5 稳定通过（v890）；wp0→33 分段验证通过 18 点，
   卡点集中在坡底脊区与 wp17 大弯。8-14 复测确认一致性（1520702：wp0-6 13.5s 与历史逐航点同秒；控制环 221→209Hz 受 CPU 竞争微降、MPPI 仍 20Hz 达标；巡航代码=v890 未被 stair 污染）。最新图 `doc/final2_wp0-6_xy_speed.png`。
@@ -257,6 +263,7 @@ lidar 高程图 (10Hz) → riser/高程特征 (10Hz) → AutoNavFollower (20Hz, 
 | 2026-08-14 | cc70c19 | 方案转向 DiAL 分层爬梯（StairContactPlanner + DiAL-MBDPI + StairStanceGuard）；更新本总方案（DiAL 数据管线/频率/参数表）；删除 8-12 前旧 stair 方案文档（6 篇 08-11 文档）与旧图 carvmc_vmax6_wp0-6_v730.png；README 进度更新 |
 | 2026-08-14 | 7386c5b | wp0-6 复测 13.5s 一致性确认（final2_wp0-6_xy_speed.png）；lidar res 0.05 + 96×48 射线；riser 跳变点/台面顶修复；hierarchical DiAL 方案落地（S10_STAIR_HARD_MODE=1 + 200Hz guard）；v10-v13 迭代脚本入库 |
 | 2026-08-14 | 110a467+ | 审阅收口：P1-5b 采样 1024->512（code+yaml+run 脚本）、退火 Ndiffuse=1 已最小；P0-4 清理死 _hard_foothold_z 写；P1-6 补提交 v21/v22 实验脚本；P2-9 复核 DDP 已归档；wp7 卡点（前轮悬空/无接触）仍为 STAIR 主阻塞 |
+| 2026-08-16 | b33d434 | RL-stair 主线（目标 #1 完成）：lidar 抬高安装(RAISE_Z=0.6)+group0真实地形+nz过滤+台阶陡跳/爬升门控检测（感知早触发、缓坡零误报、控制环182Hz）；RL 50Hz decimation 修复 + 接管站姿预热；感知减速到达 MPPI(v_ref) + 已知楼梯区减速 stair_band 门控（修起步误减速）；T6_handoff 训练重启（succ 0.25↑）；wp4→5 诊断（v890 边界：发卡过转 om-3.51 + 横脊动量，需专项 yaw 稳定性）；C++ 训练模型 236 updates 未收敛暂不启用 |
 | 2026-08-14 | 88be68e+ | P0-3 实验：S10_STAIR_ALWAYS_GWSW=1（STAIR 恒注入 hard-mode 相位，A/B 默认开）；wp7 定位为 riser 表/落脚目标不一致 + 前轮过抬悬空；N=512 空载 21.5Hz 达标 |
 
 > 后续每次实验：在此表追加一行，并同步 §7/§8/§9。
