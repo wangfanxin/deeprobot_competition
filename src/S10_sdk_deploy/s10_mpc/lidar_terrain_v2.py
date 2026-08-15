@@ -44,13 +44,13 @@ class LidarTerrainV2:
                              float(np.sin(ph))])
         self.dirs_local = np.asarray(dirs, dtype=np.float64)
         self.geomgroup = np.zeros((mujoco.mjNGROUP,), dtype=np.ubyte)
-        # BUGFIX 2026-08-16 01:15 (USER): group-0 terrain MESH geoms are not ray-hittable
-        # in mujoco 3.11 (rays pass through), and group-1 robot geoms self-occlude.
-        # The competition track's VISIBLE path (track_overlay, group 2) carries the exact
-        # stair height profile (wp6 0.60 -> wp7 1.165). Use group 2 only -> the elevation
-        # map reflects the track profile (stairs ahead) without robot self-occlusion.
-        # Controlled by S10_LIDAR_PATH_ONLY (default on for RL-stair deployment).
-        if os.environ.get("S10_LIDAR_PATH_ONLY", "1") == "1":
+        # USER-DIRECTED 2026-08-16 (GOAL #1): the real terrain (group 0) IS ray-hittable
+        # once the lidar origin is raised (S10_LIDAR_RAISE_Z): shallow grazing rays from
+        # the low stock mount passed THROUGH the STL mesh (garbage z=0.10-0.48); from
+        # +0.6m they hit real treads (z 0.48->1.17, verified). Robot body geoms are
+        # group 1/2 (NOT 0), so group 0 = terrain only -> no self-occlusion by group.
+        # S10_LIDAR_PATH_ONLY=1 keeps the old group-2 path-capsule mode as fallback.
+        if os.environ.get("S10_LIDAR_PATH_ONLY", "0") == "1":
             self.geomgroup[2] = 1
         else:
             self.geomgroup[0] = 1
@@ -59,6 +59,13 @@ class LidarTerrainV2:
         import mujoco
         m, d = self.m, self.d
         pos = np.asarray(d.site_xpos[self.sid], dtype=np.float64)
+        # USER-DIRECTED 2026-08-16 (GOAL #1): raised lidar mount (origin +z) so the
+        # 96-line rays hit the terrain mesh at non-grazing incidence. Ray DIRECTIONS
+        # unchanged (still follow the body); only the origin is raised -> physically a
+        # sensor mast, no scene file change.
+        _rz = float(os.environ.get("S10_LIDAR_RAISE_Z", "0.6"))
+        if _rz > 0.0:
+            pos = pos + np.array([0.0, 0.0, _rz])
         xmat = np.asarray(d.site_xmat[self.sid], dtype=np.float64).reshape(3, 3)
         vec = (self.dirs_local @ xmat.T)
         n = len(vec)
@@ -69,18 +76,21 @@ class LidarTerrainV2:
                            self.geomgroup, True, 1, geomid, dist, norm,
                            n, self.cutoff)
         hit = dist > 0.0
-        # USER-DIRECTED 2026-08-16: keep ONLY the path capsules (track_segment_*).
-        # Waypoint spheres / height posts (track_waypoint_*/track_height_post_*) and
-        # the robot's own group-2 body geoms ('?' unnamed) create false "rises" in the
-        # elevation map (e.g. STAIR trigger right at a waypoint). The path capsules ARE
-        # the track profile -> "只认路径上的上升". 96-line lidar unchanged.
-        _seg = []
-        for _i in np.where(hit)[0]:
-            _gid = int(geomid[_i])
-            _nm = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, _gid) if _gid >= 0 else None
-            if _nm is not None and _nm.startswith("track_segment_"):
-                _seg.append(_i)
-        hit_idx = _seg
+        # hit filter by mode: group-2 (path capsules) -> keep ONLY track_segment_*
+        # (waypoint spheres / height posts / robot body geoms create false rises);
+        # group-0 (real terrain) -> keep all (robot is group 1/2, already excluded).
+        if int(self.geomgroup[2]) == 1:
+            hit_idx = [_i for _i in np.where(hit)[0]
+                       if (lambda _nm: _nm is not None and _nm.startswith("track_segment_"))(
+                           mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, int(geomid[_i])) if geomid[_i] >= 0 else None)]
+        else:
+            # group-0 real terrain: keep near-horizontal surfaces only (|nz|>=nz_min).
+            # Discards vertical structures (start gate walls, riser faces, overhead)
+            # which otherwise read as false "steps" in the elevation map. Ground /
+            # tread tops (nz~1) are kept -> the discrete stair profile survives.
+            _nz_min = float(os.environ.get("S10_LIDAR_NZ_MIN", "0.6"))
+            _nz = np.abs(norm.reshape(n, 3)[:, 2])
+            hit_idx = [_i for _i in np.where(hit)[0] if _nz[_i] >= _nz_min]
         pts = pos + dist[hit_idx, None] * vec[hit_idx]
         fresh = []
         for i in hit_idx:

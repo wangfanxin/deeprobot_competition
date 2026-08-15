@@ -20,6 +20,12 @@ KP_LEG, KD_LEG = 50.0, 1.0
 KP_WHEEL = 2.0
 TORQ_LEG, TORQ_WHEEL = 48.0, 13.5
 ACTION_SCALE, VEL_SCALE = 0.7, 24.0
+# BUGFIX 2026-08-16 (GOAL #2): training runs the policy at 50Hz with 200Hz sim
+# (s10_env decimation=4). The integrated controller called the policy EVERY 200Hz
+# control step -> gait/action dynamics ran 4x faster than trained -> mid-stair
+# instability. Run the policy every DECIMATION-th call (50Hz), hold the action
+# (zero-order hold) for the tau PD between policy steps.
+DECIMATION = 4
 
 
 class RLStairCtrl:
@@ -42,6 +48,7 @@ class RLStairCtrl:
         self.cmd = np.array([vx, 0.0], dtype=np.float32)
         self.riser_y = np.array([], dtype=np.float64)
         self.riser_top = np.array([], dtype=np.float64)
+        self._pol_step = 0   # 200Hz call counter; policy runs every DECIMATION
 
     def set_risers(self, riser_y, riser_top):
         self.riser_y = np.asarray(riser_y, dtype=np.float64)
@@ -59,11 +66,16 @@ class RLStairCtrl:
         # the nav vx passed in so the policy's learned speed profile is used.
         if cmd is not None:
             pass  # RL self-speed only
-        obs = compute_obs_np(qpos, qvel, self.idx, self.last_action, self.cmd,
-                             self.riser_y, self.riser_top)
-        with torch.no_grad():
-            a = self.policy(torch.as_tensor(obs).unsqueeze(0)).squeeze(0).numpy()
-        a = np.clip(a, -1.0, 1.0)
+        self._pol_step += 1
+        if self._pol_step % DECIMATION == 1:
+            # policy step (50Hz): fresh action from current obs
+            obs = compute_obs_np(qpos, qvel, self.idx, self.last_action, self.cmd,
+                                 self.riser_y, self.riser_top)
+            with torch.no_grad():
+                a = self.policy(torch.as_tensor(obs).unsqueeze(0)).squeeze(0).numpy()
+            self._action = np.clip(a, -1.0, 1.0)
+            self.last_action = self._action.copy()
+        a = self._action
         q = qpos[self.idx["act2jnt"]] - self.default_dof
         qd = qvel[self.idx["act2vel"]]
         tau = np.zeros(int(self._act_dim), dtype=np.float64)
@@ -72,5 +84,4 @@ class RLStairCtrl:
         tau[self.leg_idx] = leg_tau[self.leg_idx]
         wt = np.clip(KP_WHEEL * (a * VEL_SCALE - qd), -TORQ_WHEEL, TORQ_WHEEL)
         tau[self.wheel_idx] = wt[self.wheel_idx]
-        self.last_action = a.copy()
         return tau

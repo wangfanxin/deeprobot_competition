@@ -915,44 +915,71 @@ class AutoNavFollower:
             k0 = int(np.argmin(np.sum((self.path_pts[:, :2] - np.asarray(robot_xy)) ** 2, axis=1)))
             s_cur = float(self.path_cum[k0])
 
-        # USER-DIRECTED 2026-08-16: CELL-based corridor detection on the 96-line lidar
-        # elevation map. The lidar (group-2 path capsules only, markers/robot filtered)
-        # yields SPARSE cells along the path corridor, so per-sample probing fails. Use
-        # every valid map cell: project to the path ONLY within the ahead window
-        # [s_cur, s_cur+lookahead] (global argmin picks the RETURN loop which runs
-        # physically adjacent to the stairs -> wrong arc-length), keep cells within
-        # +-lat_win cross-track, then rise = far cell max - near-cell min > rise_th.
+        # USER-DIRECTED 2026-08-16 (GOAL #1): FAST corridor profile - sample the
+        # elevation map ALONG the path (0.1m), max hmax over a lateral window per
+        # sample. With the raised lidar the map is DENSE (25k cells), so per-sample
+        # probing works (the old sparse-map cell loop cost 87ms/cycle; this is O(1500)
+        # lookups, <5ms). Then SHARP-STEP + CLIMB-gate detection (see below).
         rise_th = float(os.environ.get("S10_ELEV_RISE_TH", str(rise_th)))
-        lat_win = float(os.environ.get("S10_ELEV_LAT_WIN", "1.5"))
-        lo = int(np.searchsorted(self.path_cum, s_cur, side="right") - 1)
-        lo = max(0, lo)
-        hi = int(np.searchsorted(self.path_cum, s_cur + lookahead + 1.5, side="left"))
-        hi = min(hi, len(self.path_pts))
-        if hi - lo < 2:
+        lat_win = float(os.environ.get("S10_ELEV_LAT_WIN", "1.2"))
+        lat_n = max(3, int(round(2 * lat_win / res)) + 1)
+        lats = np.linspace(-lat_win, lat_win, lat_n)
+        prof = []   # (ds, hmax)
+        for ds in np.arange(start, lookahead + 1e-3, 0.1):
+            sp = s_cur + ds
+            if sp > self.path_total - 1e-3:
+                break
+            k = int(np.searchsorted(self.path_cum, sp, side="right") - 1)
+            k = min(max(k, 0), len(self.path_pts) - 2)
+            t = (sp - self.path_cum[k]) / max(self.path_cum[k + 1] - self.path_cum[k], 1e-6)
+            x = self.path_pts[k, 0] + t * (self.path_pts[k + 1, 0] - self.path_pts[k, 0])
+            y = self.path_pts[k, 1] + t * (self.path_pts[k + 1, 1] - self.path_pts[k, 1])
+            dx = self.path_pts[k + 1, 0] - self.path_pts[k, 0]
+            dy = self.path_pts[k + 1, 1] - self.path_pts[k, 1]
+            L = max(np.hypot(dx, dy), 1e-6)
+            nx, ny = -dy / L, dx / L
+            best = None
+            for lx in lats:
+                px = x + nx * lx; py = y + ny * lx
+                i = int(np.floor((py - oy) / res)); j = int(np.floor((px - ox) / res))
+                if 0 <= i < hm.shape[0] and 0 <= j < hm.shape[1] and valid[i, j]:
+                    hv = float(hm[i, j])
+                    if best is None or hv > best:
+                        best = hv
+            if best is not None:
+                prof.append((ds, best))
+        if len(prof) < 3:
             return None
-        pseg = self.path_pts[lo:hi, :2]
-        cseg = self.path_cum[lo:hi]
-        idxs = np.argwhere(np.asarray(valid) > 0)
-        cells = []
-        for i, j in idxs:
-            gx = ox + int(j) * res
-            gy = oy + int(i) * res
-            d2 = (pseg[:, 0] - gx) ** 2 + (pseg[:, 1] - gy) ** 2
-            krel = int(np.argmin(d2))
-            ds = float(cseg[krel]) - s_cur
-            if ds < -0.5 or ds > lookahead + 1.0:
-                continue
-            cross = float(np.sqrt(d2[krel]))
-            if cross > lat_win:
-                continue
-            cells.append((ds, cross, float(hm[i, j])))
-        if not cells:
+        if os.environ.get("S10_ELEV_STEP", "1") == "1":
+            step_th = float(os.environ.get("S10_ELEV_STEP_TH", "0.10"))
+            steps = []          # (ds, jump) sharp upward edges
+            prev_h = prof[0][1]
+            for (ds, h) in prof[1:]:
+                if h - prev_h > step_th and ds >= 0.5:
+                    # confirm sustained (plateau) over next 0.5m
+                    _conf = any(h2 > prev_h + step_th
+                                for (ds2, h2) in prof
+                                if 0.0 < ds2 - ds <= 0.5)
+                    if _conf:
+                        steps.append((ds, h - prev_h))
+                prev_h = max(prev_h, h)   # running max (staircase)
+            # Gate 1: stair SEQUENCE = >= S10_ELEV_MIN_STEPS sharp steps within
+            # S10_ELEV_SEQ_SPAN (single ridges wp5->6 / wp4->5 do NOT decel).
+            # Gate 2: net CLIMB to a high plateau (max_h - base >= S10_ELEV_CLIMB_TH)
+            # so up-down bumps (0.48->0.73->0.48) don't decel; real stairs
+            # (0.48->1.17) do.
+            if len(steps) >= int(os.environ.get("S10_ELEV_MIN_STEPS", "2")):
+                d0 = steps[0][0]
+                span = float(os.environ.get("S10_ELEV_SEQ_SPAN", "3.0"))
+                if all((d - d0) <= span for d, _ in steps):
+                    base = float(min(h for _, h in prof[:20]))   # near field
+                    max_h = float(max(h for _, h in prof))
+                    if max_h - base >= float(os.environ.get("S10_ELEV_CLIMB_TH", "0.4")):
+                        return d0
             return None
-        near_cells = [h for (ds, cr, h) in cells if ds <= 2.0]
-        if not near_cells:
-            return None
-        base = min(near_cells)
-        for (ds, cr, h) in sorted(cells):
+        # S10_ELEV_STEP=0: legacy cumulative-rise mode
+        base = float(min(h for _, h in prof if _ <= 2.0))
+        for (ds, h) in prof:
             if ds >= 0.5 and h > base + rise_th:
                 return float(ds)
         return None

@@ -238,8 +238,16 @@ def main():
             from s10_mpc.lidar_terrain_v2 import LidarTerrainV2
             from rl_stair.deploy.elev_tile import build_local_tile
             _lterr = LidarTerrainV2(m, d)
+            # GOAL #1 perf: the elevation map is an INCREMENTAL world grid, so the
+            # lidar raycast only needs to run at S10_ELEV_HZ (default 4Hz); the tile
+            # build + detection still run every nav cycle on the accumulated map.
+            _elev_last_upd = [-1e9]
             def _build_elev_tile():
-                _lterr.update()
+                _now = time.time()
+                _hz = float(os.environ.get('S10_ELEV_HZ', '4'))
+                if _now - _elev_last_upd[0] >= 1.0 / max(_hz, 1.0):
+                    _lterr.update()
+                    _elev_last_upd[0] = _now
                 return build_local_tile(_lterr, float(body_pos[0]), float(body_pos[1]))
             print('[VMC] 高程图 STAIR 判定启用 (S10_RL_ELEV=1)', flush=True)
         except Exception as _e:
