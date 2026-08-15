@@ -49,6 +49,13 @@ class RLStairCtrl:
         self.riser_y = np.array([], dtype=np.float64)
         self.riser_top = np.array([], dtype=np.float64)
         self._pol_step = 0   # 200Hz call counter; policy runs every DECIMATION
+        # USER-DIRECTED 2026-08-16 (GOAL #2): handoff warm-start. Training resets with
+        # the legs AT default_dof (after the env's stand-PD warmup); the integrated
+        # flow hands off from CRUISE half-squat (hipy=-1.10/knee=1.90) so the first RL
+        # obs leg_err is HUGE (out-of-distribution) -> the policy collapses/misbehaves
+        # on the stairs. Hold the default stance with the stand PD for the first
+        # S10_RL_WARMUP control steps (~1s), then run the policy from a matching pose.
+        self._warm = int(os.environ.get("S10_RL_WARMUP", "200"))
 
     def set_risers(self, riser_y, riser_top):
         self.riser_y = np.asarray(riser_y, dtype=np.float64)
@@ -67,6 +74,15 @@ class RLStairCtrl:
         if cmd is not None:
             pass  # RL self-speed only
         self._pol_step += 1
+        if self._pol_step <= self._warm:
+            # warm-start: hold default_dof (stand PD), wheels free (keep momentum on
+            # the flat approach). Same torque law as the training warmup.
+            q = qpos[self.idx["act2jnt"]] - self.default_dof
+            qd = qvel[self.idx["act2vel"]]
+            tau = np.zeros(int(self._act_dim), dtype=np.float64)
+            lt = np.clip(KP_LEG * (0.0 - q) - KD_LEG * qd, -TORQ_LEG, TORQ_LEG)
+            tau[self.leg_idx] = lt[self.leg_idx]
+            return tau
         if self._pol_step % DECIMATION == 1:
             # policy step (50Hz): fresh action from current obs
             obs = compute_obs_np(qpos, qvel, self.idx, self.last_action, self.cmd,
