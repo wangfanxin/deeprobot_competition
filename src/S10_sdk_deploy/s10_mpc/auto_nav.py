@@ -872,30 +872,57 @@ class AutoNavFollower:
                 return True
         return False
 
-    def _elev_stair_ridge_ahead(self, robot_xy, yaw, local_map, lookahead=4.0, start=0.5):
-        """Elevation-map lookahead: return distance (m) to the nearest step_flag
-        (discrete stair/ridge edge) ahead along heading, or None. Deployable
-        (local elevation map only; no god-view). start=0.0 for exit checks so a
-        riser still at the robot counts as NOT yet crossed."""
+    def _elev_stair_ridge_ahead(self, robot_xy, yaw, local_map, lookahead=4.0, start=0.5,
+                                 rise_th=0.30):
+        """Elevation-map lookahead: return distance (m) to the stair/ridge RISE ahead.
+
+        The competition's elevation source (lidar -> track path profile, group-2 capsules)
+        rises GRADUALLY (capsule radius), so a per-cell step_flag misses it. Detect the
+        HEIGHT RISE instead: hmax(far) - hmax(near baseline) > rise_th (0.3m) => stairs.
+        Scans from `start` (0.5 entry / 0.0 exit). Returns the distance where the rise
+        first exceeds baseline+rise_th, or None. Deployable (local elevation map only)."""
         if local_map is None or yaw is None:
             return None
-        stepf = (local_map.get("features") or {}).get("step_flag")
+        hm = local_map.get("heightmap")
         valid = local_map.get("valid")
-        if stepf is None or valid is None:
+        if hm is None or valid is None:
             return None
         ox = float(local_map["origin"][0]); oy = float(local_map["origin"][1])
         res = float(local_map["resolution"])
         fwd = np.array([np.cos(yaw), np.sin(yaw)])
+        # lateral search window: the path lane can be offset from the robot's heading
+        # (stairs at x~-13.3 vs robot x~-15); scan x +- lat_win around the ray.
+        lat_win = float(os.environ.get("S10_ELEV_LAT_WIN", "1.5"))
+        lat_n = max(3, int(round(2 * lat_win / res)) + 1)
+        lats = np.linspace(-lat_win, lat_win, lat_n)
+
+        def h_at(d):
+            p0 = np.asarray(robot_xy) + fwd * d
+            best = None
+            for lx in lats:
+                p = p0 + np.array([-fwd[1], fwd[0]]) * lx   # lateral offset
+                i = int(np.floor((p[1] - oy) / res)); j = int(np.floor((p[0] - ox) / res))
+                if 0 <= i < hm.shape[0] and 0 <= j < hm.shape[1] and valid[i, j]:
+                    hv = float(hm[i, j])
+                    if best is None or hv > best:
+                        best = hv
+            return best
+        # robust baseline = MIN over the first 1.0m (the path capsule near the robot can
+        # be high, then dip before the stairs); detect any far point > baseline+rise_th.
+        _ds = list(np.arange(start, min(start + 2.0, lookahead) + 1e-3, res))
+        _near = [h_at(d) for d in _ds]
+        _near = [x for x in _near if x is not None]
+        if not _near:
+            return None
+        base = min(_near)
         for d in np.arange(start, lookahead + 1e-3, res):
-            p = np.asarray(robot_xy) + fwd * d
-            i = int(np.floor((p[1] - oy) / res)); j = int(np.floor((p[0] - ox) / res))
-            if (0 <= i < stepf.shape[0] and 0 <= j < stepf.shape[1]
-                    and valid[i, j] and float(stepf[i, j]) > 0.3):
+            hv = h_at(d)
+            if hv is not None and (hv - base) > rise_th:
                 return float(d)
         return None
 
     def _elev_region_passed(self, robot_xy, yaw, local_map):
-        """Elevation-map exit: no stair/ridge edge within [0.0, 3.0]m ahead -> crossed."""
+        """Elevation-map exit: no stair/ridge RISE within [0.0, 3.0]m ahead -> crossed."""
         _ahead = self._elev_stair_ridge_ahead(robot_xy, yaw, local_map,
                                               lookahead=3.0, start=0.0)
         return _ahead is None

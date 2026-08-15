@@ -1,3 +1,4 @@
+import os
 import numpy as np
 
 
@@ -41,7 +42,16 @@ class LidarTerrainV2:
                              float(np.sin(ph))])
         self.dirs_local = np.asarray(dirs, dtype=np.float64)
         self.geomgroup = np.zeros((mujoco.mjNGROUP,), dtype=np.ubyte)
-        self.geomgroup[0] = 1
+        # BUGFIX 2026-08-16 01:15 (USER): group-0 terrain MESH geoms are not ray-hittable
+        # in mujoco 3.11 (rays pass through), and group-1 robot geoms self-occlude.
+        # The competition track's VISIBLE path (track_overlay, group 2) carries the exact
+        # stair height profile (wp6 0.60 -> wp7 1.165). Use group 2 only -> the elevation
+        # map reflects the track profile (stairs ahead) without robot self-occlusion.
+        # Controlled by S10_LIDAR_PATH_ONLY (default on for RL-stair deployment).
+        if os.environ.get("S10_LIDAR_PATH_ONLY", "1") == "1":
+            self.geomgroup[2] = 1
+        else:
+            self.geomgroup[0] = 1
 
     def update(self):
         import mujoco
