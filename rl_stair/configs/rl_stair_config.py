@@ -17,6 +17,9 @@ class Stage:
     max_iters: int = 3000
 
 COMPETITION_RISERS = [0.061, 0.125, 0.125, 0.125, 0.125, 0.125]
+# T5/T6 mixed uses a SHORTER staircase (0.061+0.125x3): full 6-step sequence + 2 ridges
+# destabilizes the policy after the 2nd ridge (T5 bounced 12+ times, 11:20). 4-step keeps
+# the mixed-sequence skill; full 6-step mastered in T3.
 
 def _base_cfg(num_envs=1024):
     c = S10RLCfg(num_envs=num_envs, seed=0)
@@ -78,10 +81,9 @@ def make_stages(num_envs=1024):
         c = _base_cfg(num_envs); c.terrain = ridge(0.15, y0=1.5); return c
     def c5():
         c = _base_cfg(num_envs)
+        _t5_stairs = [0.061, 0.125, 0.125, 0.125]   # shorter sequence for T5/T6 (11:20)
         c.terrain = mixed([("ridge", dict(height=0.12, y0=1.5)),
-                           ("stairs", dict(risers=COMPETITION_RISERS, y0=4.5)),
-                           # 2nd ridge eased 10:20: 0.15->0.12 + y0 12->13 (stairs platform ends
-                           # ~11.3; 0.7m gap+15cm ridge too tight, robot fell on flat at y~14)
+                           ("stairs", dict(risers=_t5_stairs, y0=4.5)),
                            ("ridge", dict(height=0.12, y0=13.0))])
         c.max_ep_len = 1000
         # goal = past last ridge (13.2) + 1.8m, NOT y_cursor=18 (robot destabilizes ~14.6
@@ -90,10 +92,9 @@ def make_stages(num_envs=1024):
         return c
     def c6():
         c = _base_cfg(num_envs)
+        _t5_stairs = [0.061, 0.125, 0.125, 0.125]   # shorter sequence for T5/T6 (11:20)
         c.terrain = mixed([("ridge", dict(height=0.12, y0=1.5)),
-                           ("stairs", dict(risers=COMPETITION_RISERS, y0=4.5)),
-                           # 2nd ridge eased 10:20: 0.15->0.12 + y0 12->13 (stairs platform ends
-                           # ~11.3; 0.7m gap+15cm ridge too tight, robot fell on flat at y~14)
+                           ("stairs", dict(risers=_t5_stairs, y0=4.5)),
                            ("ridge", dict(height=0.12, y0=13.0))])
         c.max_ep_len = 1000
         c.yaw_lo, c.yaw_hi = -1.0, 1.0   # handoff worst-case approach angle
