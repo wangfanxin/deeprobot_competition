@@ -295,7 +295,7 @@ def main():
     # body reaches cruise height; fixed-joint PD left hipy forward (-0.07
     # vs target -1.10) and body stuck at 0.24. Wheels locked (cmd vx=0).
     t = 0.0
-    while t < float(os.environ.get('S10_STAND_TIME', '2.0')):
+    while t < 0.5:   # v890 原始参数，不修改
         qpos_s = np.asarray(d.qpos, dtype=np.float64)
         qvel_s = np.asarray(d.qvel, dtype=np.float64)
         wheel_xyz_s = np.asarray([d.xpos[WHEEL_BODY[i]] for i in range(4)])
