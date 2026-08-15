@@ -25,18 +25,20 @@ ACTION_SCALE, VEL_SCALE = 0.7, 24.0
 class RLStairCtrl:
     def __init__(self, m, policy_path=_DEFAULT_POLICY, vx=1.5):
         from rl_stair.deploy.obs_np import build_indices
-        from rl_stair.ppo import PPO, PPOCfg
         self.idx = build_indices(m)
         self._names = [m.joint(m.actuator(j).trnid[0]).name for j in range(m.nu)]
         self.leg_idx = np.array([j for j, nm in enumerate(self._names) if "wheel" not in nm])
         self.wheel_idx = np.array([j for j, nm in enumerate(self._names) if "wheel" in nm])
         self.default_dof = self.idx["default_dof"]
-        self.ppo = PPO(55, 72, 16, PPOCfg(num_envs=1), "cpu")
         if not os.path.exists(policy_path):
             raise FileNotFoundError("policy not found: " + policy_path)
-        self.ppo.load(policy_path)
-        self.ppo.actor.eval()
-        self.last_action = np.zeros(m.nu, dtype=np.float32)
+        # BUGFIX 2026-08-15 23:35: policy.pt is a JIT TorchScript archive (export.py
+        # torch.jit.save); torch.load(weights_only=True) rejects it. Load the JIT model
+        # directly and call forward() = tanh(MLP(obs)) -> action in [-1,1].
+        self.policy = torch.jit.load(policy_path, map_location="cpu")
+        self.policy.eval()
+        self._act_dim = self.policy(torch.zeros(1, 55)).shape[-1]
+        self.last_action = np.zeros(int(self._act_dim), dtype=np.float32)
         self.cmd = np.array([vx, 0.0], dtype=np.float32)
         self.riser_y = np.array([], dtype=np.float64)
         self.riser_top = np.array([], dtype=np.float64)
@@ -57,13 +59,11 @@ class RLStairCtrl:
         obs = compute_obs_np(qpos, qvel, self.idx, self.last_action, self.cmd,
                              self.riser_y, self.riser_top)
         with torch.no_grad():
-            a = self.ppo.actor.act(
-                torch.as_tensor(obs).unsqueeze(0), noiseless=True).squeeze(0).numpy()
+            a = self.policy(torch.as_tensor(obs).unsqueeze(0)).squeeze(0).numpy()
         a = np.clip(a, -1.0, 1.0)
         q = qpos[self.idx["act2jnt"]] - self.default_dof
         qd = qvel[self.idx["act2vel"]]
-        tau = np.zeros(self.ppo.action_size if hasattr(self.ppo, "action_size") else 16,
-                       dtype=np.float64)
+        tau = np.zeros(int(self._act_dim), dtype=np.float64)
         leg_tau = np.clip(KP_LEG * (a * ACTION_SCALE - q) - KD_LEG * qd,
                           -TORQ_LEG, TORQ_LEG)
         tau[self.leg_idx] = leg_tau[self.leg_idx]
