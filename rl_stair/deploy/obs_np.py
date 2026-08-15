@@ -18,7 +18,7 @@ import numpy as np
 
 TARGET_HEADING = 1.5708   # pi/2: task axis +y (track heading at stair section); deployment should pass track heading
 
-FRONT_REAR_OFFSET = 0.210   # half wheelbase (m) under S10 cruise half-squat stance (measured; go2w stance gave 0.228)
+FRONT_REAR_OFFSET = 0.246   # half wheelbase (m) under S10 tall stair stance (settled, measured)
 
 
 def build_indices(mj_model):
@@ -37,10 +37,10 @@ def build_indices(mj_model):
     # default_dof must match s10_env.py EXACTLY = S10 cruise half-squat pose_target
     # (vmc_legs.py:841-846, S10_CAR_SQUAT=1). NOT model qpos0 (all-zeros straight legs),
     # NOT go2w stance. Actuator order verified == training order.
-    default_dof = np.array([-0.05, -1.10, 1.90, 0.0,
-                             0.05, -1.10, 1.90, 0.0,
-                            -0.05,  1.10, -1.90, 0.0,
-                             0.05,  1.10, -1.90, 0.0], dtype=np.float64)
+    default_dof = np.array([-0.05, -0.60, 1.20, 0.0,
+                             0.05, -0.60, 1.20, 0.0,
+                            -0.05,  0.60, -1.20, 0.0,
+                             0.05,  0.60, -1.20, 0.0], dtype=np.float64)
     return {"act2jnt": act2jnt, "act2vel": act2vel, "leg_idx": leg_idx,
             "default_dof": default_dof}
 
@@ -70,8 +70,9 @@ def compute_obs_np(qpos, qvel, idx, last_action, cmd, riser_y, riser_top):
     if len(riser_y) > 0:
         base_y = float(qpos[1])
         nr = len(riser_y)
+        sy = np.sin(yaw)   # yaw-rotate axle offsets (match env _terrain_ctx)
         for k, off in enumerate((FRONT_REAR_OFFSET, -FRONT_REAR_OFFSET)):
-            ay = base_y + off
+            ay = base_y + off * sy
             idx_p = int(np.sum(riser_y < ay))
             nxt = min(idx_p, nr - 1)
             d_next = riser_y[nxt] - ay

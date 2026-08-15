@@ -197,8 +197,13 @@ class S10RLEnv:
         if len(ry) == 0:
             return ctx
         nr = ry.shape[0]
-        for k, off in enumerate((0.246, -0.246)):   # tall-stance settled half-wheelbase (front/rear wheel x)
-            ay = base_y + off
+        # yaw-rotate front/rear axle offsets (approach-angle randomization 09:55): wheels at
+        # body-x +-0.246 -> world-y offset = 0.246*sin(yaw). At yaw=pi/2 -> +-0.246.
+        _qw, _qx, _qy, _qz = data.qpos[:, 3], data.qpos[:, 4], data.qpos[:, 5], data.qpos[:, 6]
+        _yaw = jnp.arctan2(2*(_qw*_qz + _qx*_qy), 1 - 2*(_qy*_qy + _qz*_qz))
+        _s = jnp.sin(_yaw)
+        for k, off in enumerate((0.246, -0.246)):   # tall-stance half-wheelbase
+            ay = base_y + off * _s
             idx = jnp.sum(ry[None, :] < ay[:, None], axis=-1)   # count risers passed
             nxt = jnp.minimum(idx, nr - 1)
             d_next = ry[nxt] - ay

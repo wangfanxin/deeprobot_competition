@@ -21,6 +21,9 @@ COMPETITION_RISERS = [0.061, 0.125, 0.125, 0.125, 0.125, 0.125]
 def _base_cfg(num_envs=1024):
     c = S10RLCfg(num_envs=num_envs, seed=0)
     c.max_ep_len = 500
+    # approach-angle randomization 09:55 (user): +-0.7rad (~+-40deg) around track heading;
+    # T0 keeps +-0.1 (gentle warm-up). terrain_ctx now yaw-rotates offsets to match.
+    c.yaw_lo, c.yaw_hi = -0.7, 0.7
     return c
 
 def make_stages(num_envs=1024):
@@ -87,6 +90,7 @@ def make_stages(num_envs=1024):
                            ("stairs", dict(risers=COMPETITION_RISERS, y0=4.5)),
                            ("ridge", dict(height=0.15, y0=12.0))])
         c.max_ep_len = 1000
+        c.yaw_lo, c.yaw_hi = -1.0, 1.0   # handoff worst-case approach angle
         return c
     return [
         Stage("T0_flat", c0, advance_at=0.5, min_iters=30),
