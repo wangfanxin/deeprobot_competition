@@ -78,6 +78,7 @@ class AutoNavFollower:
         # decel_request [0,1]: cruise_vmc reads it to ramp vx toward stair_vx when
         # a stair/ridge is detected AHEAD on the elevation map.
         self.decel_request = 0.0
+        self._elev_last_steps = None   # GOAL #3 raw step edges (perception turn+ridge assist)
         # 全局平滑路径（2026-08-06 用户方向 1.1/1.2）：航点折线 → 圆角
         # 折线（弯道圆弧过渡）→ 密集弧长参数化路径 + 曲率/速度剖面。
         # dial-mpc 只做 locomotion，导航层（本类）负责"平滑全局路径 +
@@ -813,8 +814,17 @@ class AutoNavFollower:
         # switch). The 96-line lidar map is sparse (proven), so perception alone can
         # drop the signal 1-2m before the steps; this ramp keeps decel on through the
         # approach (y~33 -> ~38), max() with the perception term.
+        # NOTE 2026-08-16: perception turn+ridge DECEL was tried (GOAL #3) and
+        # REVERTED -- the wp4->5 hairpin+ridge needs MOMENTUM (v890 design), slowing
+        # made the MPPI under-turn and drive off the path. wp4->5 remains a v890
+        # boundary needing dedicated yaw-control stability work (om -3.51 overshoot).
         _seg_i = next_idx - 1
+        # BUGFIX 2026-08-16: stair_zone (z-rise>0.25) also flags the wp0->1 START RAMP
+        # (z 0->0.475) -> known-zone decel slowed the launch to 2.5 m/s. Gate with
+        # _seg_in_stair_band (riser-corridor check): only REAL stair bands (wp6->7)
+        # decel; smooth ramps stay fast.
         if (next_idx >= 1 and _seg_i < len(self.stair_zone) and self.stair_zone[_seg_i]
+                and self._seg_in_stair_band(_seg_i)
                 and next_idx < len(self.wp)):
             _sa = self.wp[_seg_i, :2]; _sb = self.wp[next_idx, :2]
             _dv = _sb - _sa
@@ -963,6 +973,7 @@ class AutoNavFollower:
                     if _conf:
                         steps.append((ds, h - prev_h))
                 prev_h = max(prev_h, h)   # running max (staircase)
+            self._elev_last_steps = [(float(d), float(j)) for d, j in steps]
             # Gate 1: stair SEQUENCE = >= S10_ELEV_MIN_STEPS sharp steps within
             # S10_ELEV_SEQ_SPAN (single ridges wp5->6 / wp4->5 do NOT decel).
             # Gate 2: net CLIMB to a high plateau (max_h - base >= S10_ELEV_CLIMB_TH)

@@ -426,12 +426,17 @@ def main():
                 robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]))
             # USER acceptance: decelerate when a stair/ridge is detected AHEAD on the
             # elevation map (AutoNavFollower.decel_request, ramped by proximity).
+            v_ref = fol._last_vlim
             if fol.decel_request > 0.0:
                 # USER-DIRECTED 2026-08-16: don't slow too much - perception decel
                 # target 2.5 m/s (was 1.2), only triggered by a rise ON the path.
                 _dv = float(os.environ.get('S10_ELEV_DECEL_VX', '2.5'))
                 vx = vx * (1.0 - fol.decel_request) + _dv * fol.decel_request
-            v_ref = fol._last_vlim
+                # BUGFIX 2026-08-16 (GOAL #3): the MPPI speed target must also follow
+                # the perception decel, otherwise it keeps planning at the raw vlim and
+                # the decel never reaches the wheels. Adjust the vlim TARGET (v_ref),
+                # NOT the slew-limited vx (that would prevent acceleration at start).
+                v_ref = v_ref * (1.0 - fol.decel_request) + _dv * fol.decel_request
             # 路径参考轨迹（弧长采样：当前位置起 8m，步长 0.5m）
             _ref = []
             _s0 = float(fol._s_cur)
