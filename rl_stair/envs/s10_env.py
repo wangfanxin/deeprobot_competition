@@ -66,6 +66,13 @@ class S10RLCfg:
     r_goal = 10.0
     r_termination = -0.8
     r_speed = 2.0
+    # Domain randomization (Phase 1, 95% plan): per-episode PD/torque scales + push.
+    dr_kp_leg_lo, dr_kp_leg_hi = 0.8, 1.2
+    dr_kd_leg_lo, dr_kd_leg_hi = 0.8, 1.2
+    dr_kp_wheel_lo, dr_kp_wheel_hi = 0.8, 1.2
+    dr_tclip_lo, dr_tclip_hi = 0.8, 1.2
+    push_interval_steps: int = 750
+    push_vel: float = 1.0
     r_orientation = -2.0
     r_height = -0.5
     r_torque = -0.0001
@@ -174,17 +181,22 @@ class S10RLEnv:
         return np.array(d.qpos)
 
     # -------------------------------------------------------------- core
-    def _pd(self, data, action):
+    def _pd(self, data, action, dr=None):
         q = data.qpos[:, self.act2jnt] - self.default_dof
         qd = data.qvel[:, self.act2vel]
         tau = jnp.zeros((self.n, 16))
         q_target = action * self.cfg.action_scale
-        leg_tau = self.cfg.kp_leg * (q_target - q) - self.cfg.kd_leg * qd
-        leg_tau = jnp.clip(leg_tau, -self.cfg.torque_clip_leg, self.cfg.torque_clip_leg)
+        kp_l = (self.cfg.kp_leg * dr["kp_leg"][:, None]) if dr is not None else self.cfg.kp_leg
+        kd_l = (self.cfg.kd_leg * dr["kd_leg"][:, None]) if dr is not None else self.cfg.kd_leg
+        tl = (self.cfg.torque_clip_leg * dr["tclip_leg"][:, None]) if dr is not None else self.cfg.torque_clip_leg
+        leg_tau = kp_l * (q_target - q) - kd_l * qd
+        leg_tau = jnp.clip(leg_tau, -tl, tl)
         tau = tau.at[:, self.leg_idx].set(leg_tau[:, self.leg_idx])
         vel_ref = action * self.cfg.vel_scale
-        w_tau = self.cfg.kp_wheel * (vel_ref - qd)
-        w_tau = jnp.clip(w_tau, -self.cfg.torque_clip_wheel, self.cfg.torque_clip_wheel)
+        kp_w = (self.cfg.kp_wheel * dr["kp_wheel"][:, None]) if dr is not None else self.cfg.kp_wheel
+        tw = (self.cfg.torque_clip_wheel * dr["tclip_wheel"][:, None]) if dr is not None else self.cfg.torque_clip_wheel
+        w_tau = kp_w * (vel_ref - qd)
+        w_tau = jnp.clip(w_tau, -tw, tw)
         tau = tau.at[:, self.wheel_idx].set(w_tau[:, self.wheel_idx])
         return tau
 
@@ -329,9 +341,19 @@ class S10RLEnv:
                          jnp.zeros(n)], axis=-1)
         data = self._empty_data.replace(qpos=jax.lax.stop_gradient(qpos),
                                         qvel=jax.lax.stop_gradient(qvel))
+        rng, k3 = jax.random.split(rng)
+        dr = {
+            "kp_leg": jax.random.uniform(jax.random.fold_in(k3, 0), (n,), minval=self.cfg.dr_kp_leg_lo, maxval=self.cfg.dr_kp_leg_hi),
+            "kd_leg": jax.random.uniform(jax.random.fold_in(k3, 1), (n,), minval=self.cfg.dr_kd_leg_lo, maxval=self.cfg.dr_kd_leg_hi),
+            "kp_wheel": jax.random.uniform(jax.random.fold_in(k3, 2), (n,), minval=self.cfg.dr_kp_wheel_lo, maxval=self.cfg.dr_kp_wheel_hi),
+            "tclip_leg": jax.random.uniform(jax.random.fold_in(k3, 3), (n,), minval=self.cfg.dr_tclip_lo, maxval=self.cfg.dr_tclip_hi),
+            "tclip_wheel": jax.random.uniform(jax.random.fold_in(k3, 4), (n,), minval=self.cfg.dr_tclip_lo, maxval=self.cfg.dr_tclip_hi),
+            "push_angle": jax.random.uniform(jax.random.fold_in(k3, 5), (n,), minval=0.0, maxval=2.0*np.pi),
+        }
         state = {
             "data": data,
             "rng": rng,
+            "dr": dr,
             "ep_len": jnp.zeros(n, dtype=jnp.int32),
             "last_action": jnp.zeros((n, 16)),
             "cmd": cmd,
@@ -346,11 +368,17 @@ class S10RLEnv:
 
     def step(self, state, action):
         a = jnp.clip(action, -1.0, 1.0)
-        tau = self._pd(state["data"], a)
+        tau = self._pd(state["data"], a, state.get("dr"))
         data = state["data"]
         def _one(dd, _):
             return jax.vmap(lambda x: mjx.step(self.model, x))(dd.replace(ctrl=tau)), None
         data = jax.lax.scan(_one, data, None, self.cfg.decimation)[0]
+        # DR push disturbance (legged_gym _push_robots)
+        if self.cfg.push_vel > 0.0:
+            _pm = (state["ep_len"] % self.cfg.push_interval_steps) == 0
+            _pa = state["dr"]["push_angle"] if "dr" in state else jnp.zeros(self.n)
+            _dir = jnp.stack([jnp.cos(_pa), jnp.sin(_pa)], axis=-1) * self.cfg.push_vel
+            data = data.replace(qvel=data.qvel.at[:, 0:2].add(_pm[:, None].astype(jnp.float32) * _dir))
 
         base_y = data.qpos[:, 1]
         base_z = data.qpos[:, 2]
@@ -375,6 +403,7 @@ class S10RLEnv:
         new_state = {
             "data": data,
             "rng": state["rng"],
+            "dr": state.get("dr"),
             "ep_len": ep_len,
             "last_action": a,
             "cmd": state["cmd"],
@@ -444,9 +473,19 @@ class S10RLEnv:
                          jnp.zeros(n)], axis=-1)
         data = self._empty_data.replace(qpos=jax.lax.stop_gradient(qpos),
                                         qvel=jax.lax.stop_gradient(qvel))
+        rng, k3 = jax.random.split(rng)
+        dr = {
+            "kp_leg": jax.random.uniform(jax.random.fold_in(k3, 0), (n,), minval=self.cfg.dr_kp_leg_lo, maxval=self.cfg.dr_kp_leg_hi),
+            "kd_leg": jax.random.uniform(jax.random.fold_in(k3, 1), (n,), minval=self.cfg.dr_kd_leg_lo, maxval=self.cfg.dr_kd_leg_hi),
+            "kp_wheel": jax.random.uniform(jax.random.fold_in(k3, 2), (n,), minval=self.cfg.dr_kp_wheel_lo, maxval=self.cfg.dr_kp_wheel_hi),
+            "tclip_leg": jax.random.uniform(jax.random.fold_in(k3, 3), (n,), minval=self.cfg.dr_tclip_lo, maxval=self.cfg.dr_tclip_hi),
+            "tclip_wheel": jax.random.uniform(jax.random.fold_in(k3, 4), (n,), minval=self.cfg.dr_tclip_lo, maxval=self.cfg.dr_tclip_hi),
+            "push_angle": jax.random.uniform(jax.random.fold_in(k3, 5), (n,), minval=0.0, maxval=2.0*np.pi),
+        }
         return {
             "data": data,
             "rng": rng,
+            "dr": dr,
             "ep_len": jnp.zeros(n, dtype=jnp.int32),
             "last_action": jnp.zeros((n, 16)),
             "cmd": cmd,

@@ -111,10 +111,10 @@ def main():
 
     build_env(stages[min(stage_idx, len(stages)-1)])   # resume continues at restored stage, not T0
     obs_noise = torch.zeros(env.obs_dim, device=device)
-    obs_noise[0:3] = 0.05
-    obs_noise[3:6] = 0.01
-    obs_noise[9:21] = 0.01
-    obs_noise[21:33] = 0.05
+    obs_noise[0:3] = 0.10   # DR: angvel noise doubled (95% plan)
+    obs_noise[3:6] = 0.02
+    obs_noise[9:21] = 0.02
+    obs_noise[21:33] = 0.10
 
     tot_env_int = 0
     it = 0
