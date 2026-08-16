@@ -496,7 +496,6 @@ def main():
     t_start = None
     traj = []
     prev_u = np.zeros(2)
-    _tk_climb = False
     dbg = 0
     last_log = 0.0
     _last_dbg_t = -9.0
@@ -620,8 +619,7 @@ def main():
                     _e -= body_quat_to_yaw()
                     _e = float(np.arctan2(np.sin(_e), np.cos(_e)))
                     _kh = float(os.environ.get('S10_STEP_HOMING_K', '2.0'))
-                    _omax = float(os.environ.get('S10_STEP_HOMING_OM_MAX', '1.0'))
-                    _hom = float(np.clip(_kh * _e, -_omax, _omax))
+                    _hom = float(np.clip(_kh * _e, -2.0, 2.0))
                     _w = float(np.clip((_hd - _home[0]) / max(_hd * 0.5, 1e-3), 0.0, 1.0))
                     vyaw = (1.0 - _w) * vyaw + _w * _hom
             # W45 LATERAL PULL-BACK (USER 2026-08-16): after crossing the wp4->5 step
@@ -919,7 +917,6 @@ def main():
             _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
             _omcap = min(_omcap, _latmax / max(abs(vx_c), 0.5))
             om_c = float(np.clip(om_c, -_omcap, _omcap))
-            _tk_climb = False
             # STEP HOMING override (USER 2026-08-16, part of the takeover): directly steer
             # the robot toward the next known step's path-crossing point in the last D m,
             # OVERRIDING the MPPI/nav output (a nav-target-only homing is diluted by the
@@ -939,37 +936,13 @@ def main():
                     _e -= body_quat_to_yaw()
                     _e = float(np.arctan2(np.sin(_e), np.cos(_e)))
                     _kh = float(os.environ.get('S10_STEP_HOMING_K', '2.0'))
-                    _omax = float(os.environ.get('S10_STEP_HOMING_OM_MAX', '1.0'))
-                    _hom = float(np.clip(_kh * _e, -_omax, _omax))
+                    _hom = float(np.clip(_kh * _e, -2.0, 2.0))
                     _w = float(np.clip((_hd - _home[0]) / max(_hd * 0.5, 1e-3), 0.0, 1.0))
                     _hs = float(os.environ.get('S10_STEP_HOMING_SIGN', '1.0'))
                     if _hs < 0.0:
                         _hom = -_hom
-                    # TK speed blend: gradually reduce approach speed as the step gets
-                    # close, instead of a late hard cap (prevents both stall and tip-over
-                    # on the wp4->5 hairpin+step composite).
-                    _v_near = float(os.environ.get('S10_STEP_HOMING_VX', '2.0'))
-                    _v_far = float(os.environ.get('S10_STEP_HOMING_VX_FAR', '3.0'))
-                    _vx_tk = _v_near + (_v_far - _v_near) * (1.0 - _w)
-                    # Alignment gate: if the heading error to the next step is still
-                    # large, hold a very low approach speed so the robot does not hit
-                    # the step with lateral velocity (wp4->5 tip-over mode).
-                    _edb = float(os.environ.get('S10_STEP_HOMING_YAW_DB', '0.12'))
-                    _valign = float(os.environ.get('S10_STEP_HOMING_ALIGN_VX', '1.0'))
-                    _climb_d = float(os.environ.get('S10_STEP_HOMING_CLIMB_D', '0.8'))
-                    if _home[0] < _climb_d:
-                        # CLIMB phase: close enough -> stop steering, push forward only.
-                        # Residual heading error is accepted because the step is already
-                        # close and yaw fighting was draining forward thrust.
-                        _tk_climb = True
-                        om_c = 0.0
-                        vx_c = min(vx_c, _v_near)
-                    else:
-                        om_c = (1.0 - _w) * om_c + _w * _hom
-                        if abs(_e) > _edb:
-                            vx_c = min(vx_c, _valign)
-                        else:
-                            vx_c = min(vx_c, _vx_tk)
+                    om_c = (1.0 - _w) * om_c + _w * _hom
+                    vx_c = min(vx_c, float(os.environ.get('S10_STEP_HOMING_VX', '1.5')))
             # v599: 楼梯区导航 omega 置零——楼梯是直道且横向走廊宽，导航
             # 的 yaw 振荡只会让后轮左右对转空耗推力（tauW ±13.5 对转实测）；
             # 航向保持交给 WBC 反馈（om_f=0 时差速≈0，四轮统一向前推）。
@@ -1533,7 +1506,7 @@ def main():
             # v449: 软抬轮技能划分——台阶/陡升段（step_zone/stair_zone，
             # 永久升面需保牵引爬升）用 S10_VMC_LIFT_F_SCALE_STEP；巡航平脊
             # 段（z 不升，动量冲过）用默认 1.0 硬抬轮。地形属性=技能切换。
-            _lfs = float(os.environ.get('S10_VMC_LIFT_F_SCALE', '1.0'))
+            _lfs = 1.0
             _lsw = float(os.environ.get('S10_VMC_LIFT_SWING', '0.66'))
             if (next_idx >= 2 and next_idx - 1 < len(fol.step_zone)
                     and fol.step_zone[next_idx - 1]):
@@ -1745,19 +1718,11 @@ def main():
                     _ridge_d = float(min(_rd))
             except Exception:
                 pass
-            # USER-DIRECTED 2026-08-17: when the FRONT wheels are lifted for a step,
-            # add a small forward-command boost so the rear wheels keep pushing instead
-            # of the body stalling at the riser (wp4->5 mode). Bounded, only while the
-            # front lift flag is active.
-            _fl_boost = float(np.max(step_lift[0:2]))
-            if _fl_boost > 0.3:
-                vx_c += float(os.environ.get('S10_LIFT_VX_BOOST', '0.0'))
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
-                      yaw_scale=(0.0 if _tk_climb else
-                          (1.0 - float(np.clip(
-                              float(np.max(step_lift)) * 0.5, 0.0, 0.55))
-                           if _in_stairzone_now else 1.0 - _lift_act)),
+                      yaw_scale=(1.0 - float(np.clip(
+                          float(np.max(step_lift)) * 0.5, 0.0, 0.55))
+                          if _in_stairzone_now else 1.0 - _lift_act),
                       ridge_dist=_ridge_d,
                       hop=hop,
                       step_lift=step_lift,
