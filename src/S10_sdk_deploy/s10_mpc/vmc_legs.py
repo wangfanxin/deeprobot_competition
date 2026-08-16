@@ -847,6 +847,9 @@ class CarVMC:
         self.wheel_d = float(os.environ.get("S10_VMC_WHEEL_D", str(wheel_d)))
         self.yaw_k_wheel = float(os.environ.get(
             "S10_VMC_YAW_K_WHEEL", "60.0"))
+        # yaw friction feed-forward (was fixed 1.0); made an instance attr so the
+        # weak-grip platform can temporarily raise it to overcome the turn deadband.
+        self.yaw_ff = 1.0
         # v234: 巡航半蹲（轮足姿态总结）——knee 2.30->1.90 降质心 ~6cm，
         # 减侧翻矩、保四轮法向均载、弱化微起伏传递。S10_CAR_SQUAT=0 回站立
         if os.environ.get("S10_CAR_SQUAT", "1") == "1":
@@ -1207,7 +1210,7 @@ class CarVMC:
             # at fixed 1.0 (was enabled=1.0 in test script; deleting it broke
             # yaw response: startup spin + wp3->4 line loss). Fixed value,
             # no longer tunable. _vspd kept for slew speed scaling.
-            _kff = 1.0
+            _kff = float(getattr(self, 'yaw_ff', 1.0))
             if not hasattr(self, "_om_ff_lp"):
                 self._om_ff_lp = 0.0
             self._om_ff_lp += (self._om_f - self._om_ff_lp) * min(1.0, dt / 0.15)
