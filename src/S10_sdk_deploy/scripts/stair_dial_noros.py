@@ -327,6 +327,10 @@ def main():
                 if rl_ctrl is not None and fol.mode == 'STAIR':
                     if not _rl_was_stair:
                         _rl_trans_t0 = float(t)
+                        if os.environ.get('S10_DIAL_RL_DEBUG', '0') == '1':
+                            _rs, _ts = fol._stair_tables()
+                            print('[RLRISERS]', [round(float(v),2) for v in _rs],
+                                  [round(float(v),2) for v in _ts], flush=True)
                     _rs, _ts = fol._stair_tables()
                     rl_ctrl.set_risers(np.asarray(_rs), np.asarray(_ts))
                 _rl_was_stair = (fol.mode == 'STAIR')
