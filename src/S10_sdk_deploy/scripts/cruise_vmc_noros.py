@@ -249,7 +249,8 @@ def main():
                 if _now - _elev_last_upd[0] >= 1.0 / max(_hz, 1.0):
                     _lterr.update()
                     _elev_last_upd[0] = _now
-                return build_local_tile(_lterr, float(body_pos[0]), float(body_pos[1]))
+                return build_local_tile(_lterr, float(body_pos[0]), float(body_pos[1]),
+                                        half=float(os.environ.get('S10_ELEV_HALF', '8.0')))
             # OBSTACLE COSTMAP (USER goal 3): lidar wall channel -> on/off-path
             # 2D truncated distance field (ESDF) for BodyMPPI soft potential.
             # Updated at S10_ELEV_HZ (same as lidar); only CRUISE uses it.
@@ -357,6 +358,7 @@ def main():
     _rl_was_stair = False
     _tk2 = False
     _tk2_was_stair = False
+    _post_stair_s = None   # arc-length of the STAIR->CRUISE handback (perception-driven exit)
     def body_quat_to_yaw():
         _qw, _qx, _qy, _qz = d.qpos[3], d.qpos[4], d.qpos[5], d.qpos[6]
         return float(np.arctan2(2.0*(_qw*_qz + _qx*_qy), 1.0 - 2.0*(_qy*_qy + _qz*_qz)))
@@ -547,10 +549,13 @@ def main():
                 pass
             # TAKEOVER MODE 2 (USER goal 2): enter on STAIR->CRUISE handback
             # (rear legs above the last step -> update_mode already flipped back to CRUISE).
-            if os.environ.get('S10_TK2', '0') == '1':
-                if fol.mode != 'STAIR' and _tk2_was_stair:
+            # PERCEPTION-DRIVEN: record the handback arc-length so the post-stair slow zone
+            # and the body-lower use travel distance, not y/waypoint coordinates.
+            if fol.mode != 'STAIR' and _tk2_was_stair:
+                _post_stair_s = float(getattr(fol, '_s_cur', 0.0))
+                if os.environ.get('S10_TK2', '0') == '1':
                     _tk2 = True
-                _tk2_was_stair = (fol.mode == 'STAIR')
+            _tk2_was_stair = (fol.mode == 'STAIR')
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
                 robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]))
@@ -657,8 +662,9 @@ def main():
             # tipped at the wp10 micro-rise. Keep the post-stair slow zone until wp10 is
             # REGISTERED (next_idx <= 10), i.e. through the whole east run.
             if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
-                    and float(body_pos[1]) > 40.4
-                    and next_idx <= int(os.environ.get('S10_STAIR_EXIT_WP', '10'))):
+                    and _post_stair_s is not None
+                    and (float(getattr(fol, '_s_cur', 0.0)) - _post_stair_s)
+                        < float(os.environ.get('S10_STAIR_EXIT_SLOW_LEN', '8.0'))):
                 # 2026-08-16 (verified): post-stair exit speed 1.5 through the platform -
                 # the robot is stable at ~1-1.5 m/s on the real mesh; 2.0/2.5 tip on the
                 # east run (weak real-mesh grip + differential saturation, verified).
@@ -670,10 +676,10 @@ def main():
                 # 2-2.7 rad/s -> the robot overshoots and oscillates on the platform.
                 # Cap the turn command in the slow zone (gentle, no global yaw-gain cut).
                 _exit_vyaw = float(os.environ.get('S10_STAIR_EXIT_VYAW', '1.0'))
-                # EAST RUN (USER 2026-08-16): wp9->10 needs a ~90deg left turn, the
-                # gentle 1.5 cap that stabilizes wp8 makes the robot oscillate at wp9.
-                # Allow a higher turn cap once past wp9.
-                if next_idx >= int(os.environ.get('S10_STAIR_EXIT_VYAW_WP', '10')):
+                # PERCEPTION-DRIVEN (was wp9 hardcode): allow a higher turn cap later in
+                # the post-stair exit travel (the east-run ~90deg turn needs it).
+                _dsexit = float(getattr(fol, '_s_cur', 0.0)) - _post_stair_s
+                if _dsexit > float(os.environ.get('S10_STAIR_EXIT_VYAW_RAMP_S', '3.0')):
                     _exit_vyaw = float(os.environ.get('S10_STAIR_EXIT_VYAW_EAST', '2.5'))
                 vyaw = float(np.clip(vyaw, -_exit_vyaw, _exit_vyaw))
             # USER acceptance: decelerate when a stair/ridge is detected AHEAD on the
@@ -737,8 +743,11 @@ def main():
             # stair section (wp5->9) gets the verified handoff config (USE_NAV=1 + VMAX
             # 3.5) without restarting the process.
             _switch_wp = int(os.environ.get('S10_SWITCH_WP', '5'))
+            _switch_back_wp = int(os.environ.get('S10_SWITCH_BACK_WP', '8'))
+            # direct-nav only for the RL stair approach (wp5->7); revert to MPPI for the
+            # platform (wp8+) where the corner handling is better than raw pursuit.
             _use_nav_eff = (os.environ.get('S10_VMC_USE_NAV', '0') == '1'
-                            or next_idx > _switch_wp)
+                            or (_switch_wp < next_idx < _switch_back_wp))
             if _use_nav_eff:
                 vx_c, om_c = vx, vyaw   # 直接导航指令（无 MPPI 随机性）
                 _switch_vx = float(os.environ.get('S10_SWITCH_VX', '3.5'))
@@ -1274,8 +1283,9 @@ def main():
         # BUGFIX 2026-08-16 (wp8 turn tip-over): in the post-stair slow zone, disable the
         # lean-in - the tall post-RL stance tips over with the CarVMC lean (roll -0.89).
         if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
-                and float(body_pos[1]) > 40.4
-                and next_idx <= int(os.environ.get('S10_STAIR_EXIT_WP', '10'))):
+                and _post_stair_s is not None
+                and (float(getattr(fol, '_s_cur', 0.0)) - _post_stair_s)
+                    < float(os.environ.get('S10_STAIR_EXIT_SLOW_LEN', '8.0'))):
             roll_tar = 0.0
         # v854: 删除 ROLL_VGATE/ROLL_ERR_GATE 门控（用户：无离散门控）——
         # 压弯 roll_tar 直接随 vx·ω 生成
@@ -1647,15 +1657,8 @@ def main():
             _ta = np.array([-0.05, -0.60, 1.20, 0.05, -0.60, 1.20,
                             -0.05, 0.60, -1.20, 0.05, 0.60, -1.20])
             _y0 = float(os.environ.get('S10_PRETRANS_Y0', '31.0'))
-            # 2026-08-16 handoff26: finishing the transition AT the handoff (y~34)
-            # leaves the legs mid-rise (max_leg_err 0.41 rad -> RL spins). Finish the
-            # carvmc+PD body-raise by S10_PRETRANS_Y1 (default 33.0) and HOLD default
-            # stance until the handoff so the legs settle (leg_err->0) before RL takes over.
             _y1 = float(os.environ.get('S10_PRETRANS_Y1', '33.0'))
             _tpr = float(np.clip((float(body_pos[1]) - _y0) / max(_y1 - _y0, 1e-3), 0.0, 1.0))
-            # 2026-08-16 EXIT: after the RL climbs the stairs and hands back to CRUISE
-            # (y > S10_PRETRANS_EXIT_Y0), lower the CarVMC pose from the RL tall stance
-            # back to the cruise half-squat smoothly (no abrupt drop on the top platform).
             _ey0 = float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.4'))
             _elen = float(os.environ.get('S10_PRETRANS_EXIT_LEN', '4.0'))
             if float(body_pos[1]) > _ey0:
@@ -1714,10 +1717,7 @@ def main():
                 # entry + hold: lock legs at default_dof (stand PD)
                 tau[_li] = _lt
             else:
-                # EXIT blend 2026-08-16: gradually hand the legs from stand PD back to the
-                # CarVMC attitude control over EXIT_LEN metres. A hard switch lets the RL
-                # tall stance carry into the wp8 turn where the CarVMC roll control cannot
-                # counter the lean -> tip over (roll -0.89, verified 2026-08-16).
+                # EXIT blend: gradually hand the legs from stand PD back to CarVMC.
                 _b = float(np.clip((float(body_pos[1]) - _ey0) / max(_elen, 1e-3), 0.0, 1.0))
                 tau[_li] = (1.0 - _b) * _lt + _b * tau[_li]
         _tleg = float(np.abs(tau[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]]).max())

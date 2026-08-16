@@ -78,6 +78,13 @@ class AutoNavFollower:
         # decel_request [0,1]: cruise_vmc reads it to ramp vx toward stair_vx when
         # a stair/ridge is detected AHEAD on the elevation map.
         self.decel_request = 0.0
+        # PERCEPTION-DRIVEN stair takeover state (USER 2026-08-16: no waypoint hardcode).
+        self.stair_ahead_dist = None
+        self.stair_rises_s = []
+        self._stair_exit_s = None
+        self._stair_enter_s = None
+        self._stair_first_riser_xy = None
+        self._stair_first_heading = None
         self._elev_last_steps = None   # GOAL #3 raw step edges (perception turn+ridge assist)
         # 全局平滑路径（2026-08-06 用户方向 1.1/1.2）：航点折线 → 圆角
         # 折线（弯道圆弧过渡）→ 密集弧长参数化路径 + 曲率/速度剖面。
@@ -795,130 +802,84 @@ class AutoNavFollower:
         return False
 
     def update_mode(self, robot_xy, next_idx, yaw=None, local_map=None):
-        """双模式判定：已知航段 z 大升（>0.25）**且感知确认离散台阶** →
-        STAIR_SEQUENCE。2026-08-06 修复：仅按航点 z 升会把大坡度（wp0→1
-        缓坡 +0.47m）误判为楼梯（STAIR σ=2.0 在坡上乱伸腿）；感知 step_flag
-        只认离散台阶，陡坡/缓坡无 flag → 保持 CRUISE 轮子爬坡。
-        滞回（2026-08-06 凌晨）：进入 STAIR 后**保持**直到离开楼梯区
-        （y>40.5 或 next 推进）——狗在台阶底部来回时感知确认瞬时失败会
-        反复切 CRUISE（权重突变 → MPC 行为突变 → 侧翻，batch v31 复现）。
+        """PERCEPTION-DRIVEN stair takeover (USER 2026-08-16). No waypoint/z-rise hardcode.
+
+        - CRUISE -> STAIR (TK1) when an on-path staircase rise sequence is detected ahead
+          within S10_STAIR_ENTER_DIST (lidar elevation map only; ramp-safe gate).
+        - STAIR -> CRUISE (TK2) only when no staircase is detected ahead AND the robot has
+          advanced S10_STAIR_MIN_CLIMB_S past the first detected riser along the path heading
+          (physical, so a mid-climb detection gap or a sliding s_cur cannot flap the mode).
+        decel_request is a by-product: ramp toward the stair-acceptable speed as the first
+        detected rise approaches (cruise_vmc reads it).
         """
         if os.environ.get("S10_FORCE_MODE") in ("CRUISE", "STAIR"):
             if self.mode != os.environ["S10_FORCE_MODE"]:
                 self.mode = os.environ["S10_FORCE_MODE"]
             return
-        if self.mode == "STAIR":
-            # BUGFIX 2026-08-16 (mode flapping -> top-platform fall): the sparse lidar
-            # elevation map (_elev_region_passed) confirmed "crossed" MID-CLIMB (y~34-39,
-            # flat tread between risers shows no step ahead) -> false STAIR exits -> the
-            # global entry trigger re-entered STAIR -> STAIR<->CRUISE flap, control
-            # switches destabilized and the robot fell. Elevation exit DISABLED when the
-            # known riser table exists; the known-map exit (y > last riser + 0.45m) is
-            # deterministic and sufficient for the fixed track.
-            _exit_y = float(np.max(self.STAIR_RISERS)) + 0.35
-            if robot_xy[1] > _exit_y:
-                self.mode = "CRUISE"
-                self.decel_request = 0.0
-            return
         _dbg = os.environ.get("S10_MODE_DEBUG")
-        _sz = None
-        _d = None
-        # USER-DIRECTED 2026-08-16: elevation-map gated SPEED control only
-        # ("高程图中（在路径上）有横脊楼梯出现再控速"). Detect a stair/ridge RISE
-        # AHEAD on the elevation map (path capsules only) and ramp decel_request by
-        # proximity. Mode switching (STAIR) stays with the known stair_zone logic
-        # below -- the 96-line lidar + smooth overlay capsules cannot reliably
-        # distinguish stairs from long ramps, so perception must not force RL onto a
-        # ramp. Runs before the known-map path (decel applies to ridges too).
-        self.decel_request = 0.0
         _elook = float(os.environ.get("S10_ELEV_LOOKAHEAD", "6.0"))
         _eenter = float(os.environ.get("S10_ELEV_ENTER", "2.0"))
-        if local_map is not None and yaw is not None:
-            _ad = self._elev_stair_ridge_ahead(robot_xy, yaw, local_map, _elook)
+
+        # perception: on-path staircase riser arc-lengths ahead
+        self.stair_rises_s = self._elev_rises_on_path(
+            robot_xy, yaw, local_map, lookahead=_elook)
+        if self.stair_rises_s:
+            _sc = float(getattr(self, "_s_cur", 0.0))
+            self.stair_ahead_dist = float(self.stair_rises_s[0] - _sc)
+        else:
+            self.stair_ahead_dist = None
+
+        # speed control (perception-only): ramp decel_request by proximity
+        self.decel_request = 0.0
+        if self.stair_ahead_dist is not None:
+            self.decel_request = float(np.clip(
+                1.0 - (self.stair_ahead_dist - _eenter) / max(_elook - _eenter, 1e-3),
+                0.0, 1.0))
             if os.environ.get("S10_ELEV_DEBUG"):
-                print(f"[ELEV] t-pos={robot_xy[0]:.2f},{robot_xy[1]:.2f} ad={_ad} decel={self.decel_request:.2f}", flush=True)
-            if _ad is not None:
-                self.decel_request = float(np.clip(
-                    1.0 - (_ad - _eenter) / max(_elook - _eenter, 1e-3), 0.0, 1.0))
-        # USER-DIRECTED 2026-08-16: reliable backbone - KNOWN stair-zone proximity
-        # decel (allowed wp-z info, same source as the approved stair_zone mode
-        # switch). The 96-line lidar map is sparse (proven), so perception alone can
-        # drop the signal 1-2m before the steps; this ramp keeps decel on through the
-        # approach (y~33 -> ~38), max() with the perception term.
-        # NOTE 2026-08-16: perception turn+ridge DECEL was tried (GOAL #3) and
-        # REVERTED -- the wp4->5 hairpin+ridge needs MOMENTUM (v890 design), slowing
-        # made the MPPI under-turn and drive off the path. wp4->5 remains a v890
-        # boundary needing dedicated yaw-control stability work (om -3.51 overshoot).
-        _seg_i = next_idx - 1
-        # BUGFIX 2026-08-16: stair_zone (z-rise>0.25) also flags the wp0->1 START RAMP
-        # (z 0->0.475) -> known-zone decel slowed the launch to 2.5 m/s. Gate with
-        # _seg_in_stair_band (riser-corridor check): only REAL stair bands (wp6->7)
-        # decel; smooth ramps stay fast.
-        if (next_idx >= 1 and _seg_i < len(self.stair_zone) and self.stair_zone[_seg_i]
-                and self._seg_in_stair_band(_seg_i)
-                and next_idx < len(self.wp)):
-            _sa = self.wp[_seg_i, :2]; _sb = self.wp[next_idx, :2]
-            _dv = _sb - _sa
-            _L2 = max(float(np.dot(_dv, _dv)), 1e-6)
-            _t = float(np.clip(np.dot(np.asarray(robot_xy) - _sa, _dv) / _L2, 0.0, 1.0))
-            _along = _t * np.sqrt(_L2)
-            _off = float(os.environ.get("S10_ELEV_KNOWN_OFF", "1.0"))
-            _ramp = float(os.environ.get("S10_ELEV_KNOWN_RAMP", "5.0"))
-            if _along >= _off:
-                _kd = float(np.clip((_along - _off) / max(_ramp, 1e-3), 0.0, 1.0))
-                self.decel_request = max(self.decel_request, _kd)
-                if os.environ.get("S10_ELEV_DEBUG"):
-                    print(f"[ELEV-KNOWN] t-pos={robot_xy[0]:.2f},{robot_xy[1]:.2f} along={_along:.2f} decel={self.decel_request:.2f}", flush=True)
-        if (next_idx >= 1 and next_idx - 1 < len(self.stair_zone)
-                and self.stair_zone[next_idx - 1]):
-            _sz = bool(self.stair_zone[next_idx - 1])
-            d_wp = float(np.linalg.norm(
-                robot_xy - self.wp[next_idx, :2]))
-            _d = d_wp
-            # v133: global known map first - if the segment is a stair zone
-            # (z rise >0.25) and within stair_mode_dist of the segment end,
-            # enter STAIR regardless of perception step_flag (v132 r2 stayed
-            # CRUISE and rammed the riser because perception failed).
-            # Perception confirmation only triggers EARLIER (S10_STAIR_CONFIRM_DIST).
-            _confirm_dist = float(os.environ.get(
-                "S10_STAIR_CONFIRM_DIST", "6.0"))
-            # v460: 全局触发改为按**楼梯段起点**距离（原 d_wp<stair_mode_dist
-            # 是到段末航点 3m 内——爬楼全程仍 CRUISE，wp6→7 卡 y=38）。
-            # 进入段前 S10_STAIR_ENTER_DIST（默认 1.5m）即切 STAIR，保持到
-            # 段末航点通过（update_mode 里 next_idx>7 回 CRUISE）。
-            # v584: 切换用**到段首航点（wp6）的物理距离**——s_cur 投影
-            # 比物理位置超前（>4m），按 s_cur 会提前到 wp5→6 第一级台阶
-            # 就切 WBC，新抬升姿态在 0.06m 小台阶上翻车实测。
-            # v699: STAIR 模式切换到**段末航点（wp7）前 4m**（真楼梯前）——
-            # 原按段首 wp6 切换会在 wp5→6 第二级就接管，巡航能力被浪费
-            _dseg1 = float(np.linalg.norm(
-                robot_xy - self.wp[next_idx, :2]))
-            # BUGFIX 2026-08-16 (mode flapping): after the robot passes the last riser
-            # (y > exit_y), the global entry trigger kept re-entering STAIR right after
-            # the exit (dist to wp7 < 8.5m while next_idx still 7) -> STAIR<->CRUISE flap
-            # at the top, control switches destabilized, robot fell on the platform.
-            _entry_y = float(np.max(self.STAIR_RISERS)) + 0.35
-            _use_global = (_dseg1 <= float(os.environ.get(
-                "S10_STAIR_ENTER_DIST", "1.5")) + 2.5
-                           and self._seg_in_stair_band(next_idx - 1)
-                           and robot_xy[1] < _entry_y)
-            # BUGFIX 2026-08-16: also gate the PERCEPTION entry with y < exit_y, else
-            # the sparse elevation map re-enters STAIR on the top platform (y~42) after
-            # the known-map exit -> mode flap on the platform (verified 2026-08-16).
-            _use_percept = (d_wp < _confirm_dist
-                            and self._stair_confirmed(
-                                robot_xy, yaw, local_map)
-                            and robot_xy[1] < _entry_y)
-            if _use_global or _use_percept:
+                print(f"[ELEV] t-pos={robot_xy[0]:.2f},{robot_xy[1]:.2f} "
+                      f"ad={self.stair_ahead_dist:.2f} decel={self.decel_request:.2f}",
+                      flush=True)
+
+        if self.mode == "STAIR":
+            # TK2 handback (perception-driven, physical): exit only when no staircase is
+            # detected ahead AND the robot has advanced at least S10_STAIR_MIN_CLIMB_S
+            # metres PAST the first detected riser along the path heading. This covers a
+            # full staircase without relying on the s_cur projection (which is unreliable
+            # while sliding/laterally-offset) and cannot flap on a flat tread.
+            if self._stair_first_riser_xy is not None:
+                _fwd = np.array([np.cos(self._stair_first_heading),
+                                 np.sin(self._stair_first_heading)])
+                _prog = float(np.dot(
+                    np.asarray(robot_xy) - self._stair_first_riser_xy, _fwd))
+                _min_climb = float(os.environ.get("S10_STAIR_MIN_CLIMB_S", "2.5"))
+                if self.stair_ahead_dist is None and _prog > _min_climb:
+                    self.mode = "CRUISE"
+                    self.decel_request = 0.0
+                    self._stair_first_riser_xy = None
+                    self._stair_first_heading = None
+                    self._stair_enter_s = None
+                    if _dbg:
+                        print(f"[MODE] CRUISE (handback) prog={_prog:.1f} "
+                              f"pos=({robot_xy[0]:.2f},{robot_xy[1]:.2f})", flush=True)
+            return
+
+        # CRUISE -> STAIR (TK1 entry)
+        if self.stair_ahead_dist is not None:
+            _enter = float(os.environ.get("S10_STAIR_ENTER_DIST", "3.5"))
+            if self.stair_ahead_dist <= _enter:
                 self.mode = "STAIR"
+                self._stair_enter_s = float(getattr(self, "_s_cur", 0.0))
+                _first_s = float(self.stair_rises_s[0])
+                self._stair_first_riser_xy = self._path_point_at(_first_s)[:2]
+                _k = int(np.searchsorted(self.path_cum, _first_s, side="right") - 1)
+                _k = min(max(_k, 0), len(self.path_heading) - 1)
+                self._stair_first_heading = float(self.path_heading[_k])
                 if _dbg:
-                    print(f"[MODE] STAIR next={next_idx} sz={_sz} "
-                          f"d={d_wp:.1f} global={int(_use_global)} "
-                          f"percept={int(_use_percept)}", flush=True)
+                    print(f"[MODE] STAIR (perception) ad={self.stair_ahead_dist:.1f} "
+                          f"risers={[round(float(v),1) for v in self.stair_rises_s]}",
+                          flush=True)
                 return
-        if _dbg and int(robot_xy[1] * 2) % 10 == 0:
-            print(f"[MODE] CRUISE next={next_idx} sz={_sz} d={_d} "
-                  f"y={robot_xy[1]:.1f}", flush=True)
+
         self.mode = "CRUISE"
 
     def _stair_confirmed(self, robot_xy, yaw, local_map):
@@ -944,38 +905,28 @@ class AutoNavFollower:
                 return True
         return False
 
-    def _elev_stair_ridge_ahead(self, robot_xy, yaw, local_map, lookahead=4.0, start=0.5,
-                                 rise_th=0.30):
-        """Elevation-map lookahead along the PATH (wp-derived): return distance (m) to the
-        first stair/ridge RISE on the robot's path.
-
-        USER-DIRECTED 2026-08-16: only control speed when the elevation map shows a
-        ridge/stairs ON THE PATH (not off-path noise). Samples along self.path_pts
-        (built from wp absolute coords, allowed) ahead of the robot's arc-length s_cur,
-        and detects a height rise (far max - near min > rise_th)."""
+    def _elev_rises_on_path(self, robot_xy, yaw, local_map, lookahead=None, start=0.5):
+        """Perception-only: return the absolute arc-lengths (world s) of on-path
+        staircase riser edges detected AHEAD of the robot by the lidar elevation map."""
         if local_map is None:
-            return None
+            return []
         hm = local_map.get("heightmap")
         valid = local_map.get("valid")
         if hm is None or valid is None:
-            return None
+            return []
+        if lookahead is None:
+            lookahead = float(os.environ.get("S10_ELEV_LOOKAHEAD", "6.0"))
         ox = float(local_map["origin"][0]); oy = float(local_map["origin"][1])
         res = float(local_map["resolution"])
         s_cur = float(getattr(self, "_s_cur", 0.0))
         if s_cur <= 0.0:
             k0 = int(np.argmin(np.sum((self.path_pts[:, :2] - np.asarray(robot_xy)) ** 2, axis=1)))
             s_cur = float(self.path_cum[k0])
-
-        # USER-DIRECTED 2026-08-16 (GOAL #1): FAST corridor profile - sample the
-        # elevation map ALONG the path (0.1m), max hmax over a lateral window per
-        # sample. With the raised lidar the map is DENSE (25k cells), so per-sample
-        # probing works (the old sparse-map cell loop cost 87ms/cycle; this is O(1500)
-        # lookups, <5ms). Then SHARP-STEP + CLIMB-gate detection (see below).
-        rise_th = float(os.environ.get("S10_ELEV_RISE_TH", str(rise_th)))
+        rise_th = float(os.environ.get("S10_ELEV_RISE_TH", "0.30"))
         lat_win = float(os.environ.get("S10_ELEV_LAT_WIN", "1.2"))
         lat_n = max(3, int(round(2 * lat_win / res)) + 1)
         lats = np.linspace(-lat_win, lat_win, lat_n)
-        prof = []   # (ds, hmax)
+        prof = []
         for ds in np.arange(start, lookahead + 1e-3, 0.1):
             sp = s_cur + ds
             if sp > self.path_total - 1e-3:
@@ -1000,41 +951,49 @@ class AutoNavFollower:
             if best is not None:
                 prof.append((ds, best))
         if len(prof) < 3:
+            return []
+        if os.environ.get("S10_ELEV_STEP", "1") != "1":
+            base = float(min(h for _, h in prof if _ <= 2.0))
+            for (ds, h) in prof:
+                if ds >= 0.5 and h > base + rise_th:
+                    return [s_cur + float(ds)]
+            return []
+        step_th = float(os.environ.get("S10_ELEV_STEP_TH", "0.10"))
+        steps = []
+        prev_h = prof[0][1]
+        for (ds, h) in prof[1:]:
+            if h - prev_h > step_th and ds >= 0.5:
+                _conf = any(h2 > prev_h + step_th
+                            for (ds2, h2) in prof
+                            if 0.0 < ds2 - ds <= 0.5)
+                if _conf:
+                    steps.append((ds, h - prev_h))
+            prev_h = max(prev_h, h)
+        self._elev_last_steps = [(float(d), float(j)) for d, j in steps]
+        if len(steps) < int(os.environ.get("S10_ELEV_MIN_STEPS", "2")):
+            return []
+        d0 = steps[0][0]
+        span = float(os.environ.get("S10_ELEV_SEQ_SPAN", "3.0"))
+        if not all((d - d0) <= span for d, _ in steps):
+            return []
+        base = float(min(h for _, h in prof[:20]))
+        max_h = float(max(h for _, h in prof))
+        if max_h - base < float(os.environ.get("S10_ELEV_CLIMB_TH", "0.4")):
+            return []
+        return [s_cur + float(d) for d, _ in steps]
+
+    def _elev_stair_ridge_ahead(self, robot_xy, yaw, local_map, lookahead=4.0, start=0.5,
+                                 rise_th=0.30):
+        """Back-compat wrapper: return distance (m) to the first on-path staircase rise."""
+        rs = self._elev_rises_on_path(robot_xy, yaw, local_map,
+                                      lookahead=lookahead, start=start)
+        self.stair_rises_s = rs
+        if not rs:
+            self.stair_ahead_dist = None
             return None
-        if os.environ.get("S10_ELEV_STEP", "1") == "1":
-            step_th = float(os.environ.get("S10_ELEV_STEP_TH", "0.10"))
-            steps = []          # (ds, jump) sharp upward edges
-            prev_h = prof[0][1]
-            for (ds, h) in prof[1:]:
-                if h - prev_h > step_th and ds >= 0.5:
-                    # confirm sustained (plateau) over next 0.5m
-                    _conf = any(h2 > prev_h + step_th
-                                for (ds2, h2) in prof
-                                if 0.0 < ds2 - ds <= 0.5)
-                    if _conf:
-                        steps.append((ds, h - prev_h))
-                prev_h = max(prev_h, h)   # running max (staircase)
-            self._elev_last_steps = [(float(d), float(j)) for d, j in steps]
-            # Gate 1: stair SEQUENCE = >= S10_ELEV_MIN_STEPS sharp steps within
-            # S10_ELEV_SEQ_SPAN (single ridges wp5->6 / wp4->5 do NOT decel).
-            # Gate 2: net CLIMB to a high plateau (max_h - base >= S10_ELEV_CLIMB_TH)
-            # so up-down bumps (0.48->0.73->0.48) don't decel; real stairs
-            # (0.48->1.17) do.
-            if len(steps) >= int(os.environ.get("S10_ELEV_MIN_STEPS", "2")):
-                d0 = steps[0][0]
-                span = float(os.environ.get("S10_ELEV_SEQ_SPAN", "3.0"))
-                if all((d - d0) <= span for d, _ in steps):
-                    base = float(min(h for _, h in prof[:20]))   # near field
-                    max_h = float(max(h for _, h in prof))
-                    if max_h - base >= float(os.environ.get("S10_ELEV_CLIMB_TH", "0.4")):
-                        return d0
-            return None
-        # S10_ELEV_STEP=0: legacy cumulative-rise mode
-        base = float(min(h for _, h in prof if _ <= 2.0))
-        for (ds, h) in prof:
-            if ds >= 0.5 and h > base + rise_th:
-                return float(ds)
-        return None
+        s_cur = float(getattr(self, "_s_cur", 0.0))
+        self.stair_ahead_dist = float(rs[0] - s_cur)
+        return self.stair_ahead_dist
 
     def _elev_region_passed(self, robot_xy, yaw, local_map):
         """Elevation-map exit: no stair/ridge RISE within [0.0, 3.0]m ahead -> crossed."""
