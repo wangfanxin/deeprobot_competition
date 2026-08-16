@@ -569,19 +569,17 @@ def main():
             if (os.environ.get('S10_W45_PULL', '0') == '1'
                     and next_idx == 5
                     and float(body_pos[1]) > float(os.environ.get('S10_W45_PULL_Y', '19.0'))):
+                # HEADING-AWARE aim at wp5: use the robot's ACTUAL yaw to compute the
+                # heading error to the next waypoint (the hairpin leaves the robot
+                # heading ~west; a north-assumed lateral pull steers the wrong way).
                 _px = float(body_pos[0]); _py = float(body_pos[1])
-                _d2 = (fol.path_pts[:, 0] - _px) ** 2 + (fol.path_pts[:, 1] - _py) ** 2
-                _k = int(np.argmin(_d2))
-                _k = max(0, min(_k, len(fol.path_pts) - 2))
-                _tx = float(fol.path_pts[_k + 1, 0] - fol.path_pts[_k, 0])
-                _ty = float(fol.path_pts[_k + 1, 1] - fol.path_pts[_k, 1])
-                _tn = float(np.hypot(_tx, _ty)) + 1e-9
-                _nx, _ny = -_ty / _tn, _tx / _tn   # left normal
-                _lat = (_px - float(fol.path_pts[_k, 0])) * _nx + (_py - float(fol.path_pts[_k, 1])) * _ny
-                _kpull = float(os.environ.get('S10_W45_PULL_K', '1.5'))
-                vyaw = float(np.clip(vyaw - _kpull * _lat, -1.5, 1.5))
+                _wx = float(fol.wp[next_idx, 0]); _wy = float(fol.wp[next_idx, 1])
+                _tyaw = float(np.arctan2(_wy - _py, _wx - _px))
+                _err = float(np.arctan2(np.sin(_tyaw - yaw), np.cos(_tyaw - yaw)))
+                _kpull = float(os.environ.get('S10_W45_PULL_K', '2.0'))
+                vyaw = float(np.clip(_kpull * _err, -1.5, 1.5))
                 if os.environ.get('S10_W45_PULL_DEBUG', '0') == '1':
-                    print('[W45-PULL] pos=(%.2f,%.2f) lat=%.3f vyaw=%.3f' % (_px, _py, _lat, vyaw), flush=True)
+                    print('[W45-PULL] pos=(%.2f,%.2f) yaw=%.2f target=%.2f err=%.3f vyaw=%.3f' % (_px, _py, yaw, _tyaw, _err, vyaw), flush=True)
             # TAKEOVER MODE 1 (USER goal 1.1): cruise -> stair hard-switch preparation.
             # After passing S10_TK1_AFTER_WP while still CRUISE: pause nav yaw tracking,
             # decel toward the stair-acceptable speed, and align yaw to the LIDAR-detected
