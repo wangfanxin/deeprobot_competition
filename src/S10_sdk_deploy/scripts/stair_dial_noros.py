@@ -21,6 +21,8 @@ from s10_mpc.stair_auto_nav import AutoNavFollower
 from s10_mpc.stair_contact_planner import StairContactPlanner
 from s10_mpc.stair_stance_guard import StairStanceGuard
 from s10_mpc.body_mppi import BodyMPPI
+from s10_mpc.vmc_legs import WHEEL_BODY
+from rl_stair.deploy.rlstair_ctrl import RLStairCtrl
 
 DT = 0.005
 STAND_TIME = float(os.environ.get('S10_STAND_TIME', '0.6'))
@@ -126,6 +128,9 @@ def main():
     mpc.init_state(np.asarray(d.qpos[:23], dtype=np.float32),
                    np.asarray(d.qvel[:22], dtype=np.float32))
     mpc.set_cmd(0.0, 0.0, 0.0)
+    rl_ctrl = None
+    if os.environ.get('S10_DIAL_RL_STAIR', '0') == '1':
+        rl_ctrl = RLStairCtrl(m, vx=float(os.environ.get('S10_RL_VX', '1.5')))
     print(f'[NOROS] MPC ready ({time.time()-t0:.1f}s)', flush=True)
 
     fol = AutoNavFollower(
@@ -316,6 +321,9 @@ def main():
                 fol.update_mode(pos, next_idx, yaw=yaw, local_map=local_tile,
                                 percept_confirmed=_pc)
                 mpc.set_mode(fol.mode)
+                if rl_ctrl is not None and fol.mode == 'STAIR':
+                    _rs, _ts = fol._stair_tables()
+                    rl_ctrl.set_risers(np.asarray(_rs), np.asarray(_ts))
                 if fol.mode == 'STAIR':
                     _wy = np.asarray([d.xpos[_wb, 1] for _wb in (5, 9, 13, 17)], dtype=np.float64)
                     _wz = np.asarray([d.xpos[_wb, 2] for _wb in (5, 9, 13, 17)], dtype=np.float64)
@@ -405,8 +413,16 @@ def main():
                         break
                 if t_cmd0 is None:
                     t_cmd0 = t
-            mpc.latest_tau = mpc.compute_tau(last_act, qq, qqd)
-            if fol.mode == 'STAIR':
+            if rl_ctrl is not None and fol.mode == 'STAIR':
+                wheel_xyz = np.asarray([d.xpos[_wb] for _wb in WHEEL_BODY])
+                wheel_vel = np.asarray([d.cvel[_wb][0:3] for _wb in WHEEL_BODY])
+                terr = np.asarray(fol.stair_terrain(wheel_xyz[:, 1]))
+                _cmd_rl = dict(vx=0.0, omega=0.0, roll_tar=0.0, pitch_tar=0.0)
+                mpc.latest_tau = rl_ctrl.compute_tau(
+                    qq, qqd, wheel_xyz, wheel_vel, _cmd_rl, terr, DT)
+            else:
+                mpc.latest_tau = mpc.compute_tau(last_act, qq, qqd)
+            if rl_ctrl is None and fol.mode == 'STAIR':
                 _gsw_now = np.asarray(getattr(mpc, '_gait_swing', np.zeros(4)), dtype=np.float64)
                 _com_xy = d.xpos[track_body][:2]
                 _wy = np.asarray([d.xpos[_wb, 1] for _wb in (5, 9, 13, 17)], dtype=np.float64)
