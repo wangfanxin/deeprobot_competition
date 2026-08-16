@@ -21,6 +21,9 @@ from s10_mpc.auto_nav import AutoNavFollower
 from s10_mpc.body_mppi import BodyMPPI
 
 DT = 0.005
+STAND_TIME = float(os.environ.get('S10_STAND_TIME', '0.6'))
+STAND_KP = float(os.environ.get('S10_STAND_KP', '120.0'))
+STAND_KD = float(os.environ.get('S10_STAND_KD', '3.0'))
 MAX_SIM = float(os.environ.get('S10_TEST_MAX_SIM', '120'))
 MAX_WP = int(os.environ.get('S10_AUTO_MAX_WP', '5'))
 WP_TIMEOUT = float(os.environ.get('S10_WP_TIMEOUT', '60.0'))
@@ -192,7 +195,7 @@ def main():
             # 站起 PD（3s）
             q = d.qpos[7:23].reshape(-1, 1)
             dq = d.qvel[6:22].reshape(-1, 1)
-            tau = (80.0 * (STAND_TARGET.reshape(-1, 1) - q) - 2.0 * dq).flatten()
+            tau = (STAND_KP * (STAND_TARGET.reshape(-1, 1) - q) - STAND_KD * dq).flatten()
             tau[3::4] = -0.3 * dq[3::4].flatten()
             # v191：站起阶段 base yaw 预转向（轮子差速，可移植真机）
             if os.environ.get('S10_STAND_TURN', '0') == '1':
@@ -206,7 +209,7 @@ def main():
                 _turn = float(np.clip(_k*_err, -40.0, 40.0))
                 tau[3::4] += np.array([_turn, _turn, -_turn, -_turn])
             d.ctrl[:] = tau
-            if t >= 3.0:
+            if t >= STAND_TIME:
                 qq = np.asarray(d.qpos[:23], dtype=np.float32)
                 qqd = np.asarray(d.qvel[:22], dtype=np.float32)
                 last_act = mpc.plan_once(qq, qqd, t)
