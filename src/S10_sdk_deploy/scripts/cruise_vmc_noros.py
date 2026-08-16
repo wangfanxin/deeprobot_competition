@@ -244,7 +244,7 @@ def main():
             # build + detection still run every nav cycle on the accumulated map.
             _elev_last_upd = [-1e9]
             def _build_elev_tile():
-                _now = time.time()
+                _now = float(t)  # sim time (deterministic; wall-clock made runs non-reproducible)
                 _hz = float(os.environ.get('S10_ELEV_HZ', '4'))
                 if _now - _elev_last_upd[0] >= 1.0 / max(_hz, 1.0):
                     _lterr.update()
@@ -260,7 +260,7 @@ def main():
                     or os.environ.get('S10_TK1', '0') == '1'):
                 os.environ.setdefault('S10_LIDAR_WALL', '1')
             def _build_costmap():
-                _now = time.time()
+                _now = float(t)  # sim time (deterministic)
                 _hz = float(os.environ.get('S10_ELEV_HZ', '4'))
                 if _now - _costmap_last[0] < 1.0 / max(_hz, 1.0):
                     return _costmap_cache[0]
