@@ -711,28 +711,8 @@ class AutoNavFollower:
             else:
                 vyaw = float(self.yaw_gain * err + yaw_ff
                              - self.yaw_damp * yaw_rate)
-        # USER-DIRECTED 2026-08-16: on weak-grip the body geometric heading and the
-        # actual velocity direction diverge (lateral slip). Add (a) velocity-DIRECTION
-        # error so the MOTION tracks the path, and (b) lateral-velocity damping to kill
-        # the side-slip directly.
-        # GATE BY ELEVATION/MODE (NOT waypoint id): only in CRUISE, only after a
-        # detected staircase has been handed back (_stair_exit_xy), and only when no
-        # staircase is currently detected ahead. This is the post-stair platform case.
-        _post_stair = getattr(self, "_stair_exit_xy", None) is not None
-        _no_stair_ahead = (getattr(self, "stair_ahead_dist", None) is None)
-        _apply_vel_fb = (self.mode == "CRUISE" and _post_stair and _no_stair_ahead)
-        # body_vx/body_vy are BODY-frame linear velocity (R^T @ world cvel). Convert
-        # to world so they can be compared against ref_yaw.
-        _vx_w = float(body_vx * np.cos(yaw) - body_vy * np.sin(yaw))
-        _vy_w = float(body_vx * np.sin(yaw) + body_vy * np.cos(yaw))
-        _vs = float(np.hypot(_vx_w, _vy_w))
-        if _apply_vel_fb and _vs > 0.2:
-            _v_h = float(np.arctan2(_vy_w, _vx_w))
-            _err_v = float(np.arctan2(np.sin(ref_yaw - _v_h), np.cos(ref_yaw - _v_h)))
-            _v_lat = float(-_vx_w * np.sin(ref_yaw) + _vy_w * np.cos(ref_yaw))
-            _k_vd = float(os.environ.get("S10_AUTO_VYAW_VEL_DIR", "0.5"))
-            _k_lat = float(os.environ.get("S10_AUTO_VYAW_LAT", "0.5"))
-            vyaw = float(vyaw + _k_vd * _err_v - _k_lat * _v_lat)
+        # USER-DIRECTED 2026-08-17: yaw feedback uses BODY HEADING only
+        # (err = ref_yaw - body_yaw), not the velocity direction.
         vyaw = float(np.clip(vyaw, -vyaw_max_eff, vyaw_max_eff))
         # 变化率限制（防反馈振荡；每次调用 = 0.05s）
         # v442: 每拍增量按真实更新周期缩放（原 0.05s 假设在 NAV_HZ=5 下
