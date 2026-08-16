@@ -359,6 +359,9 @@ def main():
     _tk2 = False
     _tk2_was_stair = False
     _post_stair_s = None   # arc-length of the STAIR->CRUISE handback (perception-driven exit)
+    _orig_lowspd = os.environ.get('S10_CAR_LOWSPD_TURN', '0.0')
+    _orig_ysm = os.environ.get('S10_CAR_YAW_K_SM', '30.0')
+    _orig_hipx_yaw = os.environ.get('S10_CAR_HIPX_YAW', '0.0')
     def body_quat_to_yaw():
         _qw, _qx, _qy, _qz = d.qpos[3], d.qpos[4], d.qpos[5], d.qpos[6]
         return float(np.arctan2(2.0*(_qw*_qz + _qx*_qy), 1.0 - 2.0*(_qy*_qy + _qz*_qz)))
@@ -556,6 +559,18 @@ def main():
                 if os.environ.get('S10_TK2', '0') == '1':
                     _tk2 = True
             _tk2_was_stair = (fol.mode == 'STAIR')
+            # PLATFORM-SPECIFIC CarVMC tuning (USER 2026-08-16): on the weak-grip top
+            # platform (wp7+), the default yaw gain oscillates and low-speed turn authority
+            # is too weak -> east drift + slip at the wp7->8 90-degree turn. Enable low-speed
+            # differential boost and lower the yaw feedback gain ONLY for the platform.
+            if next_idx >= 8:
+                os.environ['S10_CAR_LOWSPD_TURN'] = os.environ.get('S10_PLAT_LOWSPD_TURN', '1.0')
+                os.environ['S10_CAR_YAW_K_SM'] = os.environ.get('S10_PLAT_YAW_K_SM', '6.0')
+                os.environ['S10_CAR_HIPX_YAW'] = os.environ.get('S10_PLAT_HIPX_YAW', '0.15')
+            else:
+                os.environ['S10_CAR_LOWSPD_TURN'] = _orig_lowspd
+                os.environ['S10_CAR_YAW_K_SM'] = _orig_ysm
+                os.environ['S10_CAR_HIPX_YAW'] = _orig_hipx_yaw
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
                 robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]))
@@ -797,6 +812,22 @@ def main():
                         and next_idx <= 6):
                     print('[MPPI] g_om=%.2f out=(%.2f,%.2f) vref=%.2f'
                           % (_g_om, vx_c, om_c, v_ref), flush=True)
+            # POST-STAIR DETERMINISTIC AIM (USER 2026-08-16): after the RL hands back,
+            # the body has eastward drift and the nav yaw wraps around +/-pi on the
+            # platform. Override om with a direct aim-at-next-waypoint and stop-and-turn
+            # while misaligned; this corrects the east drift AND makes the 90-degree turn.
+            if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
+                    and _post_stair_s is not None and next_idx < len(wp)):
+                _wx = float(wp[next_idx, 0]); _wy = float(wp[next_idx, 1])
+                _tyaw = float(np.arctan2(_wy - float(body_pos[1]),
+                                         _wx - float(body_pos[0])))
+                _err = float(np.arctan2(np.sin(_tyaw - yaw), np.cos(_tyaw - yaw)))
+                _ak = float(os.environ.get('S10_LOWV_ALIGN_K', '1.2'))
+                om_c = float(np.clip(_ak * _err, -1.2, 1.2))
+                if abs(_err) > float(os.environ.get('S10_LOWV_ALIGN_ERR', '0.30')):
+                    vx_c = min(vx_c, float(os.environ.get('S10_LOWV_ALIGN_VX', '0.4')))
+                else:
+                    vx_c = min(vx_c, 1.0)
             # v218p: omega 上限匹配 VMC yaw 能力（防指令远超执行导致振荡）
             # v245: speed-dependent cap - lateral accel envelope a_lat=w*v
             # （实测 YAW_TMAX 滑移权威下 ω 可达 3.6+，v=1.9 时 a_lat 7m/s2 翻车）
