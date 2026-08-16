@@ -403,6 +403,7 @@ def main():
         # CRUISE = CarVMC (tuned cruising); STAIR = RLStairCtrl (policy.pt).
         from rl_stair.deploy.rlstair_ctrl import RLStairCtrl
         vmc_car = CarVMC()
+        _orig_wheel_k = float(vmc_car.wheel_k)
         vmc_rl = RLStairCtrl(m)
         if stair_world:   # pre-scanned known-map risers -> RL obs
             # BUGFIX 2026-08-16 (integrated handoff root cause): the pre-scan tops
@@ -567,10 +568,12 @@ def main():
                 os.environ['S10_CAR_LOWSPD_TURN'] = os.environ.get('S10_PLAT_LOWSPD_TURN', '1.0')
                 os.environ['S10_CAR_YAW_K_SM'] = os.environ.get('S10_PLAT_YAW_K_SM', '6.0')
                 os.environ['S10_CAR_HIPX_YAW'] = os.environ.get('S10_PLAT_HIPX_YAW', '0.15')
+                vmc_car.wheel_k = float(os.environ.get('S10_PLAT_WHEEL_K', '2.5'))
             else:
                 os.environ['S10_CAR_LOWSPD_TURN'] = _orig_lowspd
                 os.environ['S10_CAR_YAW_K_SM'] = _orig_ysm
                 os.environ['S10_CAR_HIPX_YAW'] = _orig_hipx_yaw
+                vmc_car.wheel_k = _orig_wheel_k
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
                 robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]))
