@@ -1729,6 +1729,17 @@ def main():
             # v294: 判据=质心投影 xy 进入航点 0.3m（机器狗任意一点经过的等效简化）
             _adv = float(os.environ.get('S10_WP_ADVANCE_DIST', '0.3'))
             reached = dist <= _adv
+            # ARC-LENGTH registration (USER 2026-08-16, wp4->5): after crossing the step
+            # the robot drifts ~2m laterally and never enters the 0.3m circle, so wp5 is
+            # never registered. If the arc-length cursor has passed the waypoint arc by
+            # S10_WP_ADVANCE_S_MARGIN, register it (the nav will pull x back on the next
+            # segment). Gated off by default.
+            if (not reached and os.environ.get('S10_WP_ADVANCE_BY_S', '0') == '1'
+                    and next_idx < len(fol.path_wp_s)):
+                _sm = float(os.environ.get('S10_WP_ADVANCE_S_MARGIN', '1.0'))
+                _s_cur = float(getattr(fol, '_s_cur', 0.0))
+                if _s_cur > float(fol.path_wp_s[next_idx]) + _sm:
+                    reached = True
             if reached:
                 if next_idx == 0 and t_start is None:
                     t_start = t
