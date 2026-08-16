@@ -658,7 +658,7 @@ def main():
             # REGISTERED (next_idx <= 10), i.e. through the whole east run.
             if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
                     and float(body_pos[1]) > 40.4
-                    and next_idx <= 10):
+                    and next_idx <= int(os.environ.get('S10_STAIR_EXIT_WP', '10'))):
                 # 2026-08-16 (verified): post-stair exit speed 1.5 through the platform -
                 # the robot is stable at ~1-1.5 m/s on the real mesh; 2.0/2.5 tip on the
                 # east run (weak real-mesh grip + differential saturation, verified).
@@ -1260,7 +1260,7 @@ def main():
         # lean-in - the tall post-RL stance tips over with the CarVMC lean (roll -0.89).
         if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
                 and float(body_pos[1]) > 40.4
-                and next_idx <= 10):
+                and next_idx <= int(os.environ.get('S10_STAIR_EXIT_WP', '10'))):
             roll_tar = 0.0
         # v854: 删除 ROLL_VGATE/ROLL_ERR_GATE 门控（用户：无离散门控）——
         # 压弯 roll_tar 直接随 vx·ω 生成
