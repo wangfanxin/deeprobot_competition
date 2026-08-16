@@ -831,6 +831,13 @@ def main():
                 om_c = float(np.clip(_ak * _err, -1.2, 1.2))
                 if abs(_err) > float(os.environ.get('S10_LOWV_ALIGN_ERR', '0.30')):
                     vx_c = min(vx_c, float(os.environ.get('S10_LOWV_ALIGN_VX', '0.4')))
+                    # MINIMUM TURN RATE: when misaligned, never command a too-weak om
+                    # (weak differential stalls in the friction deadband on the platform
+                    # and err oscillates 0.56-0.75 without converging). At vx~0.3 this
+                    # fixed turn rate does not roll the body.
+                    _min_om = float(os.environ.get('S10_LOWV_ALIGN_MIN_OM', '0.0'))
+                    if abs(om_c) < _min_om:
+                        om_c = _min_om * (1.0 if _err >= 0.0 else -1.0)
                 else:
                     vx_c = min(vx_c, 1.0)
                 if os.environ.get('S10_AIM_DEBUG', '0') == '1':
