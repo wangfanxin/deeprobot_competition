@@ -152,7 +152,14 @@ def build_costmap(lterr, path_pts, path_cum, s_cur, cx, cy,
         it = (xx * xx + yy * yy) <= (r * r)
         obstacle = binary_dilation(obstacle, structure=it)
 
-    # truncated unsigned distance field (0 inside obstacle, free-space dist)
+    # TEMP diagnostic (USER goal 3 tuning): log obstacle bounds when enabled.
+    if os.environ.get("S10_OBST_DEBUG", "0") == "1" and obstacle.any():
+        _ys, _xs = np.where(obstacle)
+        print(f"[OBST-DBG] cells={int(obstacle.sum())} "
+              f"x[{x0+_xs.min()*res:.1f},{x0+_xs.max()*res:.1f}] "
+              f"y[{y0+_ys.min()*res:.1f},{y0+_ys.max()*res:.1f}]", flush=True)
+
+    # truncated unsigned distance field (0 inside obstacle, free-space dist)    # truncated unsigned distance field (0 inside obstacle, free-space dist)
     d = distance_transform_edt(~obstacle) * res
     d = np.clip(d, 0.0, dmax)
     return CostMap2D(d, np.array([x0, y0]), res, dmax)
