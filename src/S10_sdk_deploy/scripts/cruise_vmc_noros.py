@@ -408,6 +408,8 @@ def main():
         from rl_stair.deploy.rlstair_ctrl import RLStairCtrl
         vmc_car = CarVMC()
         _orig_wheel_k = float(vmc_car.wheel_k)
+        _orig_kp_roll = float(vmc_car.kp_roll)
+        _orig_kd_roll = float(vmc_car.kd_roll)
         vmc_rl = RLStairCtrl(m)
         if stair_world:   # pre-scanned known-map risers -> RL obs
             # BUGFIX 2026-08-16 (integrated handoff root cause): the pre-scan tops
@@ -576,6 +578,8 @@ def main():
                 vmc_car.wheel_k = float(os.environ.get('S10_PLAT_WHEEL_K', '4.0'))
                 vmc_car.yaw_ff = float(os.environ.get('S10_PLAT_YAW_FF', '1.0'))
                 vmc_car.yaw_wheel_scale = float(os.environ.get('S10_PLAT_YAW_WHEEL_SCALE', '1.0'))
+                vmc_car.kp_roll = _orig_kp_roll
+                vmc_car.kd_roll = _orig_kd_roll
             else:
                 os.environ['S10_CAR_LOWSPD_TURN'] = _orig_lowspd
                 os.environ['S10_CAR_YAW_K_SM'] = _orig_ysm
@@ -583,6 +587,8 @@ def main():
                 vmc_car.wheel_k = _orig_wheel_k
                 vmc_car.yaw_ff = 1.0
                 vmc_car.yaw_wheel_scale = 1.0
+                vmc_car.kp_roll = _orig_kp_roll
+                vmc_car.kd_roll = _orig_kd_roll
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
                 robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]))
