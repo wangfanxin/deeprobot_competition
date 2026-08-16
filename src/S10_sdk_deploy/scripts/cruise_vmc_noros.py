@@ -619,7 +619,8 @@ def main():
                     _e -= body_quat_to_yaw()
                     _e = float(np.arctan2(np.sin(_e), np.cos(_e)))
                     _kh = float(os.environ.get('S10_STEP_HOMING_K', '2.0'))
-                    _hom = float(np.clip(_kh * _e, -2.0, 2.0))
+                    _omax = float(os.environ.get('S10_STEP_HOMING_OM_MAX', '1.0'))
+                    _hom = float(np.clip(_kh * _e, -_omax, _omax))
                     _w = float(np.clip((_hd - _home[0]) / max(_hd * 0.5, 1e-3), 0.0, 1.0))
                     vyaw = (1.0 - _w) * vyaw + _w * _hom
             # W45 LATERAL PULL-BACK (USER 2026-08-16): after crossing the wp4->5 step
@@ -936,7 +937,8 @@ def main():
                     _e -= body_quat_to_yaw()
                     _e = float(np.arctan2(np.sin(_e), np.cos(_e)))
                     _kh = float(os.environ.get('S10_STEP_HOMING_K', '2.0'))
-                    _hom = float(np.clip(_kh * _e, -2.0, 2.0))
+                    _omax = float(os.environ.get('S10_STEP_HOMING_OM_MAX', '1.0'))
+                    _hom = float(np.clip(_kh * _e, -_omax, _omax))
                     _w = float(np.clip((_hd - _home[0]) / max(_hd * 0.5, 1e-3), 0.0, 1.0))
                     _hs = float(os.environ.get('S10_STEP_HOMING_SIGN', '1.0'))
                     if _hs < 0.0:

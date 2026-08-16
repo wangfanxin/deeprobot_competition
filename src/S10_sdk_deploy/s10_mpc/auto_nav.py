@@ -510,7 +510,7 @@ class AutoNavFollower:
         #   S10_VLIM_ACC_DN = max speed DECREASE per metre (default 3.0, allows braking)
         # Backward pass propagates a slow zone backwards so the robot slows down
         # BEFORE the slow zone instead of at its boundary.
-        _acc_dn = float(os.environ.get("S10_VLIM_ACC_DN", "3.0"))
+        _acc_dn = float(os.environ.get("S10_VLIM_ACC_DN", "5.0"))
         _nv = len(self.path_vlim)
         for _k in range(_nv - 2, -1, -1):
             _ds = float(self.path_cum[_k + 1] - self.path_cum[_k])
