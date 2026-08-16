@@ -564,12 +564,12 @@ def main():
             # platform (wp7+), the default yaw gain oscillates and low-speed turn authority
             # is too weak -> east drift + slip at the wp7->8 90-degree turn. Enable low-speed
             # differential boost and lower the yaw feedback gain ONLY for the platform.
-            if _post_stair_s is not None:
-                os.environ['S10_CAR_LOWSPD_TURN'] = os.environ.get('S10_PLAT_LOWSPD_TURN', '1.0')
-                os.environ['S10_CAR_YAW_K_SM'] = os.environ.get('S10_PLAT_YAW_K_SM', '6.0')
-                os.environ['S10_CAR_HIPX_YAW'] = os.environ.get('S10_PLAT_HIPX_YAW', '0.15')
-                vmc_car.wheel_k = float(os.environ.get('S10_PLAT_WHEEL_K', '2.5'))
-                vmc_car.yaw_ff = float(os.environ.get('S10_PLAT_YAW_FF', '2.0'))
+            if next_idx >= 8:
+                os.environ['S10_CAR_LOWSPD_TURN'] = os.environ.get('S10_PLAT_LOWSPD_TURN', '0.0')
+                os.environ['S10_CAR_YAW_K_SM'] = os.environ.get('S10_PLAT_YAW_K_SM', '12.0')
+                os.environ['S10_CAR_HIPX_YAW'] = os.environ.get('S10_PLAT_HIPX_YAW', '0.0')
+                vmc_car.wheel_k = float(os.environ.get('S10_PLAT_WHEEL_K', '4.0'))
+                vmc_car.yaw_ff = float(os.environ.get('S10_PLAT_YAW_FF', '1.0'))
                 vmc_car.yaw_wheel_scale = float(os.environ.get('S10_PLAT_YAW_WHEEL_SCALE', '1.0'))
             else:
                 os.environ['S10_CAR_LOWSPD_TURN'] = _orig_lowspd
