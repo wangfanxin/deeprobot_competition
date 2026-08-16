@@ -5,7 +5,7 @@ No env/training changes.
 """
 import os, sys, time, subprocess, glob
 
-LOGDIR = "/home/wfx/DR_competition/0810new/deeprobot_competition/rl_stair/logs"
+LOGDIR = os.environ.get("S10_WATCH_LOGDIR", "/home/wfx/DR_competition/0810new/deeprobot_competition/rl_stair/logs")
 TRAIN_LOG = os.path.join(LOGDIR, "train.log")
 WATCH = os.path.join(LOGDIR, "watchdog.log")
 INTERVAL = 120          # seconds

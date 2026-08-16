@@ -75,8 +75,12 @@ class RLStairCtrl:
             pass  # RL self-speed only
         self._pol_step += 1
         if self._pol_step <= self._warm:
-            # warm-start: hold default_dof (stand PD), wheels free (keep momentum on
-            # the flat approach). Same torque law as the training warmup.
+            # USER-DIRECTED 2026-08-16: brief PD takeover for the cruise half-squat ->
+            # RL tall-stance transition. Hold default_dof (stand PD, same law as the
+            # training warmup), wheels FREE. The robot must arrive SLOW (cruise decels
+            # to ~1.5 by the handoff) so the free-wheel warm coasts little; per-wheel
+            # braking to 0 was REVERTED (verified 2026-08-16 handoff22: asymmetric
+            # brake torques amplify yaw error -> robot spun/rolled at y~35.5).
             q = qpos[self.idx["act2jnt"]] - self.default_dof
             qd = qvel[self.idx["act2vel"]]
             tau = np.zeros(int(self._act_dim), dtype=np.float64)

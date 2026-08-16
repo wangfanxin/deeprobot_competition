@@ -50,6 +50,14 @@ class S10RLCfg:
     q_off = 0.1
     v_off = 1.0
     spawn_x = 0.3
+    # USER-DIRECTED 2026-08-16: initial-pose domain randomization (handoff robustness).
+    # squat_frac = fraction of resets starting at the cruise SQUAT pose (lower body,
+    # legs -1.10/1.90; verified squat-start = 0/30 on the real mesh without training).
+    # leg_q_jit = joint-angle jitter (rad) on the legs for ALL resets (real-mesh tol:
+    # jit 0.15->93%, 0.3->70%, 0.5->30%; T6 target >= 0.3). Off by default (0.0) so
+    # early stages are unchanged; T6_handoff enables them.
+    squat_frac: float = 0.0
+    leg_q_jit: float = 0.0
     # spawn distance before first riser (for "close-spawn lift practice" stages 06:50)
     spawn_back_lo: float = 0.5
     spawn_back_hi: float = 2.0
@@ -425,6 +433,17 @@ class S10RLEnv:
         h_off = jax.random.uniform(k1, (n,), minval=-self.cfg.h_off, maxval=self.cfg.h_off)
         x_spawn = jax.random.uniform(k2, (n,), minval=-self.cfg.spawn_x, maxval=self.cfg.spawn_x)
         q_off = jax.random.uniform(k1, (n, 16), minval=-self.cfg.q_off, maxval=self.cfg.q_off)
+        # USER-DIRECTED 2026-08-16: initial-pose DR - squat_frac resets start at the
+        # cruise squat (lower body), rest at tall default_dof; all get leg_q_jit on the
+        # legs so the policy learns to stand up + climb from the handoff leg state.
+        _sq16 = jnp.asarray([-0.05,-1.10,1.90,0.0, 0.05,-1.10,1.90,0.0,
+                             -0.05,1.10,-1.90,0.0, 0.05,1.10,-1.90,0.0], dtype=jnp.float32)
+        _is_sq = jax.random.uniform(jax.random.fold_in(k1, 999), (n,)) < self.cfg.squat_frac
+        _base = jnp.where(_is_sq[:, None], _sq16[None, :], self.default_dof[None, :])
+        if self.cfg.leg_q_jit > 0.0:
+            _qj = jax.random.uniform(k1, (n, 16), minval=-self.cfg.leg_q_jit,
+                                     maxval=self.cfg.leg_q_jit)
+            q_off = q_off.at[:, self.leg_idx].set(_qj[:, self.leg_idx])
         jv = jax.random.uniform(k2, (n, 16), minval=-self.cfg.v_off, maxval=self.cfg.v_off)
 
         if self.first_riser_y is not None:
@@ -439,7 +458,7 @@ class S10RLEnv:
         qpos = qpos.at[:, 0].set(x_spawn)
         qpos = qpos.at[:, 1].set(sy)
         qpos = qpos.at[:, 2].set(self.stand_z + h_off)
-        qpos = qpos.at[:, self.act2jnt].add(q_off)
+        qpos = qpos.at[:, self.act2jnt].set(_base + q_off)
         qvel = jnp.zeros((n, self.nv))
         qvel = qvel.at[:, 0].set(cy*vx - sy*vy)
         qvel = qvel.at[:, 1].set(sy*vx + cy*vy)
@@ -563,6 +582,17 @@ class S10RLEnv:
         h_off = jax.random.uniform(k1, (n,), minval=-self.cfg.h_off, maxval=self.cfg.h_off)
         x_spawn = jax.random.uniform(k2, (n,), minval=-self.cfg.spawn_x, maxval=self.cfg.spawn_x)
         q_off = jax.random.uniform(k1, (n, 16), minval=-self.cfg.q_off, maxval=self.cfg.q_off)
+        # USER-DIRECTED 2026-08-16: initial-pose DR - squat_frac resets start at the
+        # cruise squat (lower body), rest at tall default_dof; all get leg_q_jit on the
+        # legs so the policy learns to stand up + climb from the handoff leg state.
+        _sq16 = jnp.asarray([-0.05,-1.10,1.90,0.0, 0.05,-1.10,1.90,0.0,
+                             -0.05,1.10,-1.90,0.0, 0.05,1.10,-1.90,0.0], dtype=jnp.float32)
+        _is_sq = jax.random.uniform(jax.random.fold_in(k1, 999), (n,)) < self.cfg.squat_frac
+        _base = jnp.where(_is_sq[:, None], _sq16[None, :], self.default_dof[None, :])
+        if self.cfg.leg_q_jit > 0.0:
+            _qj = jax.random.uniform(k1, (n, 16), minval=-self.cfg.leg_q_jit,
+                                     maxval=self.cfg.leg_q_jit)
+            q_off = q_off.at[:, self.leg_idx].set(_qj[:, self.leg_idx])
         jv = jax.random.uniform(k2, (n, 16), minval=-self.cfg.v_off, maxval=self.cfg.v_off)
         if self.first_riser_y is not None:
             sy = self.first_riser_y - jax.random.uniform(k1, (n,), minval=self.cfg.spawn_back_lo, maxval=self.cfg.spawn_back_hi)
@@ -575,7 +605,7 @@ class S10RLEnv:
         qpos = qpos.at[:, 0].set(x_spawn)
         qpos = qpos.at[:, 1].set(sy)
         qpos = qpos.at[:, 2].set(self.stand_z + h_off)
-        qpos = qpos.at[:, self.act2jnt].add(q_off)
+        qpos = qpos.at[:, self.act2jnt].set(_base + q_off)
         qvel = jnp.zeros((n, self.nv))
         qvel = qvel.at[:, 0].set(cy * vx - sy * vy)
         qvel = qvel.at[:, 1].set(sy * vx + cy * vy)

@@ -253,6 +253,10 @@ def main():
         except Exception as _e:
             print('[VMC] 高程图初始化失败:', _e, flush=True)
             _elev_enabled = False
+    _rl_diag_done = {}
+    def body_quat_to_yaw():
+        _qw, _qx, _qy, _qz = d.qpos[3], d.qpos[4], d.qpos[5], d.qpos[6]
+        return float(np.arctan2(2.0*(_qw*_qz + _qx*_qy), 1.0 - 2.0*(_qy*_qy + _qz*_qz)))
     _vmode = os.environ.get('S10_VMC_MODE', 'wbc')
     if _vmode == 'pd':
         from s10_mpc.vmc_legs import LegPDDrive
@@ -293,8 +297,25 @@ def main():
         vmc_car = CarVMC()
         vmc_rl = RLStairCtrl(m)
         if stair_world:   # pre-scanned known-map risers -> RL obs
-            vmc_rl.set_risers([float(w[0][1]) for w in stair_world],
-                              [float(w[4]) for w in stair_world])
+            # BUGFIX 2026-08-16 (integrated handoff root cause): the pre-scan tops
+            # come from mj_ray(..., flg_static=False) which IGNORES the static terrain
+            # mesh -> hits overlay/ramp geoms -> tops [0.48,0.67,0.67,0.92,0.92,1.04]
+            # instead of the real tread tops [0.54,0.67,0.79,0.92,1.04,1.17]. The RL
+            # height-context (obs[52:54]) was wrong (0.125m steps read as ~0.05m) and
+            # the policy misbehaved on the stairs. Feed the KNOWN map table
+            # (fol.STAIR_RISERS/TOPS, same values as the accepted 30/30 harness).
+            _r_scan = [float(w[0][1]) for w in stair_world]
+            _t_scan = [float(w[4]) for w in stair_world]
+            _r_tbl = [float(v) for v in fol.STAIR_RISERS]
+            _t_tbl = [float(v) for v in fol.STAIR_TOPS]
+            print('[VMC] RL riser y scan=%s tbl=%s' % ([round(v,3) for v in _r_scan],
+                                                       [round(v,3) for v in _r_tbl]), flush=True)
+            print('[VMC] RL riser top scan=%s tbl=%s' % ([round(v,3) for v in _t_scan],
+                                                         [round(v,3) for v in _t_tbl]), flush=True)
+            if len(_r_tbl) == len(_t_tbl) and len(_r_tbl) > 0:
+                vmc_rl.set_risers(_r_tbl, _t_tbl)
+            else:
+                vmc_rl.set_risers(_r_scan, _t_scan)
         vmc = vmc_car
         print('[VMC] 双技能 RL-stair：CRUISE=CarVMC, STAIR=RLStairCtrl(policy.pt)', flush=True)
     else:
@@ -1305,13 +1326,67 @@ def main():
                       place_z=place_z,
                       place_margin=float(os.environ.get(
                           'S10_STAIR_LIFT_MARGIN', '0.04')))
+        # FIX 2026-08-16 (acceptance match): before the RL handoff, transition the
+        # CarVMC leg pose from the cruise half-squat (S10_CAR_SQUAT=1: -1.10/1.90)
+        # to the RL tall stance (default_dof -0.60/1.20) so the RL takes over with
+        # leg_err ~ 0 (the accepted 29/30 standalone spawns with legs at default_dof).
+        # _sq MUST be the actual cruise squat (S10_CAR_SQUAT=1), not the __init__
+        # default -1.16/2.30 (that stalled the cruise - verified).
+        if (_vmode == 'rlstair' and fol.mode != 'STAIR'
+                and os.environ.get('S10_PRETRANS', '1') == '1'):
+            if os.environ.get('S10_CAR_SQUAT', '1') == '1':
+                _sq = np.array([-0.05, -1.10, 1.90, 0.05, -1.10, 1.90,
+                                -0.05, 1.10, -1.90, 0.05, 1.10, -1.90])
+            else:
+                _sq = np.array([-0.05, -1.16, 2.30, 0.05, -1.16, 2.30,
+                                -0.05, 1.16, -2.30, 0.05, 1.16, -2.30])
+            _ta = np.array([-0.05, -0.60, 1.20, 0.05, -0.60, 1.20,
+                            -0.05, 0.60, -1.20, 0.05, 0.60, -1.20])
+            _y0 = float(os.environ.get('S10_PRETRANS_Y0', '31.0'))
+            # 2026-08-16 handoff26: finishing the transition AT the handoff (y~34)
+            # leaves the legs mid-rise (max_leg_err 0.41 rad -> RL spins). Finish the
+            # carvmc+PD body-raise by S10_PRETRANS_Y1 (default 33.0) and HOLD default
+            # stance until the handoff so the legs settle (leg_err->0) before RL takes over.
+            _y1 = float(os.environ.get('S10_PRETRANS_Y1', '33.0'))
+            _tpr = float(np.clip((float(body_pos[1]) - _y0) / max(_y1 - _y0, 1e-3), 0.0, 1.0))
+            vmc_car.pose_target = (1.0 - _tpr) * _sq + _tpr * _ta
         if (os.environ.get('S10_VMC_MODE', 'wbc') == 'dual'):
             vmc = vmc_wbc if fol.mode == 'STAIR' else vmc_car
         if os.environ.get('S10_VMC_MODE', 'wbc') == 'dual2':
             vmc = vmc_fp if fol.mode == 'STAIR' else vmc_car
         if os.environ.get('S10_VMC_MODE', 'wbc') == 'rlstair':
+            # DIAG 2026-08-16: print the RL takeover state once (leg_err vs default_dof,
+            # yaw, vx, pos) to verify the handoff delivers the accepted-state distribution.
+            if fol.mode == 'STAIR' and not _rl_diag_done.get('STAIR', False):
+                _rl_diag_done['STAIR'] = True
+                _dq = qpos[vmc_rl.idx['act2jnt']] - vmc_rl.default_dof
+                _yaw0 = body_quat_to_yaw()
+                _vx0 = float(d.qvel[0]*np.cos(_yaw0) + d.qvel[1]*np.sin(_yaw0))
+                print('[RL-DIAG] takeover pos=(%.2f,%.2f,%.2f) yaw=%.3f vx=%.2f '
+                      'max_leg_err=%.3f (legs=%s)' % (
+                          float(body_pos[0]), float(body_pos[1]), float(body_pos[2]),
+                          float(_yaw0), _vx0,
+                          float(np.abs(_dq[vmc_rl.idx['leg_idx']]).max()),
+                          [round(float(v), 3) for v in _dq[vmc_rl.idx['leg_idx']]]),
+                      flush=True)
+        if os.environ.get('S10_VMC_MODE', 'wbc') == 'rlstair':
             vmc = vmc_rl if fol.mode == 'STAIR' else vmc_car
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
+        # USER-DIRECTED 2026-08-16 (carvmc+PD body-raise transition): during the RL-stair
+        # approach (CRUISE, y >= S10_PRETRANS_Y0), override the LEG torques with a direct
+        # stand PD to default_dof so the legs SETTLE at the RL tall stance before the
+        # handoff. carvmc pose_target alone leaves legs mid-rise at takeover
+        # (max_leg_err 0.41-0.51 rad, handoff25/26 -> RL spins). Wheels keep carvmc
+        # speed/yaw control (approach keeps speed+angle, NO brake-to-0).
+        if (_vmode == 'rlstair' and fol.mode != 'STAIR'
+                and os.environ.get('S10_PRETRANS', '1') == '1'
+                and float(body_pos[1]) >= float(os.environ.get('S10_PRETRANS_Y0', '32.0'))):
+            _li = vmc_rl.idx['leg_idx']
+            _lj = vmc_rl.idx['act2jnt'][_li]
+            _lv = vmc_rl.idx['act2vel'][_li]
+            _lt = np.clip(60.0 * (vmc_rl.default_dof[_li] - qpos[_lj])
+                          - 4.0 * qvel[_lv], -48.0, 48.0)
+            tau[_li] = _lt
         _tleg = float(np.abs(tau[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]]).max())
         _twh = float(np.abs(tau[[3, 7, 11, 15]]).max())
         _max_tau_leg = max(_max_tau_leg, _tleg)
@@ -1342,7 +1417,9 @@ def main():
         # v782: 密集轨迹记录（S10_TRAJ_DENSE=1 时每个控制周期 5ms 记录，
         # 供速度着色轨迹图；默认关保持原行为）
         if os.environ.get('S10_TRAJ_DENSE', '0') == '1':
-            traj.append([t, body_pos[0], body_pos[1], float(d.cvel[1][3])])
+            traj.append([t, float(body_pos[0]), float(body_pos[1]), float(body_pos[2]),
+                         float(yaw), 1.0 if fol.mode == 'STAIR' else 0.0,
+                         float(d.cvel[1][3])])
         if _viewer is not None:
             if not _viewer.is_running():
                 print('[VMC] viewer 已关闭，结束', flush=True)
@@ -1412,7 +1489,9 @@ def main():
                              np.round(step_lift, 1), terr[0], terr[2],
                              np.round(_fn9, 0), vx_c, om_c), flush=True)
                     _last_dbg_t = t
-            traj.append([t, body_pos[0], body_pos[1], float(d.cvel[1][3])])
+            traj.append([t, float(body_pos[0]), float(body_pos[1]), float(body_pos[2]),
+                         float(yaw), 1.0 if fol.mode == 'STAIR' else 0.0,
+                         float(d.cvel[1][3])])
             if _stuck_timeout > 0.0 and t - _last_adv_t > _stuck_timeout:
                 print('[VMC-T] *** 卡死 %.0fs 无航点推进 (wp=%d) ***'
                       % (t - _last_adv_t, next_idx), flush=True)

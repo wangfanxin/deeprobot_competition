@@ -80,7 +80,15 @@ def make_stages(num_envs=1024):
         c = _base_cfg(num_envs)
         c.terrain = stairs(COMPETITION_RISERS, y0=1.5)
         c.max_ep_len = 1000
-        c.yaw_lo, c.yaw_hi = -1.0, 1.0   # handoff worst-case approach angle
+        # USER-DIRECTED 2026-08-16: realistic handoff distribution. The previous yaw
+        # +-1.0 rad REGRESSED the aligned case (official real-mesh 100% -> 53%) - the
+        # cruise handoff yaw is only +-0.2 rad, so keep +-0.3 margin. Add initial-pose
+        # DR (squat_frac + leg_q_jit) - verified: squat-start = 0/30, leg_jit 0.3 = 70%
+        # on the real mesh without it; the handoff delivers legs with up to ~0.15 rad
+        # error (and possibly squat if the transition is cut short).
+        c.yaw_lo, c.yaw_hi = -0.3, 0.3
+        c.squat_frac = 0.35
+        c.leg_q_jit = 0.25
         return c
     return [
         Stage("T0_flat", c0, advance_at=0.5, min_iters=30),
