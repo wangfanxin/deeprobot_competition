@@ -1,4 +1,4 @@
-﻿"""sim2sim_exact.py: C++ MuJoCo transfer eval on EXACT competition stair geometry.
+"""sim2sim_exact.py: C++ MuJoCo transfer eval on EXACT competition stair geometry.
 
 Replaces the broken mesh terrain (S10_track.xml meshes do not support the robot in
 mujoco 3.11 - see doc RL_stair_方案_20260814.md §3.38) with an equivalent BOX terrain
@@ -51,7 +51,7 @@ def build_exact_terrain():
     t.start_y = 35.0; t.goal_y = 41.5; t.ground_friction = 1.0
     return t
 
-def run_seed(m, d, ppo, idx, seed, vx, spawn_y, steps, x_jit, yaw_jit):
+def run_seed(m, d, policy, idx, seed, vx, spawn_y, steps, x_jit, yaw_jit):
     rng = np.random.default_rng(seed)
     x = float(rng.uniform(-x_jit, x_jit))
     yaw = 1.5708 + float(rng.uniform(-yaw_jit, yaw_jit))
@@ -74,7 +74,7 @@ def run_seed(m, d, ppo, idx, seed, vx, spawn_y, steps, x_jit, yaw_jit):
     for s in range(steps):
         obs=compute_obs_np(d.qpos,d.qvel,idx,last_a,cmd,RISERS_Y,TOPS)
         with torch.no_grad():
-            a=ppo.actor.act(torch.as_tensor(obs).unsqueeze(0),noiseless=True).squeeze(0).numpy()
+            a=policy(torch.as_tensor(obs).unsqueeze(0)).squeeze(0).numpy()
         a=np.clip(a,-1,1)
         q=d.qpos[act2jnt]-default_dof; qd=d.qvel[act2vel]
         tau=np.zeros(m.nu)
@@ -103,6 +103,8 @@ def main():
     ap.add_argument("--steps", type=int, default=1200)
     ap.add_argument("--x_jit", type=float, default=0.1)
     ap.add_argument("--yaw_jit", type=float, default=0.05)
+    ap.add_argument("--jit", action="store_true",
+                    help="load TorchScript policy.pt directly (deploy policy)")
     args = ap.parse_args()
 
     xml = build_model_xml(build_exact_terrain())
@@ -111,10 +113,15 @@ def main():
     m = mujoco.MjModel.from_xml_path(p)
     d = mujoco.MjData(m)
     idx = build_indices(m)
-    ppo = PPO(55, 72, 16, PPOCfg(num_envs=1), "cpu")
-    ppo.load(args.ckpt); ppo.actor.eval()
-    print(f"ckpt={args.ckpt} vx={args.vx} seeds={args.seeds}", flush=True)
-    res = [run_seed(m, d, ppo, idx, s, args.vx, args.spawn_y, args.steps, args.x_jit, args.yaw_jit)
+    if args.jit:
+        policy = torch.jit.load(args.ckpt, map_location="cpu")
+        policy.eval()
+    else:
+        ppo = PPO(55, 72, 16, PPOCfg(num_envs=1), "cpu")
+        ppo.load(args.ckpt); ppo.actor.eval()
+        policy = lambda x: ppo.actor.act(x, noiseless=True)
+    print(f"ckpt={args.ckpt} jit={args.jit} vx={args.vx} seeds={args.seeds}", flush=True)
+    res = [run_seed(m, d, policy, idx, s, args.vx, args.spawn_y, args.steps, args.x_jit, args.yaw_jit)
            for s in range(args.seeds)]
     n_succ = sum(r["succ"] for r in res)
     n_reach = sum(r["reached"] for r in res)
