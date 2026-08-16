@@ -518,7 +518,7 @@ class AutoNavFollower:
         # robot accelerates gradually instead of jumping straight to max_speed at s=0.
         # Forward pass below then ramps +_acc_up m/s per metre (default 2.0 => +1 m/s
         # every 0.5 m).
-        _start_v = float(os.environ.get("S10_VLIM_START", "0.0"))
+        _start_v = float(os.environ.get("S10_VLIM_START", "1.0"))
         self.path_vlim[0] = min(self.path_vlim[0], _start_v)
         for _k in range(1, _nv):
             _ds = float(self.path_cum[_k] - self.path_cum[_k - 1])
