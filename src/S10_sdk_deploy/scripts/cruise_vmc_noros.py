@@ -110,7 +110,7 @@ def main():
 
     fol = AutoNavFollower(
         wp,
-        max_speed=float(os.environ.get('S10_AUTO_VMAX', '6.0')),
+        max_speed=float(os.environ.get('S10_AUTO_VMAX', '4.5')),
         vyaw_max=float(os.environ.get('S10_AUTO_VYAW_MAX', '3.5')),
         yaw_gain=float(os.environ.get('S10_AUTO_YAW_GAIN', '2.5')),
         lookahead=float(os.environ.get('S10_AUTO_LOOKAHEAD', '1.5')))
@@ -227,7 +227,7 @@ def main():
     mppi = BodyMPPI(
         N=int(os.environ.get('VMC_MPPI_N', '4096')),
         H=int(os.environ.get('VMC_MPPI_H', '40')),
-        vx_max=float(os.environ.get('S10_AUTO_VMAX', '6.0')))
+        vx_max=float(os.environ.get('S10_AUTO_VMAX', '4.5')))
 
     # 2026-08-15 23:15 (USER acceptance): elevation-map STAIR entry/exit.
     # S10_RL_ELEV=1 -> build local_map tile from lidar LidarTerrainV2 and feed
