@@ -91,7 +91,7 @@ def make_stages(num_envs=1024):
         # initial velocity 0..2 m/s and start 0..3 m before the first riser.
         # (was default vx -0.5..2.5, spawn_back 0.5..2.0).
         c.vx_lo, c.vx_hi = 0.0, 2.0
-        c.spawn_back_lo, c.spawn_back_hi = 0.0, 3.0
+        c.spawn_back_lo, c.spawn_back_hi = 0.4, 3.0   # 0.4=前轮贴首级台阶(中心不重叠), 3.0=3m后
         c.squat_frac = 0.35
         c.leg_q_jit = 0.25
         return c
