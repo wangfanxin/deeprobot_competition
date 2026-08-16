@@ -92,8 +92,13 @@ def make_stages(num_envs=1024):
         # (was default vx -0.5..2.5, spawn_back 0.5..2.0).
         c.vx_lo, c.vx_hi = 0.0, 2.0
         c.spawn_back_lo, c.spawn_back_hi = 0.4, 3.0   # 0.4=前轮贴首级台阶(中心不重叠), 3.0=3m后
-        c.squat_frac = 0.35
-        c.leg_q_jit = 0.25
+        # USER-DIRECTED 2026-08-16 (goal 0, align with PRETRANS/TK1): the
+        # TAKEOVER1 mode + PRETRANS stand-PD bring the legs to the stair stance
+        # BEFORE the RL takeover (verified leg_err 0.122). So the handoff DR must
+        # match that, not the 0.35 squat / 0.25 rad jitter (which is the cause of
+        # T6 0.30 vs T3 0.72). Small squat margin for imperfect PRETRANS.
+        c.squat_frac = 0.10
+        c.leg_q_jit = 0.12
         return c
     return [
         Stage("T0_flat", c0, advance_at=0.5, min_iters=30),
