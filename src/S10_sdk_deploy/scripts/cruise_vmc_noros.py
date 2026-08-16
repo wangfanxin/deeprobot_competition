@@ -948,7 +948,15 @@ def main():
                     _v_near = float(os.environ.get('S10_STEP_HOMING_VX', '2.0'))
                     _v_far = float(os.environ.get('S10_STEP_HOMING_VX_FAR', '3.0'))
                     _vx_tk = _v_near + (_v_far - _v_near) * (1.0 - _w)
-                    vx_c = min(vx_c, _vx_tk)
+                    # Alignment gate: if the heading error to the next step is still
+                    # large, hold a very low approach speed so the robot does not hit
+                    # the step with lateral velocity (wp4->5 tip-over mode).
+                    _edb = float(os.environ.get('S10_STEP_HOMING_YAW_DB', '0.12'))
+                    _valign = float(os.environ.get('S10_STEP_HOMING_ALIGN_VX', '1.0'))
+                    if abs(_e) > _edb:
+                        vx_c = min(vx_c, _valign)
+                    else:
+                        vx_c = min(vx_c, _vx_tk)
             # v599: 楼梯区导航 omega 置零——楼梯是直道且横向走廊宽，导航
             # 的 yaw 振荡只会让后轮左右对转空耗推力（tauW ±13.5 对转实测）；
             # 航向保持交给 WBC 反馈（om_f=0 时差速≈0，四轮统一向前推）。
