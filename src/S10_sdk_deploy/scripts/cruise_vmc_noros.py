@@ -580,7 +580,7 @@ def main():
             # geometric cte, which is CONFUSED after sharp turns (verified wp4->5: nav
             # vyaw saturated -2.0 yet the robot drifted 1.4m off-path). Blend in over the
             # last D/2 metres so normal path-following is unaffected far from a step.
-            if os.environ.get('S10_STEP_HOMING', '0') == '1' and ridge_world:
+            if os.environ.get('S10_STEP_HOMING', '0') == '1' and ridge_world and _post_stair_s is None:
                 _sc = float(getattr(fol, '_s_cur', 0.0))
                 _hd = float(os.environ.get('S10_STEP_HOMING_D', '3.0'))
                 _home = None
@@ -828,6 +828,8 @@ def main():
                     vx_c = min(vx_c, float(os.environ.get('S10_LOWV_ALIGN_VX', '0.4')))
                 else:
                     vx_c = min(vx_c, 1.0)
+                if os.environ.get('S10_AIM_DEBUG', '0') == '1':
+                    print('[AIM] next=%d err=%.2f vx_c=%.2f om_c=%.2f' % (next_idx, _err, vx_c, om_c), flush=True)
             # v218p: omega 上限匹配 VMC yaw 能力（防指令远超执行导致振荡）
             # v245: speed-dependent cap - lateral accel envelope a_lat=w*v
             # （实测 YAW_TMAX 滑移权威下 ω 可达 3.6+，v=1.9 时 a_lat 7m/s2 翻车）
@@ -840,7 +842,7 @@ def main():
             # OVERRIDING the MPPI/nav output (a nav-target-only homing is diluted by the
             # MPPI, verified). S10_STEP_HOMING_SIGN handles the wp4->5 turn-direction flip
             # (CarVMC om>0 = left; nav vyaw=-2.0 right/east was executed as WEST -> flip).
-            if os.environ.get('S10_STEP_HOMING', '0') == '1' and ridge_world:
+            if os.environ.get('S10_STEP_HOMING', '0') == '1' and ridge_world and _post_stair_s is None:
                 _sc = float(getattr(fol, '_s_cur', 0.0))
                 _hd = float(os.environ.get('S10_STEP_HOMING_D', '3.0'))
                 _home = None
@@ -967,7 +969,7 @@ def main():
         s_cur = float(getattr(fol, '_s_cur', 0.0))
         # v292: 台阶窗 vx 连续插值到 STAIR_WIN_VX（默认 1.8，不归零）——
         # 窗内只换腿控制（几何相位）与轮力矩模式，vx 参考保持连续
-        if stair_risers:
+        if stair_risers and _post_stair_s is None:
             _sw0 = float(stair_risers[0][0]) - 1.0
             _sw1 = float(stair_risers[-1][0]) + 2.0
             _sramp = float(os.environ.get('S10_STAIR_VX_RAMP', '1.0'))
