@@ -248,14 +248,15 @@ S10_MPC_ENABLE=1 S10_MODE=auto_nav ~/DR_competition/.venv/bin/python \
 
 - **管线一（巡航 carvmc+mppi，v890 稳定）**：wp0→4 ≈13.5s、wp0→6 30.5s；
   wp0→33 分段通过 18 点，卡点 = 坡底脊区 / wp17 大弯 / wp4→5 发卡+横脊。
-- **管线二（RL 爬梯）**：MJX PPO T1-T6 训练中；box 地形 12/12 直立爬完 6 级；
-  交接根因链已修复（riser 表 / PD 腿覆盖过渡 / STAIR 提前触发）。
-  **核心瓶颈 = sim2sim 迁移（MJX box → 真实 mesh）**：真实 mesh 下策略
-  趴地爬行（z 0.27~0.44 vs 直立 0.84~0.98），早期"96.7% 官方验收"为
-  平地/趴地假象已更正（图 `doc/figures/box_vs_real_z.png`）。
-- 待办：① 真实 mesh 直立爬迁移（C++ 训练 env 重构 或 更强 DR + real-mesh
-  eval 闭环）；② wp6→7 全流程连续成功；③ 33 航点全程；④ 真机迁移；
-  ⑤ 初赛材料（8.20 技术方案 PDF + Demo + GitHub 链接）。
+- **管线二（RL 爬梯）★ 里程碑（08-16）**：真实 mesh **全流程 wp5→wp9 打通**
+  （wp5@1.16 / wp6@7.39 / wp7@14.99 / wp8@28.10 / wp9@32.96）；RL 在比赛
+  原图集成流**直立爬完全部 6 级**（y_max=42.5、z=1.49）。突破要素：r_heading
+  2→5（yaw 对齐强化）、轮驱 DR 0.3-1.2×（覆盖 2.7× gap）、模式横跳修复、
+  CarVMC.reset_state 交接、wp7 走廊偏移判定。最优迁移模型 r_heading=5
+  iter-40（succ 0.649）已锁定（deploy/policy_accepted_base.pt）。
+- 待办：① wp10 微升(0.1m)弱轮爬升 + wp10-33；② wp0-33 全程；
+  ③ 高速（cruise 侧根本限制）；④ 真机迁移；⑤ 初赛材料（8.20 技术方案
+  PDF + Demo + GitHub 链接）。
 
 ## 相关文档
 

@@ -154,10 +154,7 @@ class AutoNavFollower:
             if s0 <= _s <= s1:
                 _t = (_s - s0) / (s1 - s0)
                 # v469: 走廊偏移剖面可调（S10_STAIR_CORRIDOR_FAST 默认 1）。
-                # 原半正弦在段中才达峰——wp6→7 中央脊 y≥34.4 起点时只移
-                # 0.35m，狗滞后 0.3m 到 x≈-15.0 被脊钉死西侧（左轮撞 0.4m
-                # 脊面）。快速梯形：前 30% 段内完成全偏移（y≈34.3 前狗已
-                # 完全到东侧走廊），中段保持，末 30% 退回。
+                # 快速梯形：前 30% 段内完成全偏移，中段保持，末 30% 退回。
                 if float(os.environ.get("S10_STAIR_CORRIDOR_FAST", "1")) > 0:
                     if _t < 0.30:
                         _w = float(np.sin(0.5 * np.pi * _t / 0.30) ** 2)
