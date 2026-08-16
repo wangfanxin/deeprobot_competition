@@ -1,9 +1,8 @@
 # S10 巡逻赛题 · 感知-控制工程仓库
 
 基于山猫 S10 四足轮式机器人的**巡逻赛题**参赛方案：LiDAR 感知 + 高程地形建模 +
-导航（平滑路径/速度剖面）→ **CarVMC 车化控制**（轮驱动/差速 + 腿=主动悬架）的
-层级方案，其中巡航与爬梯由 **CarVMC 车化巡航 + RL-Stair 爬梯**双技能实现，
-在 MuJoCo 仿真中完成 33 航点全程巡检（历史 dial-mpc 方案已归档）。
+导航（平滑路径/速度剖面）→ 执行层 **carvmc+mppi（巡航） / rl stair（爬梯）**的
+层级方案，在 MuJoCo 仿真中完成 33 航点全程巡检（历史 dial-mpc 方案已归档）。
 
 ## 赛题与计分
 
@@ -21,7 +20,7 @@
 graph LR
     S["mujoco (S10_track.xml)"] -->|"200Hz"| P["mujoco-lidar → LidarTerrain 高程图 (10Hz)"]
     P -->|"高程/riser"| N["AutoNavFollower (20Hz): 路径+速度剖面+判点<br/>CRUISE⇄STAIR 切换"]
-    N -->|"[vx,ω]"| C["CRUISE: CarVMC (200Hz)"]
+    N -->|"[vx,ω]"| C["CRUISE: MPPI + CarVMC (200Hz)"]
     N -->|"STAIR 交接"| R["RL-Stair: rlstair_ctrl (200Hz)"]
     T["rl_stair/ MJX PPO 训练 T1-T6"] -->|"policy.pt"| R
     C -->|"tau"| S
@@ -31,8 +30,9 @@ graph LR
 - **感知**：mujoco-lidar 扇形射线（前下 45°）→ `LidarTerrain` 世界栅格累积
   高程图（10Hz，瓦片 res 0.05、riser 检测、运动学 fallback）；楼梯区以
   已知 riser 表提前触发 STAIR。
-- **巡航**：CarVMC（200Hz）轮驱动/差速 + 腿=主动悬架，连续地形响应；
-  平滑路径 + 曲率/横脊限速速度剖面（20Hz）。
+- **巡航（carvmc+mppi）**：MPPI（身体层轨迹优化，20Hz）+ CarVMC（200Hz）
+  轮驱动/差速 + 腿=主动悬架，连续地形响应；平滑路径 + 曲率/横脊限速
+  速度剖面（20Hz）。
 - **爬梯（RL）**：`rl_stair/` MJX 并行 PPO（T1-T6 课程 + 域随机化 DR），
   策略导出 `deploy/policy.pt` → `rlstair_ctrl.py`（腿 PD + 轮速）部署到
   C++ MuJoCo 真实赛道；交接流程：cruise 带速接近 → carvmc+PD 抬身 →
@@ -154,7 +154,7 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 ~/DR_competition/.venv/bin/python \
 
 ## 当前进度与待办（2026-08-16）
 
-- **CarVMC 巡航（v890 稳定）**：wp0→4 ≈13.5s、wp0→6 30.5s；
+- **巡航 carvmc+mppi（v890 稳定）**：wp0→4 ≈13.5s、wp0→6 30.5s；
   wp0→33 分段通过 18 点，卡点 = 坡底脊区 / wp17 大弯 / wp4→5 发卡+横脊。
 - **RL-Stair**：MJX PPO T1-T6 训练中；box 地形 12/12 直立爬完 6 级；
   交接根因链已修复（riser 表 / PD 腿覆盖过渡 / STAIR 提前触发）。
@@ -167,7 +167,7 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 ~/DR_competition/.venv/bin/python \
 
 ## 相关文档
 
-- **[doc/carvmc_方案与数据管线_20260810.md](doc/carvmc_方案与数据管线_20260810.md) —— CarVMC 巡航（v890）方案与数据管线**
+- **[doc/carvmc_方案与数据管线_20260810.md](doc/carvmc_方案与数据管线_20260810.md) —— 巡航 carvmc+mppi（v890）方案与数据管线**
 - [doc/RL_stair_方案_20260814.md](doc/RL_stair_方案_20260814.md) —— RL-Stair 技能方案（定稿 v3）
 - [doc/RL_stair_最终验收_20260815.md](doc/RL_stair_最终验收_20260815.md) —— RL-Stair 最终验收（含假象更正）
 - [doc/RL_stair_迁移达标方案_95percent.md](doc/RL_stair_迁移达标方案_95percent.md) —— 迁移达标方案（阶段0-3）
