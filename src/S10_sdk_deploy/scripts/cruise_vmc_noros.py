@@ -249,6 +249,37 @@ def main():
                     _lterr.update()
                     _elev_last_upd[0] = _now
                 return build_local_tile(_lterr, float(body_pos[0]), float(body_pos[1]))
+            # OBSTACLE COSTMAP (USER goal 3): lidar wall channel -> on/off-path
+            # 2D truncated distance field (ESDF) for BodyMPPI soft potential.
+            # Updated at S10_ELEV_HZ (same as lidar); only CRUISE uses it.
+            _costmap_last = [-1e9]
+            _costmap_cache = [None]
+            if os.environ.get('S10_MPPI_OBSTACLE', '0') == '1':
+                os.environ.setdefault('S10_LIDAR_WALL', '1')
+            def _build_costmap():
+                _now = time.time()
+                _hz = float(os.environ.get('S10_ELEV_HZ', '4'))
+                if _now - _costmap_last[0] < 1.0 / max(_hz, 1.0):
+                    return _costmap_cache[0]
+                _costmap_last[0] = _now
+                _cm = None
+                try:
+                    from s10_mpc.costmap2d import build_costmap
+                    _cm = build_costmap(
+                        _lterr, fol.path_pts, fol.path_cum,
+                        float(getattr(fol, '_s_cur', 0.0)),
+                        float(body_pos[0]), float(body_pos[1]),
+                        half=float(os.environ.get('S10_OBST_HALF', '8.0')),
+                        res=float(os.environ.get('S10_OBST_RES', '0.2')),
+                        lat_min=float(os.environ.get('S10_OBST_LAT_MIN', '0.5')),
+                        inflate=float(os.environ.get('S10_OBST_INFLATE', '0.3')),
+                        dmax=float(os.environ.get('S10_MPPI_OBSTACLE_DMAX', '2.0')),
+                        h_min=float(os.environ.get('S10_OBST_H_MIN', '0.3')),
+                        h_hard=float(os.environ.get('S10_OBST_H_HARD', '0.5')))
+                except Exception:
+                    _cm = None
+                _costmap_cache[0] = _cm
+                return _cm
             print('[VMC] 高程图 STAIR 判定启用 (S10_RL_ELEV=1)', flush=True)
         except Exception as _e:
             print('[VMC] 高程图初始化失败:', _e, flush=True)
@@ -545,6 +576,11 @@ def main():
                          getattr(fol, '_last_tgt', [0, 0, 0])[1],
                          getattr(fol, '_s_cur', 0.0), vyaw,
                          getattr(fol, '_last_cte', 0.0)), flush=True)
+            if (os.environ.get('S10_MPPI_OBSTACLE', '0') == '1'
+                    and fol.mode == 'CRUISE' and _elev_enabled):
+                mppi.set_costmap(_build_costmap())
+            else:
+                mppi.set_costmap(None)
             if os.environ.get('S10_VMC_USE_NAV', '0') == '1':
                 vx_c, om_c = vx, vyaw   # 直接导航指令（无 MPPI 随机性）
             else:
