@@ -853,14 +853,24 @@ def main():
                 _ak = float(os.environ.get('S10_LOWV_ALIGN_K', '1.2'))
                 om_c = float(np.clip(_ak * _err, -1.2, 1.2))
                 if abs(_err) > float(os.environ.get('S10_LOWV_ALIGN_ERR', '0.30')):
-                    vx_c = min(vx_c, float(os.environ.get('S10_LOWV_ALIGN_VX', '0.4')))
-                    # MINIMUM TURN RATE: when misaligned, never command a too-weak om
-                    # (weak differential stalls in the friction deadband on the platform
-                    # and err oscillates 0.56-0.75 without converging). At vx~0.3 this
-                    # fixed turn rate does not roll the body.
-                    _min_om = float(os.environ.get('S10_LOWV_ALIGN_MIN_OM', '0.0'))
-                    if abs(om_c) < _min_om:
-                        om_c = _min_om * (1.0 if _err >= 0.0 else -1.0)
+                    # STEP-TURN (USER option 1): alternate a short fixed-rate turn burst and a
+                    # dwell pause so the weak-grip platform wheels regain grip between bursts
+                    # (continuous differential slips and rolls the body at wp7->8). Turn at
+                    # S10_STEP_TURN_OM for S10_STEP_TURN_DT, then pause the same duration.
+                    _stdt = float(os.environ.get('S10_STEP_TURN_DT', '0.5'))
+                    _stom = float(os.environ.get('S10_STEP_TURN_OM', '0.6'))
+                    if next_idx >= 8:
+                        _phase = int(t / _stdt) % 2   # 0=turn, 1=pause
+                        if _phase == 0:
+                            vx_c = 0.0
+                            om_c = _stom * (1.0 if _err >= 0.0 else -1.0)
+                        else:
+                            vx_c = 0.0
+                            om_c = 0.0
+                    else:
+                        # drift correction (next_idx 7): gentler continuous turn
+                        vx_c = min(vx_c, float(os.environ.get('S10_LOWV_ALIGN_VX', '0.4')))
+                        om_c = float(np.clip(_ak * _err, -0.6, 0.6))
                 else:
                     vx_c = min(vx_c, 1.0)
                 # SLIP RECOVERY: on the weak-grip platform the differential torque can make
