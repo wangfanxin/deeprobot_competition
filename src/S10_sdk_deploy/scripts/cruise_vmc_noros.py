@@ -584,14 +584,20 @@ def main():
             if (os.environ.get('S10_W45_PULL', '0') == '1'
                     and next_idx == 5
                     and float(body_pos[1]) > float(os.environ.get('S10_W45_PULL_Y', '19.0'))):
-                # AFTER the wp4->5 step: SWITCH BACK TO CRUISE (do NOT override vyaw -
-                # the nav's heading-aware waypoint pursuit already aims at wp5). Only
-                # cap vx so the robot slows down and can turn precisely to hit wp5
-                # instead of overshooting north past it.
-                _pvx = float(os.environ.get('S10_W45_PULL_VX', '1.5'))
+                # AFTER the wp4->5 step: heading-aware aim at wp5 to KILL the east drift
+                # (the step homing leaves the robot heading ~east; aim at wp5 = north-west
+                # pulls it back to the corridor). The arc-length registration
+                # (S10_WP_ADVANCE_BY_S) then registers wp5 once past its arc.
+                _px = float(body_pos[0]); _py = float(body_pos[1])
+                _wx = float(fol.wp[next_idx, 0]); _wy = float(fol.wp[next_idx, 1])
+                _tyaw = float(np.arctan2(_wy - _py, _wx - _px))
+                _err = float(np.arctan2(np.sin(_tyaw - yaw), np.cos(_tyaw - yaw)))
+                _kpull = float(os.environ.get('S10_W45_PULL_K', '2.0'))
+                vyaw = float(np.clip(_kpull * _err, -1.5, 1.5))
+                _pvx = float(os.environ.get('S10_W45_PULL_VX', '2.0'))
                 vx = min(vx, _pvx)
                 if os.environ.get('S10_W45_PULL_DEBUG', '0') == '1':
-                    print('[W45-PULL] pos=(%.2f,%.2f) yaw=%.2f vx_cap=%.2f (cruise resumed)' % (float(body_pos[0]), float(body_pos[1]), yaw, _pvx), flush=True)
+                    print('[W45-PULL] pos=(%.2f,%.2f) yaw=%.2f target=%.2f err=%.3f vyaw=%.3f' % (_px, _py, yaw, _tyaw, _err, vyaw), flush=True)
             # TAKEOVER MODE 1 (USER goal 1.1, PERCEPTION-DRIVEN - no waypoint hardcode):
             # whenever CRUISE AND the lidar elevation map detects a stair/step AHEAD,
             # enter takeover: pause nav yaw tracking, decel to the stair-acceptable speed,
@@ -733,6 +739,22 @@ def main():
                 vx_c, om_c = vx, vyaw   # 直接导航指令（无 MPPI 随机性）
                 _switch_vx = float(os.environ.get('S10_SWITCH_VX', '3.5'))
                 vx_c = min(vx_c, _switch_vx)
+                # POST-SWITCH RECOVERY (USER 2026-08-16): after the wp4->5 step the
+                # robot is east-drifted and heading ~east. If the heading error to the
+                # next waypoint is large, SLOW + STEER toward it (stop-and-turn) so it
+                # does not fly off east at 3.5m/s before the nav can correct.
+                if (os.environ.get('S10_SWITCH_RECOVER', '1') == '1'
+                        and next_idx < len(wp)):
+                    _wx = float(wp[next_idx, 0]); _wy = float(wp[next_idx, 1])
+                    _tyaw = float(np.arctan2(_wy - float(body_pos[1]),
+                                             _wx - float(body_pos[0])))
+                    _err = float(np.arctan2(np.sin(_tyaw - yaw), np.cos(_tyaw - yaw)))
+                    _rth = float(os.environ.get('S10_SWITCH_RECOVER_ERR', '0.4'))
+                    if abs(_err) > _rth:
+                        _rv = float(os.environ.get('S10_SWITCH_RECOVER_VX', '1.5'))
+                        vx_c = min(vx_c, _rv)
+                        _rk = float(os.environ.get('S10_SWITCH_RECOVER_K', '2.0'))
+                        om_c = float(np.clip(_rk * _err, -1.5, 1.5))
             else:
                 # v270: MPPI 采样中心加曲率前馈 κ·v_ref（导航放开、MPPI
                 # 约束兜底；样本围绕正确转向率，约束仍在摩擦锥内）
@@ -1744,7 +1766,8 @@ def main():
             # S10_WP_ADVANCE_S_MARGIN, register it (the nav will pull x back on the next
             # segment). Gated off by default.
             if (not reached and os.environ.get('S10_WP_ADVANCE_BY_S', '0') == '1'
-                    and next_idx < len(fol.path_wp_s)):
+                    and next_idx < len(fol.path_wp_s)
+                    and next_idx == int(os.environ.get('S10_WP_ADVANCE_BY_S_WP', '5'))):
                 _sm = float(os.environ.get('S10_WP_ADVANCE_S_MARGIN', '1.0'))
                 _s_cur = float(getattr(fol, '_s_cur', 0.0))
                 if _s_cur > float(fol.path_wp_s[next_idx]) + _sm:
