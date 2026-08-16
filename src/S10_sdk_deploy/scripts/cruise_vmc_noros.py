@@ -593,9 +593,12 @@ def main():
                 vmc_car.yaw_wheel_scale = 1.0
                 vmc_car.kp_roll = _orig_kp_roll
                 vmc_car.kd_roll = _orig_kd_roll
+            _Rbm = np.asarray(d.xmat[1], dtype=np.float64).reshape(3, 3)
+            _body_vel = _Rbm.T @ np.asarray(d.cvel[1][3:6], dtype=np.float64)
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
-                robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]))
+                robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]),
+                body_vx=float(_body_vel[0]), body_vy=float(_body_vel[1]))
             # STEP HOMING (USER-DIRECTED 2026-08-16, part of the takeover): when a known
             # step/ridge is ahead within S10_STEP_HOMING_D along the path, steer the robot
             # toward the step's path-crossing point (align before climbing) instead of the
