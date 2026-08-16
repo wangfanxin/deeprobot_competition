@@ -852,7 +852,7 @@ class AutoNavFollower:
                 _prog = float(np.dot(
                     np.asarray(robot_xy) - self._stair_first_riser_xy, _fwd))
                 _min_climb = float(os.environ.get("S10_STAIR_MIN_CLIMB_S", "2.5"))
-                if self.stair_ahead_dist is None and _prog > _min_climb:
+                if _prog > _min_climb:
                     self.mode = "CRUISE"
                     self.decel_request = 0.0
                     self._stair_first_riser_xy = None

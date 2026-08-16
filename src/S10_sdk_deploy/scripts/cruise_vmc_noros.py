@@ -359,6 +359,8 @@ def main():
     _tk2 = False
     _tk2_was_stair = False
     _post_stair_s = None   # arc-length of the STAIR->CRUISE handback (perception-driven exit)
+    _last_next_idx = 0
+    _trans_pause_until = -1.0
     _orig_lowspd = os.environ.get('S10_CAR_LOWSPD_TURN', '0.0')
     _orig_ysm = os.environ.get('S10_CAR_YAW_K_SM', '30.0')
     _orig_hipx_yaw = os.environ.get('S10_CAR_HIPX_YAW', '0.0')
@@ -825,6 +827,16 @@ def main():
             # while misaligned; this corrects the east drift AND makes the 90-degree turn.
             if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
                     and _post_stair_s is not None and next_idx < len(wp)):
+                # TRANSITION PAUSE: when entering the platform 90-degree turn (next_idx 7->8),
+                # briefly stop so the CarVMC yaw filters settle and the body stops before the
+                # turn. The instant body-spin at the wp7->8 boundary (body omega -0.97 while
+                # cmd om +0.22) was the fall root cause.
+                if next_idx >= 8 and _last_next_idx < 8:
+                    _trans_pause_until = t + float(os.environ.get('S10_TRANS_PAUSE', '0.5'))
+                _last_next_idx = next_idx
+                if t < _trans_pause_until:
+                    om_c = 0.0
+                    vx_c = 0.0
                 _wx = float(wp[next_idx, 0]); _wy = float(wp[next_idx, 1])
                 _tyaw = float(np.arctan2(_wy - float(body_pos[1]),
                                          _wx - float(body_pos[0])))
