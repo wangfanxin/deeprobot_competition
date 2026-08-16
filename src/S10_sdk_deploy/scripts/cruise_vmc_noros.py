@@ -359,6 +359,8 @@ def main():
     _tk2 = False
     _tk2_was_stair = False
     _post_stair_s = None   # arc-length of the STAIR->CRUISE handback (perception-driven exit)
+    _post_stair_xy = None  # world xy at handback (physical travel distance)
+    _post_stair_slow_v = None
     _last_next_idx = 0
     _trans_pause_until = -1.0
     _orig_lowspd = os.environ.get('S10_CAR_LOWSPD_TURN', '0.0')
@@ -559,6 +561,7 @@ def main():
             # and the body-lower use travel distance, not y/waypoint coordinates.
             if fol.mode != 'STAIR' and _tk2_was_stair:
                 _post_stair_s = float(getattr(fol, '_s_cur', 0.0))
+                _post_stair_xy = np.array([float(body_pos[0]), float(body_pos[1])])
                 if os.environ.get('S10_TK2', '0') == '1':
                     _tk2 = True
             _tk2_was_stair = (fol.mode == 'STAIR')
@@ -687,14 +690,16 @@ def main():
             # REGISTERED (next_idx <= 10), i.e. through the whole east run.
             if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
                     and _post_stair_s is not None
-                    and (float(getattr(fol, '_s_cur', 0.0)) - _post_stair_s)
+                    and _post_stair_xy is not None
+                    and float(np.hypot(body_pos[0] - _post_stair_xy[0],
+                                       body_pos[1] - _post_stair_xy[1]))
                         < float(os.environ.get('S10_STAIR_EXIT_SLOW_LEN', '8.0'))):
                 # 2026-08-16 (verified): post-stair exit speed 1.5 through the platform -
                 # the robot is stable at ~1-1.5 m/s on the real mesh; 2.0/2.5 tip on the
                 # east run (weak real-mesh grip + differential saturation, verified).
                 _esv = float(os.environ.get('S10_STAIR_EXIT_VX', '1.5'))
                 vx = min(vx, _esv)
-                v_ref = min(v_ref, _esv)
+                _post_stair_slow_v = _esv
                 # BUGFIX 2026-08-16 (wp8 turn oscillation): after the RL hands back the
                 # nav err is large (robot 0.8m east of the path) -> vyaw saturates at
                 # 2-2.7 rad/s -> the robot overshoots and oscillates on the platform.
@@ -706,9 +711,13 @@ def main():
                 if _dsexit > float(os.environ.get('S10_STAIR_EXIT_VYAW_RAMP_S', '3.0')):
                     _exit_vyaw = float(os.environ.get('S10_STAIR_EXIT_VYAW_EAST', '2.5'))
                 vyaw = float(np.clip(vyaw, -_exit_vyaw, _exit_vyaw))
+            else:
+                _post_stair_slow_v = None
             # USER acceptance: decelerate when a stair/ridge is detected AHEAD on the
             # elevation map (AutoNavFollower.decel_request, ramped by proximity).
             v_ref = fol._last_vlim
+            if _post_stair_slow_v is not None:
+                v_ref = min(v_ref, _post_stair_slow_v)
             if fol.decel_request > 0.0:
                 # USER-DIRECTED 2026-08-16: don't slow too much - perception decel
                 # target 2.5 m/s (was 1.2), only triggered by a rise ON the path.
@@ -1350,7 +1359,9 @@ def main():
         # lean-in - the tall post-RL stance tips over with the CarVMC lean (roll -0.89).
         if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
                 and _post_stair_s is not None
-                and (float(getattr(fol, '_s_cur', 0.0)) - _post_stair_s)
+                and _post_stair_xy is not None
+                and float(np.hypot(body_pos[0] - _post_stair_xy[0],
+                                   body_pos[1] - _post_stair_xy[1]))
                     < float(os.environ.get('S10_STAIR_EXIT_SLOW_LEN', '8.0'))):
             roll_tar = 0.0
         # v854: 删除 ROLL_VGATE/ROLL_ERR_GATE 门控（用户：无离散门控）——

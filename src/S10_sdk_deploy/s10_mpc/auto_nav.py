@@ -85,6 +85,7 @@ class AutoNavFollower:
         self._stair_enter_s = None
         self._stair_first_riser_xy = None
         self._stair_first_heading = None
+        self._stair_exit_xy = None
         self._elev_last_steps = None   # GOAL #3 raw step edges (perception turn+ridge assist)
         # 全局平滑路径（2026-08-06 用户方向 1.1/1.2）：航点折线 → 圆角
         # 折线（弯道圆弧过渡）→ 密集弧长参数化路径 + 曲率/速度剖面。
@@ -858,6 +859,7 @@ class AutoNavFollower:
                     self._stair_first_riser_xy = None
                     self._stair_first_heading = None
                     self._stair_enter_s = None
+                    self._stair_exit_xy = np.asarray(robot_xy, dtype=np.float64).copy()
                     if _dbg:
                         print(f"[MODE] CRUISE (handback) prog={_prog:.1f} "
                               f"pos=({robot_xy[0]:.2f},{robot_xy[1]:.2f})", flush=True)
@@ -866,6 +868,14 @@ class AutoNavFollower:
         # CRUISE -> STAIR (TK1 entry)
         if self.stair_ahead_dist is not None:
             _enter = float(os.environ.get("S10_STAIR_ENTER_DIST", "3.5"))
+            # RE-ENTRY GUARD: after a STAIR->CRUISE handback, do not re-enter STAIR until the
+            # robot has moved S10_STAIR_REENTRY_GUARD metres past the exit (prevents mode
+            # flap on the platform where the stale projection still sees the staircase ahead).
+            _guard = float(os.environ.get("S10_STAIR_REENTRY_GUARD", "3.0"))
+            if self._stair_exit_xy is not None:
+                _dx = float(np.linalg.norm(np.asarray(robot_xy) - self._stair_exit_xy))
+                if _dx < _guard:
+                    return
             if self.stair_ahead_dist <= _enter:
                 self.mode = "STAIR"
                 self._stair_enter_s = float(getattr(self, "_s_cur", 0.0))
