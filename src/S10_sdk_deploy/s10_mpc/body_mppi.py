@@ -48,6 +48,7 @@ class BodyMPPI:
         if _vmc_vx:
             vx_max = min(vx_max, float(_vmc_vx))
         w_dist = float(_os.environ.get('S10_MPPI_W_DIST', w_dist))
+        w_h = float(_os.environ.get('S10_MPPI_W_HEAD', str(w_h)))
         w_g = float(_os.environ.get('S10_MPPI_W_GUIDE', '0.5'))
         # v435: 距离成本对准衰减——狗当前航向与参考航向误差大时（离线/
         # 转向中），距离成本整体淡出，让 guide 指令主导（实测 wp3→4 狗偏
