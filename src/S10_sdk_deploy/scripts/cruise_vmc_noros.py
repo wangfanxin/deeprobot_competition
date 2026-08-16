@@ -446,6 +446,29 @@ def main():
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
                 robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]))
+            # STEP HOMING (USER-DIRECTED 2026-08-16, part of the takeover): when a known
+            # step/ridge is ahead within S10_STEP_HOMING_D along the path, steer the robot
+            # toward the step's path-crossing point (align before climbing) instead of the
+            # geometric cte, which is CONFUSED after sharp turns (verified wp4->5: nav
+            # vyaw saturated -2.0 yet the robot drifted 1.4m off-path). Blend in over the
+            # last D/2 metres so normal path-following is unaffected far from a step.
+            if os.environ.get('S10_STEP_HOMING', '0') == '1' and ridge_world:
+                _sc = float(getattr(fol, '_s_cur', 0.0))
+                _hd = float(os.environ.get('S10_STEP_HOMING_D', '3.0'))
+                _home = None
+                for (_rp, _tng, _sr, _dh) in ridge_world:
+                    _dd = _sr - _sc
+                    if 0.0 < _dd < _hd and (_home is None or _dd < _home[0]):
+                        _home = (_dd, _rp)
+                if _home is not None:
+                    _e = float(np.arctan2(_home[1][1] - float(body_pos[1]),
+                                          _home[1][0] - float(body_pos[0])))
+                    _e -= body_quat_to_yaw()
+                    _e = float(np.arctan2(np.sin(_e), np.cos(_e)))
+                    _kh = float(os.environ.get('S10_STEP_HOMING_K', '2.0'))
+                    _hom = float(np.clip(_kh * _e, -2.0, 2.0))
+                    _w = float(np.clip((_hd - _home[0]) / max(_hd * 0.5, 1e-3), 0.0, 1.0))
+                    vyaw = (1.0 - _w) * vyaw + _w * _hom
             # BUGFIX 2026-08-16 (wp7->wp8 slide-back): after the RL hands back, the nav
             # vlim jumps ~0.5->3.5 m/s and the hard acceleration + the wp8 turn slide the
             # robot on the platform (vx -0.5..-1.0 backward, drifts off). Keep a slow zone
@@ -549,6 +572,32 @@ def main():
             _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
             _omcap = min(_omcap, _latmax / max(abs(vx_c), 0.5))
             om_c = float(np.clip(om_c, -_omcap, _omcap))
+            # STEP HOMING override (USER 2026-08-16, part of the takeover): directly steer
+            # the robot toward the next known step's path-crossing point in the last D m,
+            # OVERRIDING the MPPI/nav output (a nav-target-only homing is diluted by the
+            # MPPI, verified). S10_STEP_HOMING_SIGN handles the wp4->5 turn-direction flip
+            # (CarVMC om>0 = left; nav vyaw=-2.0 right/east was executed as WEST -> flip).
+            if os.environ.get('S10_STEP_HOMING', '0') == '1' and ridge_world:
+                _sc = float(getattr(fol, '_s_cur', 0.0))
+                _hd = float(os.environ.get('S10_STEP_HOMING_D', '3.0'))
+                _home = None
+                for (_rp, _tng, _sr, _dh) in ridge_world:
+                    _dd = _sr - _sc
+                    if 0.0 < _dd < _hd and (_home is None or _dd < _home[0]):
+                        _home = (_dd, _rp)
+                if _home is not None:
+                    _e = float(np.arctan2(_home[1][1] - float(body_pos[1]),
+                                          _home[1][0] - float(body_pos[0])))
+                    _e -= body_quat_to_yaw()
+                    _e = float(np.arctan2(np.sin(_e), np.cos(_e)))
+                    _kh = float(os.environ.get('S10_STEP_HOMING_K', '2.0'))
+                    _hom = float(np.clip(_kh * _e, -2.0, 2.0))
+                    _w = float(np.clip((_hd - _home[0]) / max(_hd * 0.5, 1e-3), 0.0, 1.0))
+                    _hs = float(os.environ.get('S10_STEP_HOMING_SIGN', '1.0'))
+                    if _hs < 0.0:
+                        _hom = -_hom
+                    om_c = (1.0 - _w) * om_c + _w * _hom
+                    vx_c = min(vx_c, float(os.environ.get('S10_STEP_HOMING_VX', '1.5')))
             # v599: 楼梯区导航 omega 置零——楼梯是直道且横向走廊宽，导航
             # 的 yaw 振荡只会让后轮左右对转空耗推力（tauW ±13.5 对转实测）；
             # 航向保持交给 WBC 反馈（om_f=0 时差速≈0，四轮统一向前推）。
