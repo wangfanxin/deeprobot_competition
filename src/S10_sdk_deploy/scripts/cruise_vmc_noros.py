@@ -233,6 +233,7 @@ def main():
     _elev_enabled = os.environ.get('S10_RL_ELEV', '0') == '1'
     _lterr = None
     _build_elev_tile = lambda: None
+    _lidar_stair_heading = lambda: None
     if _elev_enabled:
         try:
             from s10_mpc.lidar_terrain_v2 import LidarTerrainV2
@@ -254,7 +255,8 @@ def main():
             # Updated at S10_ELEV_HZ (same as lidar); only CRUISE uses it.
             _costmap_last = [-1e9]
             _costmap_cache = [None]
-            if os.environ.get('S10_MPPI_OBSTACLE', '0') == '1':
+            if (os.environ.get('S10_MPPI_OBSTACLE', '0') == '1'
+                    or os.environ.get('S10_TK1', '0') == '1'):
                 os.environ.setdefault('S10_LIDAR_WALL', '1')
             def _build_costmap():
                 _now = time.time()
@@ -280,6 +282,58 @@ def main():
                     _cm = None
                 _costmap_cache[0] = _cm
                 return _cm
+            # LIDAR STAIR HEADING (USER goal 1.1): detect >=2 risers along the path
+            # AHEAD and return the path heading at their mean arc-length (the heading
+            # the robot must face to be perpendicular to the stairs). Lidar-only; the
+            # path comes from wp coords (allowed). Returns None if not detected yet.
+            def _lidar_stair_heading():
+                # LIDAR stairs = ON-path vertical faces (risers) in the WALL channel.
+                # The terrain hmax cannot resolve narrow stair treads (detect_risers
+                # returns empty on the real mesh, verified), but the wall channel DOES
+                # hit the riser faces. Filter on-path (lateral < lat_min) to exclude
+                # side walls, then the stair heading = path heading at their mean arc.
+                _sc = float(getattr(fol, '_s_cur', 0.0))
+                _lo = _sc + 1.0
+                _hi = _sc + 8.0
+                _cum = fol.path_cum
+                _k0 = int(np.searchsorted(_cum, _lo))
+                _k1 = int(np.searchsorted(_cum, _hi))
+                if _k1 <= _k0 + 3:
+                    return None
+                _wpts = fol.path_pts[_k0:_k1]
+                _x0 = float(_wpts[:, 0].min() - 1.0)
+                _x1 = float(_wpts[:, 0].max() + 1.0)
+                _y0 = float(_wpts[:, 1].min() - 1.0)
+                _y1 = float(_wpts[:, 1].max() + 1.0)
+                _res = _lterr.res
+                _wi0 = max(int(np.floor((_y0 - _lterr.oy) / _res)), 0)
+                _wi1 = min(int(np.ceil((_y1 - _lterr.oy) / _res)), _lterr.ny - 1)
+                _wj0 = max(int(np.floor((_x0 - _lterr.ox) / _res)), 0)
+                _wj1 = min(int(np.ceil((_x1 - _lterr.ox) / _res)), _lterr.nx - 1)
+                if _wi1 <= _wi0 or _wj1 <= _wj0:
+                    return None
+                _wv = _lterr.wall_valid[_wi0:_wi1, _wj0:_wj1]
+                _iy, _ix = np.where(_wv > 0)
+                if len(_ix) == 0:
+                    return None
+                _wx = _lterr.ox + (_wj0 + _ix) * _res
+                _wy = _lterr.oy + (_wi0 + _iy) * _res
+                _lat_min = float(os.environ.get('S10_OBST_LAT_MIN', '0.5'))
+                _d2 = ((_wpts[None, :, 0] - _wx[:, None]) ** 2
+                       + (_wpts[None, :, 1] - _wy[:, None]) ** 2)
+                _lat = np.sqrt(_d2.min(axis=1))
+                _op = _lat < _lat_min
+                if int(_op.sum()) < 8:
+                    return None
+                _scs = []
+                for _ii in np.where(_op)[0]:
+                    _dd = ((_wpts[:, 0] - _wx[_ii]) ** 2
+                           + (_wpts[:, 1] - _wy[_ii]) ** 2)
+                    _scs.append(_cum[_k0 + int(np.argmin(_dd))])
+                _sm = float(np.mean(_scs))
+                _ki = int(np.searchsorted(_cum, _sm, side='right')) - 1
+                _ki = max(0, min(_ki, len(fol.path_heading) - 1))
+                return float(fol.path_heading[_ki])
             print('[VMC] 高程图 STAIR 判定启用 (S10_RL_ELEV=1)', flush=True)
         except Exception as _e:
             print('[VMC] 高程图初始化失败:', _e, flush=True)
@@ -500,6 +554,27 @@ def main():
                     _hom = float(np.clip(_kh * _e, -2.0, 2.0))
                     _w = float(np.clip((_hd - _home[0]) / max(_hd * 0.5, 1e-3), 0.0, 1.0))
                     vyaw = (1.0 - _w) * vyaw + _w * _hom
+            # TAKEOVER MODE 1 (USER goal 1.1): cruise -> stair hard-switch preparation.
+            # After passing S10_TK1_AFTER_WP while still CRUISE: pause nav yaw tracking,
+            # decel toward the stair-acceptable speed, and align yaw to the LIDAR-detected
+            # stair heading (perpendicular to the riser line). Legs already raised by the
+            # PRETRANS stand-PD. The actual STAIR switch stays with the normal global
+            # trigger (update_mode) once the robot is near wp7 (y~34.4).
+            if (os.environ.get('S10_TK1', '0') == '1' and _elev_enabled
+                    and fol.mode == 'CRUISE'
+                    and next_idx > int(os.environ.get('S10_TK1_AFTER_WP', '6'))):
+                _tk_vx = float(os.environ.get('S10_TK1_VX', '2.2'))
+                vx = min(vx, _tk_vx)
+                _th = _lidar_stair_heading()
+                if _th is not None:
+                    _ey = float(np.arctan2(np.sin(_th - yaw), np.cos(_th - yaw)))
+                    _ky = float(os.environ.get('S10_TK1_YAW_K', '2.5'))
+                    _ymax = float(os.environ.get('S10_TK1_YAW_MAX', '1.5'))
+                    vyaw = float(np.clip(_ky * _ey, -_ymax, _ymax))
+                    if os.environ.get('S10_TK1_DEBUG', '0') == '1':
+                        print('[TK1] pos=(%.2f,%.2f) yaw=%.2f target=%.2f err=%.3f vyaw=%.3f'
+                              % (float(body_pos[0]), float(body_pos[1]), yaw, _th, _ey, vyaw),
+                              flush=True)
             # BUGFIX 2026-08-16 (wp7->wp8 slide-back): after the RL hands back, the nav
             # vlim jumps ~0.5->3.5 m/s and the hard acceleration + the wp8 turn slide the
             # robot on the platform (vx -0.5..-1.0 backward, drifts off). Keep a slow zone
