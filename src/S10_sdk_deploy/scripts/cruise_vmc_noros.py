@@ -287,19 +287,35 @@ def main():
             # the robot must face to be perpendicular to the stairs). Lidar-only; the
             # path comes from wp coords (allowed). Returns None if not detected yet.
             def _lidar_stair_heading():
-                # LIDAR stairs = ON-path vertical faces (risers) in the WALL channel.
-                # The terrain hmax cannot resolve narrow stair treads (detect_risers
-                # returns empty on the real mesh, verified), but the wall channel DOES
-                # hit the riser faces. Filter on-path (lateral < lat_min) to exclude
-                # side walls, then the stair heading = path heading at their mean arc.
+                # PERCEPTION-DRIVEN stair/step detection (no waypoint hardcode).
+                # Two detectors:
+                #   1) terrain detect_risers (hmax gradient): reliable for WIDE single
+                #      steps (wp4->5 0.125m @s33.22 verified) but misses the 6-step
+                #      staircase (narrow 0.4m treads not filled by the sparse lidar).
+                #   2) wall channel on-path vertical faces: reliable for the 6-step
+                #      staircase (43 cells) but weak for a single 0.125m step (5 cells).
+                # Use either; return the path heading at the detected riser arc-length.
                 _sc = float(getattr(fol, '_s_cur', 0.0))
-                _lo = _sc + 1.0
-                _hi = _sc + 8.0
+                _lo = _sc + 0.5
+                _hi = _sc + 3.0
                 _cum = fol.path_cum
                 _k0 = int(np.searchsorted(_cum, _lo))
                 _k1 = int(np.searchsorted(_cum, _hi))
                 if _k1 <= _k0 + 3:
                     return None
+                # --- detector 1: terrain hmax gradient (single step) ---
+                try:
+                    _rs = _lterr.detect_risers(
+                        fol.path_pts[_k0:_k1], _cum[_k0:_k1], _lo, _hi,
+                        rise=0.05, max_dh=0.16)
+                except Exception:
+                    _rs = []
+                if _rs:
+                    _sm = float(np.mean([float(r[0]) for r in _rs]))
+                    _ki = int(np.searchsorted(_cum, _sm, side='right')) - 1
+                    _ki = max(0, min(_ki, len(fol.path_heading) - 1))
+                    return float(fol.path_heading[_ki])
+                # --- detector 2: wall channel on-path riser faces (staircase) ---
                 _wpts = fol.path_pts[_k0:_k1]
                 _x0 = float(_wpts[:, 0].min() - 1.0)
                 _x1 = float(_wpts[:, 0].max() + 1.0)
@@ -323,7 +339,7 @@ def main():
                        + (_wpts[None, :, 1] - _wy[:, None]) ** 2)
                 _lat = np.sqrt(_d2.min(axis=1))
                 _op = _lat < _lat_min
-                if int(_op.sum()) < 8:
+                if int(_op.sum()) < int(os.environ.get('S10_TK1_MIN_CELLS', '8')):
                     return None
                 _scs = []
                 for _ii in np.where(_op)[0]:
@@ -334,7 +350,6 @@ def main():
                 _ki = int(np.searchsorted(_cum, _sm, side='right')) - 1
                 _ki = max(0, min(_ki, len(fol.path_heading) - 1))
                 return float(fol.path_heading[_ki])
-            print('[VMC] 高程图 STAIR 判定启用 (S10_RL_ELEV=1)', flush=True)
         except Exception as _e:
             print('[VMC] 高程图初始化失败:', _e, flush=True)
             _elev_enabled = False
