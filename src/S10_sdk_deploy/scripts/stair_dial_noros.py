@@ -12,6 +12,7 @@ except Exception:
 
 PKG = '/home/wfx/DR_competition/0810new/deeprobot_competition/src/S10_sdk_deploy'
 sys.path.insert(0, PKG)
+sys.path.insert(0, '/home/wfx/DR_competition/0810new/deeprobot_competition')
 sys.path.insert(0, '/home/wfx/DR_competition/0810new/deeprobot_competition/dial-mpc')
 os.environ.setdefault('JAX_COMPILATION_CACHE_DIR',
                       os.path.expanduser('~/.cache/s10_dial_mpc'))
