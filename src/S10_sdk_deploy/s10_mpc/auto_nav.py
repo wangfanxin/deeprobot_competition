@@ -778,14 +778,15 @@ class AutoNavFollower:
                 self.mode = os.environ["S10_FORCE_MODE"]
             return
         if self.mode == "STAIR":
-            # USER acceptance: elevation-map exit - confirm the robot crossed the
-            # stair/ridge region (no edge ahead on the elevation map) before CRUISE.
-            # Fixed-coordinate exit (next_idx>7 / y>40.5) is ONLY the map-free
-            # fallback; when local_map is present the elevation signal wins (the
-            # fixed y>40.5 would otherwise cut STAIR while the last riser is still
-            # ahead, e.g. a later ridge/step on the map).
-            _elev_ok = self._elev_region_passed(robot_xy, yaw, local_map)
-            if _elev_ok or (local_map is None and (next_idx > 7 or robot_xy[1] > 40.5)):
+            # BUGFIX 2026-08-16 (mode flapping -> top-platform fall): the sparse lidar
+            # elevation map (_elev_region_passed) confirmed "crossed" MID-CLIMB (y~34-39,
+            # flat tread between risers shows no step ahead) -> false STAIR exits -> the
+            # global entry trigger re-entered STAIR -> STAIR<->CRUISE flap, control
+            # switches destabilized and the robot fell. Elevation exit DISABLED when the
+            # known riser table exists; the known-map exit (y > last riser + 0.45m) is
+            # deterministic and sufficient for the fixed track.
+            _exit_y = float(np.max(self.STAIR_RISERS)) + 0.15
+            if robot_xy[1] > _exit_y:
                 self.mode = "CRUISE"
                 self.decel_request = 0.0
             return
@@ -862,9 +863,15 @@ class AutoNavFollower:
             # 原按段首 wp6 切换会在 wp5→6 第二级就接管，巡航能力被浪费
             _dseg1 = float(np.linalg.norm(
                 robot_xy - self.wp[next_idx, :2]))
+            # BUGFIX 2026-08-16 (mode flapping): after the robot passes the last riser
+            # (y > exit_y), the global entry trigger kept re-entering STAIR right after
+            # the exit (dist to wp7 < 8.5m while next_idx still 7) -> STAIR<->CRUISE flap
+            # at the top, control switches destabilized, robot fell on the platform.
+            _entry_y = float(np.max(self.STAIR_RISERS)) + 0.15
             _use_global = (_dseg1 <= float(os.environ.get(
                 "S10_STAIR_ENTER_DIST", "1.5")) + 2.5
-                           and self._seg_in_stair_band(next_idx - 1))
+                           and self._seg_in_stair_band(next_idx - 1)
+                           and robot_xy[1] < _entry_y)
             _use_percept = (d_wp < _confirm_dist
                             and self._stair_confirmed(
                                 robot_xy, yaw, local_map))

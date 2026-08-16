@@ -254,6 +254,7 @@ def main():
             print('[VMC] 高程图初始化失败:', _e, flush=True)
             _elev_enabled = False
     _rl_diag_done = {}
+    _rl_was_stair = False
     def body_quat_to_yaw():
         _qw, _qx, _qy, _qz = d.qpos[3], d.qpos[4], d.qpos[5], d.qpos[6]
         return float(np.arctan2(2.0*(_qw*_qz + _qx*_qy), 1.0 - 2.0*(_qy*_qy + _qz*_qz)))
@@ -1352,7 +1353,7 @@ def main():
             # 2026-08-16 EXIT: after the RL climbs the stairs and hands back to CRUISE
             # (y > S10_PRETRANS_EXIT_Y0), lower the CarVMC pose from the RL tall stance
             # back to the cruise half-squat smoothly (no abrupt drop on the top platform).
-            _ey0 = float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.5'))
+            _ey0 = float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.2'))
             _elen = float(os.environ.get('S10_PRETRANS_EXIT_LEN', '2.0'))
             if float(body_pos[1]) > _ey0:
                 _tpr = float(np.clip(1.0 - (float(body_pos[1]) - _ey0) / max(_elen, 1e-3), 0.0, 1.0))
@@ -1377,6 +1378,13 @@ def main():
                           [round(float(v), 3) for v in _dq[vmc_rl.idx['leg_idx']]]),
                       flush=True)
         if os.environ.get('S10_VMC_MODE', 'wbc') == 'rlstair':
+            # DIAG: log the RL->CRUISE hand-back moment (mode exits STAIR)
+            if fol.mode != 'STAIR' and _rl_was_stair:
+                print('[RL-DIAG] RL->CRUISE at pos=(%.2f,%.2f,%.2f) yaw=%.3f vx=%.2f' % (
+                    float(body_pos[0]), float(body_pos[1]), float(body_pos[2]),
+                    float(body_quat_to_yaw()),
+                    float(d.qvel[0]*np.cos(body_quat_to_yaw()) + d.qvel[1]*np.sin(body_quat_to_yaw()))), flush=True)
+            _rl_was_stair = (fol.mode == 'STAIR')
             vmc = vmc_rl if fol.mode == 'STAIR' else vmc_car
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         # USER-DIRECTED 2026-08-16 (carvmc+PD body-raise transition): during the RL-stair
@@ -1388,7 +1396,7 @@ def main():
         if (_vmode == 'rlstair' and fol.mode != 'STAIR'
                 and os.environ.get('S10_PRETRANS', '1') == '1'
                 and float(body_pos[1]) >= float(os.environ.get('S10_PRETRANS_Y0', '32.0'))
-                and float(body_pos[1]) < float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.5'))):
+                and float(body_pos[1]) < float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.2'))):
             _li = vmc_rl.idx['leg_idx']
             _lj = vmc_rl.idx['act2jnt'][_li]
             _lv = vmc_rl.idx['act2vel'][_li]

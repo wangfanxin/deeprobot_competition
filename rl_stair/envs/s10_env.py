@@ -79,7 +79,12 @@ class S10RLCfg:
     dr_kd_leg_lo, dr_kd_leg_hi = 0.8, 1.2
     # 2026-08-15 22:45 (sim2sim): MJX<->C++ wheel drive measured 2.7x gap (§3.36);
     # widen WHEEL DR to cover it so the policy stays fast/robust with weak wheels.
-    dr_kp_wheel_lo, dr_kp_wheel_hi = 0.8, 1.2
+    # 2026-08-16 (real-mesh upright climb): widen wheel-drive DR to cover the documented
+    # 2.7x MJX<->real-mesh wheel gap (real wheels ~0.37x). The integrated real-mesh climb
+    # stalls at the 0.125m riser (vx -0.4..-0.8 backward slide) because the policy relies
+    # on momentum it cannot build with weak wheels; training with 0.3-1.2x forces the
+    # policy to learn lift-over technique that works with weak wheels.
+    dr_kp_wheel_lo, dr_kp_wheel_hi = 0.3, 1.2
     dr_tclip_lo, dr_tclip_hi = 0.8, 1.2
     dr_tclip_wheel_lo, dr_tclip_wheel_hi = 0.8, 1.2
     push_interval_steps: int = 750
