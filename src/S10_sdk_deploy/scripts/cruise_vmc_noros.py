@@ -451,10 +451,13 @@ def main():
             # robot on the platform (vx -0.5..-1.0 backward, drifts off). Keep a slow zone
             # y in (last_riser+0.35, S10_STAIR_EXIT_SLOW_Y) at S10_STAIR_EXIT_VX (1.5)
             # so the robot clears the turn stably, then release speed.
-            _exit_slow_y = float(os.environ.get('S10_STAIR_EXIT_SLOW_Y', '48.0'))
+            # BUGFIX 2026-08-16 (east-run release tip): the y-based slow zone (to y=48)
+            # ended at the east run (y~48.5) -> full speed + lean released -> the robot
+            # tipped at the wp10 micro-rise. Keep the post-stair slow zone until wp10 is
+            # REGISTERED (next_idx <= 10), i.e. through the whole east run.
             if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
                     and float(body_pos[1]) > 40.4
-                    and float(body_pos[1]) < _exit_slow_y):
+                    and next_idx <= 10):
                 # 2026-08-16 (verified): post-stair exit speed 1.5 through the platform -
                 # the robot is stable at ~1-1.5 m/s on the real mesh; 2.0/2.5 tip on the
                 # east run (weak real-mesh grip + differential saturation, verified).
@@ -1000,7 +1003,7 @@ def main():
         # lean-in - the tall post-RL stance tips over with the CarVMC lean (roll -0.89).
         if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
                 and float(body_pos[1]) > 40.4
-                and float(body_pos[1]) < float(os.environ.get('S10_STAIR_EXIT_SLOW_Y', '48.0'))):
+                and next_idx <= 10):
             roll_tar = 0.0
         # v854: 删除 ROLL_VGATE/ROLL_ERR_GATE 门控（用户：无离散门控）——
         # 压弯 roll_tar 直接随 vx·ω 生成
