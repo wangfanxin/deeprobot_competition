@@ -471,6 +471,32 @@ class AutoNavFollower:
                 (self.path_pts[:, :2] - self.wp[i, :2]) ** 2, axis=1))])
             for i in range(len(self.wp))])
 
+        # USER-DIRECTED goal 4: per-segment ref_v correction. Only the NAMED
+        # waypoint segments are capped; no global VMAX change. Format:
+        #   S10_REFV_SEG_LIST="4:2.0,5:1.5"  -> wp4->wp5 capped 2.0, wp5->wp6 1.5.
+        # Applied to the path vlim profile by arc-length (wp coords only, allowed).
+        _seglist = os.environ.get("S10_REFV_SEG_LIST", "")
+        if _seglist:
+            for _tok in _seglist.split(","):
+                _tok = _tok.strip()
+                if ":" not in _tok:
+                    continue
+                try:
+                    _si_s, _sv_s = _tok.split(":", 1)
+                    _si = int(_si_s.strip()); _sv = float(_sv_s.strip())
+                except Exception:
+                    continue
+                if 0 <= _si < len(self.wp) - 1 and _sv > 0:
+                    _s0 = float(self.path_wp_s[_si])
+                    _s1 = float(self.path_wp_s[_si + 1])
+                    _k0 = int(np.searchsorted(self.path_cum, _s0, side="left"))
+                    _k1 = int(np.searchsorted(self.path_cum, _s1, side="right"))
+                    _k0 = max(0, _k0)
+                    _k1 = min(len(self.path_vlim) - 1, _k1)
+                    if _k1 >= _k0:
+                        self.path_vlim[_k0:_k1 + 1] = np.minimum(
+                            self.path_vlim[_k0:_k1 + 1], _sv)
+
     def compute_cmd(self, robot_xy, yaw, next_idx, robot_z=None, yaw_rate=0.0):
         """返回 (vx, vyaw)。robot_xy: (2,) 全局位置；next_idx: 下一个未到达航点。"""
         if next_idx >= len(self.wp):
