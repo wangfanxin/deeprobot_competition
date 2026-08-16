@@ -722,8 +722,17 @@ def main():
                 mppi.set_costmap(_build_costmap())
             else:
                 mppi.set_costmap(None)
-            if os.environ.get('S10_VMC_USE_NAV', '0') == '1':
+            # CONFIG SWITCH (USER 2026-08-16, wp0->33): v890 MPPI cruise for the early
+            # track, then switch to direct-nav + lower vx after S10_SWITCH_WP so the RL
+            # stair section (wp5->9) gets the verified handoff config (USE_NAV=1 + VMAX
+            # 3.5) without restarting the process.
+            _switch_wp = int(os.environ.get('S10_SWITCH_WP', '5'))
+            _use_nav_eff = (os.environ.get('S10_VMC_USE_NAV', '0') == '1'
+                            or next_idx > _switch_wp)
+            if _use_nav_eff:
                 vx_c, om_c = vx, vyaw   # 直接导航指令（无 MPPI 随机性）
+                _switch_vx = float(os.environ.get('S10_SWITCH_VX', '3.5'))
+                vx_c = min(vx_c, _switch_vx)
             else:
                 # v270: MPPI 采样中心加曲率前馈 κ·v_ref（导航放开、MPPI
                 # 约束兜底；样本围绕正确转向率，约束仍在摩擦锥内）
