@@ -263,6 +263,7 @@ lidar 高程图 (10Hz) → riser/高程特征 (10Hz) → AutoNavFollower (20Hz, 
 | 2026-08-14 | cc70c19 | 方案转向 DiAL 分层爬梯（StairContactPlanner + DiAL-MBDPI + StairStanceGuard）；更新本总方案（DiAL 数据管线/频率/参数表）；删除 8-12 前旧 stair 方案文档（6 篇 08-11 文档）与旧图 carvmc_vmax6_wp0-6_v730.png；README 进度更新 |
 | 2026-08-14 | 7386c5b | wp0-6 复测 13.5s 一致性确认（final2_wp0-6_xy_speed.png）；lidar res 0.05 + 96×48 射线；riser 跳变点/台面顶修复；hierarchical DiAL 方案落地（S10_STAIR_HARD_MODE=1 + 200Hz guard）；v10-v13 迭代脚本入库 |
 | 2026-08-14 | 110a467+ | 审阅收口：P1-5b 采样 1024->512（code+yaml+run 脚本）、退火 Ndiffuse=1 已最小；P0-4 清理死 _hard_foothold_z 写；P1-6 补提交 v21/v22 实验脚本；P2-9 复核 DDP 已归档；wp7 卡点（前轮悬空/无接触）仍为 STAIR 主阻塞 |
+| 2026-08-16 | b33d434+ | C++ 训练环境诊断：官方 mesh 薄壳接触脆弱（静态 spawn 穿透落到地板 z=0，巡航滚动接触可正常行驶）；box 地形 C++ 精炼 reach=0（spawn y=32 太远 + settle 使起始态偏离 sim2sim_exact 无 settle 分布 + 奖励对顶部过渡区分弱）——C++ 精炼需重构（对齐 sim2sim_exact 的 y=36.8/无 settle/更强顶部奖励），已回退实验改动。MJX T6_handoff 训练 BEST succ 0.291→0.353，box 10/12 爬完 6 级但交接点 41.271 前差 ~1m；集成流真实 mesh 爬到 y≈38.7/z=1.06 后顶部失败（mesh gap 待 C++ 重构或更强 DR） |
 | 2026-08-16 | b33d434 | RL-stair 主线（目标 #1 完成）：lidar 抬高安装(RAISE_Z=0.6)+group0真实地形+nz过滤+台阶陡跳/爬升门控检测（感知早触发、缓坡零误报、控制环182Hz）；RL 50Hz decimation 修复 + 接管站姿预热；感知减速到达 MPPI(v_ref) + 已知楼梯区减速 stair_band 门控（修起步误减速）；T6_handoff 训练重启（succ 0.25↑）；wp4→5 诊断（v890 边界：发卡过转 om-3.51 + 横脊动量，需专项 yaw 稳定性）；C++ 训练模型 236 updates 未收敛暂不启用 |
 | 2026-08-14 | 88be68e+ | P0-3 实验：S10_STAIR_ALWAYS_GWSW=1（STAIR 恒注入 hard-mode 相位，A/B 默认开）；wp7 定位为 riser 表/落脚目标不一致 + 前轮过抬悬空；N=512 空载 21.5Hz 达标 |
 
