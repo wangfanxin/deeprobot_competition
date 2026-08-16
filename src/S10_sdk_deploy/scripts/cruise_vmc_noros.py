@@ -451,11 +451,13 @@ def main():
             # robot on the platform (vx -0.5..-1.0 backward, drifts off). Keep a slow zone
             # y in (last_riser+0.35, S10_STAIR_EXIT_SLOW_Y) at S10_STAIR_EXIT_VX (1.5)
             # so the robot clears the turn stably, then release speed.
+            _exit_slow_y = float(os.environ.get('S10_STAIR_EXIT_SLOW_Y', '48.0'))
             if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
                     and float(body_pos[1]) > 40.4
-                    and float(body_pos[1]) < float(os.environ.get('S10_STAIR_EXIT_SLOW_Y', '48.0'))):
-                # 2026-08-16 (verified): post-stair exit speed 1.5 holds through the
-                # platform - the robot is stable at ~1-1.5 m/s on the real mesh; 2.5 tips.
+                    and float(body_pos[1]) < _exit_slow_y):
+                # 2026-08-16 (verified): post-stair exit speed 1.5 through the platform -
+                # the robot is stable at ~1-1.5 m/s on the real mesh; 2.0/2.5 tip on the
+                # east run (weak real-mesh grip + differential saturation, verified).
                 _esv = float(os.environ.get('S10_STAIR_EXIT_VX', '1.5'))
                 vx = min(vx, _esv)
                 v_ref = min(v_ref, _esv)
@@ -466,11 +468,6 @@ def main():
                 vyaw = float(np.clip(vyaw,
                                      -float(os.environ.get('S10_STAIR_EXIT_VYAW', '1.0')),
                                       float(os.environ.get('S10_STAIR_EXIT_VYAW', '1.0'))))
-                # TEST 2026-08-16: force straight (om=0) in the post-stair zone to isolate
-                # whether the slow east drive is nav-oscillation (differential wheels
-                # fighting) or genuinely weak wheels. Env-gated, remove after diagnosis.
-                if os.environ.get('S10_TEST_FORCE_OM0', '0') == '1' and float(body_pos[1]) > 47.5:
-                    vyaw = 0.0
             # USER acceptance: decelerate when a stair/ridge is detected AHEAD on the
             # elevation map (AutoNavFollower.decel_request, ramped by proximity).
             v_ref = fol._last_vlim
