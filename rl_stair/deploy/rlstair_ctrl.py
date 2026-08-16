@@ -103,6 +103,11 @@ class RLStairCtrl:
             self._action = np.clip(a, -1.0, 1.0)
             self.last_action = self._action.copy()
         a = self._action
+        if os.environ.get('S10_RL_DEBUG', '0') == '1':
+            print('[RLDBG] a_leg=', np.round(a[self.leg_idx], 3),
+                  'a_wheel=', np.round(a[self.wheel_idx], 3),
+                  'qd_wheel=', np.round(qvel[self.idx["act2vel"]][self.wheel_idx], 3),
+                  flush=True)
         q = qpos[self.idx["act2jnt"]] - self.default_dof
         qd = qvel[self.idx["act2vel"]]
         tau = np.zeros(int(self._act_dim), dtype=np.float64)
