@@ -446,6 +446,24 @@ def main():
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
                 robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]))
+            # BUGFIX 2026-08-16 (wp7->wp8 slide-back): after the RL hands back, the nav
+            # vlim jumps ~0.5->3.5 m/s and the hard acceleration + the wp8 turn slide the
+            # robot on the platform (vx -0.5..-1.0 backward, drifts off). Keep a slow zone
+            # y in (last_riser+0.35, S10_STAIR_EXIT_SLOW_Y) at S10_STAIR_EXIT_VX (1.5)
+            # so the robot clears the turn stably, then release speed.
+            if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
+                    and float(body_pos[1]) > 40.4
+                    and float(body_pos[1]) < float(os.environ.get('S10_STAIR_EXIT_SLOW_Y', '43.0'))):
+                _esv = float(os.environ.get('S10_STAIR_EXIT_VX', '1.5'))
+                vx = min(vx, _esv)
+                v_ref = min(v_ref, _esv)
+                # BUGFIX 2026-08-16 (wp8 turn oscillation): after the RL hands back the
+                # nav err is large (robot 0.8m east of the path) -> vyaw saturates at
+                # 2-2.7 rad/s -> the robot overshoots and oscillates on the platform.
+                # Cap the turn command in the slow zone (gentle, no global yaw-gain cut).
+                vyaw = float(np.clip(vyaw,
+                                     -float(os.environ.get('S10_STAIR_EXIT_VYAW', '1.0')),
+                                      float(os.environ.get('S10_STAIR_EXIT_VYAW', '1.0'))))
             # USER acceptance: decelerate when a stair/ridge is detected AHEAD on the
             # elevation map (AutoNavFollower.decel_request, ramped by proximity).
             v_ref = fol._last_vlim
@@ -488,7 +506,7 @@ def main():
             _rp_cnt += 1
             _rp_tot += _rp_dt
             _rp_max = max(_rp_max, _rp_dt)
-            if os.environ.get('S10_NAV_DEBUG', '0') == '1' and next_idx <= 6:
+            if os.environ.get('S10_NAV_DEBUG', '0') == '1' and next_idx <= 8:
                 print('[NAV] t=%.1f pos=(%.2f,%.2f) yaw=%.2f err=%.2f '
                       'tgt=(%.2f,%.2f) s_cur=%.2f vyaw=%.2f cte=%.2f'
                       % (t, body_pos[0], body_pos[1], yaw,
@@ -974,6 +992,12 @@ def main():
         _ramp = float(os.environ.get("S10_CAR_ROLL_AMP", "0.06"))
         _lean_k = float(os.environ.get("S10_CAR_ROLL_K", "0.06"))
         roll_tar = float(np.clip(-_lean_k * om_c * abs(vx_c), -_ramp, _ramp))
+        # BUGFIX 2026-08-16 (wp8 turn tip-over): in the post-stair slow zone, disable the
+        # lean-in - the tall post-RL stance tips over with the CarVMC lean (roll -0.89).
+        if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
+                and float(body_pos[1]) > 40.4
+                and float(body_pos[1]) < float(os.environ.get('S10_STAIR_EXIT_SLOW_Y', '43.0'))):
+            roll_tar = 0.0
         # v854: 删除 ROLL_VGATE/ROLL_ERR_GATE 门控（用户：无离散门控）——
         # 压弯 roll_tar 直接随 vx·ω 生成
         pitch_tar = 0.0
@@ -1399,14 +1423,24 @@ def main():
         # speed/yaw control (approach keeps speed+angle, NO brake-to-0).
         if (_vmode == 'rlstair' and fol.mode != 'STAIR'
                 and os.environ.get('S10_PRETRANS', '1') == '1'
-                and float(body_pos[1]) >= float(os.environ.get('S10_PRETRANS_Y0', '32.0'))
-                and float(body_pos[1]) < float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.4'))):
+                and float(body_pos[1]) >= float(os.environ.get('S10_PRETRANS_Y0', '32.0'))):
             _li = vmc_rl.idx['leg_idx']
             _lj = vmc_rl.idx['act2jnt'][_li]
             _lv = vmc_rl.idx['act2vel'][_li]
             _lt = np.clip(60.0 * (vmc_rl.default_dof[_li] - qpos[_lj])
                           - 4.0 * qvel[_lv], -48.0, 48.0)
-            tau[_li] = _lt
+            _ey0 = float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.4'))
+            _elen = float(os.environ.get('S10_PRETRANS_EXIT_LEN', '2.0'))
+            if float(body_pos[1]) < _ey0:
+                # entry + hold: lock legs at default_dof (stand PD)
+                tau[_li] = _lt
+            else:
+                # EXIT blend 2026-08-16: gradually hand the legs from stand PD back to the
+                # CarVMC attitude control over EXIT_LEN metres. A hard switch lets the RL
+                # tall stance carry into the wp8 turn where the CarVMC roll control cannot
+                # counter the lean -> tip over (roll -0.89, verified 2026-08-16).
+                _b = float(np.clip((float(body_pos[1]) - _ey0) / max(_elen, 1e-3), 0.0, 1.0))
+                tau[_li] = (1.0 - _b) * _lt + _b * tau[_li]
         _tleg = float(np.abs(tau[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]]).max())
         _twh = float(np.abs(tau[[3, 7, 11, 15]]).max())
         _max_tau_leg = max(_max_tau_leg, _tleg)

@@ -142,6 +142,13 @@ class AutoNavFollower:
         s0, s1 = self.cum_len[i0], self.cum_len[i1]
         if s1 <= s0:
             return out
+        # BUGFIX 2026-08-16 (wp7->wp8 cte oscillation): the old profile returned the
+        # offset to 0 AT wp7, but the RL stair controller does NOT track x (only yaw to
+        # +y), so the robot stayed on the corridor (x~-14.1) while the path jumped back
+        # to x=-14.93 -> 0.8m cross-track error -> nav cmd_om saturated +-0.5 oscillation
+        # on the platform (verified 2026-08-16). Keep the full offset THROUGH wp7 and
+        # taper it back over the wp7->wp8 segment (s1->s8) so the robot's corridor
+        # position matches the path through the turn.
         for i in range(len(out)):
             _s = self.cum_len[i]
             if s0 <= _s <= s1:
