@@ -128,7 +128,11 @@ class S10RLCfg:
     tracking_sigma = 0.25
     # Chamorro et al. (ICRA24 2402.06143): actor obs has goal-direction(2)+heading-error(1),
     # reward keeps yaw aligned to task axis. Our task axis = world +y (track), target yaw = pi/2.
-    r_heading = 2.0
+    # 2026-08-16 (real-mesh yaw drift/spin): the integrated climb drifts yaw 1.47->1.9
+    # (and spins at riser 5-6) because the weak real-mesh wheels limit the learned yaw
+    # correction. Strengthen the heading-alignment reward (2.0 -> 5.0) so the policy
+    # corrects yaw aggressively. Reward-only change (no new gates/terms).
+    r_heading = 5.0
     # r_speed (07:10): policy approaches steps at ~0.5m/s (cmd 0.8-1.8 untracked) -> no
     # momentum to carry wheels over >radius steps. Dense forward-speed reward (user: improve
     # climb time; momentum helps above-radius lift-climb). progress(4/m) too weak (0.04/step).

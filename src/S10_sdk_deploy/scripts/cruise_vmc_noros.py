@@ -1353,8 +1353,8 @@ def main():
             # 2026-08-16 EXIT: after the RL climbs the stairs and hands back to CRUISE
             # (y > S10_PRETRANS_EXIT_Y0), lower the CarVMC pose from the RL tall stance
             # back to the cruise half-squat smoothly (no abrupt drop on the top platform).
-            _ey0 = float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.2'))
-            _elen = float(os.environ.get('S10_PRETRANS_EXIT_LEN', '2.0'))
+            _ey0 = float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.4'))
+            _elen = float(os.environ.get('S10_PRETRANS_EXIT_LEN', '4.0'))
             if float(body_pos[1]) > _ey0:
                 _tpr = float(np.clip(1.0 - (float(body_pos[1]) - _ey0) / max(_elen, 1e-3), 0.0, 1.0))
             vmc_car.pose_target = (1.0 - _tpr) * _sq + _tpr * _ta
@@ -1378,12 +1378,16 @@ def main():
                           [round(float(v), 3) for v in _dq[vmc_rl.idx['leg_idx']]]),
                       flush=True)
         if os.environ.get('S10_VMC_MODE', 'wbc') == 'rlstair':
-            # DIAG: log the RL->CRUISE hand-back moment (mode exits STAIR)
+            # DIAG + FIX 2026-08-16: log the RL->CRUISE hand-back moment AND reset the
+            # CarVMC filters (stale pre-takeover state made it unstable on the platform).
             if fol.mode != 'STAIR' and _rl_was_stair:
+                _hy = body_quat_to_yaw()
+                _hv = float(d.qvel[0]*np.cos(_hy) + d.qvel[1]*np.sin(_hy))
                 print('[RL-DIAG] RL->CRUISE at pos=(%.2f,%.2f,%.2f) yaw=%.3f vx=%.2f' % (
-                    float(body_pos[0]), float(body_pos[1]), float(body_pos[2]),
-                    float(body_quat_to_yaw()),
-                    float(d.qvel[0]*np.cos(body_quat_to_yaw()) + d.qvel[1]*np.sin(body_quat_to_yaw()))), flush=True)
+                    float(body_pos[0]), float(body_pos[1]), float(body_pos[2]), _hy, _hv), flush=True)
+                _bs = vmc_car._body_state(qpos, qvel)
+                vmc_car.reset_state(vx=_hv, omega=float(qvel[5]),
+                                    roll=_bs["roll"], pitch=_bs["pitch"])
             _rl_was_stair = (fol.mode == 'STAIR')
             vmc = vmc_rl if fol.mode == 'STAIR' else vmc_car
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
@@ -1396,7 +1400,7 @@ def main():
         if (_vmode == 'rlstair' and fol.mode != 'STAIR'
                 and os.environ.get('S10_PRETRANS', '1') == '1'
                 and float(body_pos[1]) >= float(os.environ.get('S10_PRETRANS_Y0', '32.0'))
-                and float(body_pos[1]) < float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.2'))):
+                and float(body_pos[1]) < float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.4'))):
             _li = vmc_rl.idx['leg_idx']
             _lj = vmc_rl.idx['act2jnt'][_li]
             _lv = vmc_rl.idx['act2vel'][_li]
@@ -1445,7 +1449,16 @@ def main():
         # 航点推进（0.5m + v204 捷径）
         if next_idx < len(wp):
             rp = d.xpos[1][:2]
-            dist = float(np.linalg.norm(rp - wp[next_idx][:2]))
+            _wpa = wp[next_idx][:2].copy()
+            # BUGFIX 2026-08-16 (wp7 registration): the robot follows the SHIFTED stair
+            # corridor (S10_STAIR_CORRIDOR_X=+0.6m x for y in the stair zone), so the raw
+            # wp7 (x=-14.93) is ~0.6m west of the robot's nominal path (x~-14.33) - the
+            # 0.3m advance circle was unreachable. Check the stair-end waypoint against
+            # its corridor-shifted position (the same nav parameter, not hidden info).
+            if (next_idx >= 7 and float(wp[next_idx][1]) > 40.0
+                    and float(os.environ.get('S10_STAIR_CORRIDOR_X', '0.6')) > 0.0):
+                _wpa[0] += float(os.environ.get('S10_STAIR_CORRIDOR_X', '0.6'))
+            dist = float(np.linalg.norm(rp - _wpa))
             # v294: 判据=质心投影 xy 进入航点 0.3m（机器狗任意一点经过的等效简化）
             _adv = float(os.environ.get('S10_WP_ADVANCE_DIST', '0.3'))
             reached = dist <= _adv

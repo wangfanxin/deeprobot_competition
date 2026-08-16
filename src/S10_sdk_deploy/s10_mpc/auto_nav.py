@@ -785,7 +785,7 @@ class AutoNavFollower:
             # switches destabilized and the robot fell. Elevation exit DISABLED when the
             # known riser table exists; the known-map exit (y > last riser + 0.45m) is
             # deterministic and sufficient for the fixed track.
-            _exit_y = float(np.max(self.STAIR_RISERS)) + 0.15
+            _exit_y = float(np.max(self.STAIR_RISERS)) + 0.35
             if robot_xy[1] > _exit_y:
                 self.mode = "CRUISE"
                 self.decel_request = 0.0
@@ -867,14 +867,18 @@ class AutoNavFollower:
             # (y > exit_y), the global entry trigger kept re-entering STAIR right after
             # the exit (dist to wp7 < 8.5m while next_idx still 7) -> STAIR<->CRUISE flap
             # at the top, control switches destabilized, robot fell on the platform.
-            _entry_y = float(np.max(self.STAIR_RISERS)) + 0.15
+            _entry_y = float(np.max(self.STAIR_RISERS)) + 0.35
             _use_global = (_dseg1 <= float(os.environ.get(
                 "S10_STAIR_ENTER_DIST", "1.5")) + 2.5
                            and self._seg_in_stair_band(next_idx - 1)
                            and robot_xy[1] < _entry_y)
+            # BUGFIX 2026-08-16: also gate the PERCEPTION entry with y < exit_y, else
+            # the sparse elevation map re-enters STAIR on the top platform (y~42) after
+            # the known-map exit -> mode flap on the platform (verified 2026-08-16).
             _use_percept = (d_wp < _confirm_dist
                             and self._stair_confirmed(
-                                robot_xy, yaw, local_map))
+                                robot_xy, yaw, local_map)
+                            and robot_xy[1] < _entry_y)
             if _use_global or _use_percept:
                 self.mode = "STAIR"
                 if _dbg:

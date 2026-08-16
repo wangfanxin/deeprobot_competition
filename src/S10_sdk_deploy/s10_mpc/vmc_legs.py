@@ -142,6 +142,17 @@ class VMCController:
         self._roll_prev = None
         self._pitch_prev = None
 
+    def reset_state(self, vx=0.0, omega=0.0, roll=0.0, pitch=0.0):
+        """Reset the cruise filters after a hand-back from the RL stair controller.
+        2026-08-16: without this, CarVMC resumes with STALE pre-takeover filters
+        (vx_f/om_f/roll_f/pitch_f/ground_f from before the RL climb) and is unstable
+        on the top platform (spins + slides backward, verified)."""
+        self._vx_f, self._om_f = float(vx), float(omega)
+        self._roll_f, self._pitch_f = float(roll), float(pitch)
+        self._roll_prev = None
+        self._pitch_prev = None
+        self._ground_f = 1.0
+
     def _body_state(self, qpos, qvel):
         q = qpos[3:7]
         w, x, y, z = q
@@ -860,6 +871,17 @@ class CarVMC:
         self._pitch_prev = None
         self._ground_f = 1.0
 
+    def reset_state(self, vx=0.0, omega=0.0, roll=0.0, pitch=0.0):
+        """Reset the cruise filters after a hand-back from the RL stair controller.
+        2026-08-16: without this, CarVMC resumes with STALE pre-takeover filters
+        (vx_f/om_f/roll_f/pitch_f/ground_f from before the RL climb) and is unstable
+        on the top platform (spins + slides backward, verified)."""
+        self._vx_f, self._om_f = float(vx), float(omega)
+        self._roll_f, self._pitch_f = float(roll), float(pitch)
+        self._roll_prev = None
+        self._pitch_prev = None
+        self._ground_f = 1.0
+
     def _body_state(self, qpos, qvel):
         q = qpos[3:7]
         w, x, y, z = q
@@ -1332,6 +1354,17 @@ class FootPlaceVMC:
         self._vx_f = 0.0
         self.kp_roll = float(os.environ.get("S10_FP_KP_ROLL", "400.0"))
         self.kp_pitch = float(os.environ.get("S10_FP_KP_PITCH", "300.0"))
+
+    def reset_state(self, vx=0.0, omega=0.0, roll=0.0, pitch=0.0):
+        """Reset the cruise filters after a hand-back from the RL stair controller.
+        2026-08-16: without this, CarVMC resumes with STALE pre-takeover filters
+        (vx_f/om_f/roll_f/pitch_f/ground_f from before the RL climb) and is unstable
+        on the top platform (spins + slides backward, verified)."""
+        self._vx_f, self._om_f = float(vx), float(omega)
+        self._roll_f, self._pitch_f = float(roll), float(pitch)
+        self._roll_prev = None
+        self._pitch_prev = None
+        self._ground_f = 1.0
 
     def _body_state(self, qpos, qvel):
         q = qpos[3:7]
