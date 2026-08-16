@@ -842,6 +842,13 @@ def main():
                         om_c = _min_om * (1.0 if _err >= 0.0 else -1.0)
                 else:
                     vx_c = min(vx_c, 1.0)
+                # SLIP RECOVERY: on the weak-grip platform the differential torque can make
+                # the body spin OPPOSITE to the commanded yaw (wp7->8: cmd om +0.22 but body
+                # omega -0.97 -> roll -0.62 -> fall). Stop turning/driving so the wheels regain grip.
+                _body_om = float(qvel[5])
+                if next_idx >= 8 and abs(_body_om) > 0.5 and om_c * _body_om < 0.0:
+                    om_c = 0.0
+                    vx_c = 0.0
                 if os.environ.get('S10_AIM_DEBUG', '0') == '1':
                     print('[AIM] next=%d err=%.2f vx_c=%.2f om_c=%.2f' % (next_idx, _err, vx_c, om_c), flush=True)
             # v218p: omega 上限匹配 VMC yaw 能力（防指令远超执行导致振荡）
