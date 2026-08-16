@@ -1767,7 +1767,8 @@ def main():
             # segment). Gated off by default.
             if (not reached and os.environ.get('S10_WP_ADVANCE_BY_S', '0') == '1'
                     and next_idx < len(fol.path_wp_s)
-                    and next_idx == int(os.environ.get('S10_WP_ADVANCE_BY_S_WP', '5'))):
+                    and next_idx == int(os.environ.get('S10_WP_ADVANCE_BY_S_WP', '5'))
+                    and fol.mode == 'CRUISE'):
                 _sm = float(os.environ.get('S10_WP_ADVANCE_S_MARGIN', '1.0'))
                 _s_cur = float(getattr(fol, '_s_cur', 0.0))
                 if _s_cur > float(fol.path_wp_s[next_idx]) + _sm:
