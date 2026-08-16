@@ -943,7 +943,6 @@ def main():
                     _hs = float(os.environ.get('S10_STEP_HOMING_SIGN', '1.0'))
                     if _hs < 0.0:
                         _hom = -_hom
-                    om_c = (1.0 - _w) * om_c + _w * _hom
                     # TK speed blend: gradually reduce approach speed as the step gets
                     # close, instead of a late hard cap (prevents both stall and tip-over
                     # on the wp4->5 hairpin+step composite).
@@ -955,10 +954,19 @@ def main():
                     # the step with lateral velocity (wp4->5 tip-over mode).
                     _edb = float(os.environ.get('S10_STEP_HOMING_YAW_DB', '0.12'))
                     _valign = float(os.environ.get('S10_STEP_HOMING_ALIGN_VX', '1.0'))
-                    if abs(_e) > _edb:
-                        vx_c = min(vx_c, _valign)
+                    _climb_d = float(os.environ.get('S10_STEP_HOMING_CLIMB_D', '0.8'))
+                    if _home[0] < _climb_d and abs(_e) <= _edb:
+                        # CLIMB phase: close + aligned -> stop steering, push forward only.
+                        # This is the separated TK phase for wp4->5; continuous yaw during
+                        # the step itself was draining forward thrust.
+                        om_c = 0.0
+                        vx_c = min(vx_c, _v_near)
                     else:
-                        vx_c = min(vx_c, _vx_tk)
+                        om_c = (1.0 - _w) * om_c + _w * _hom
+                        if abs(_e) > _edb:
+                            vx_c = min(vx_c, _valign)
+                        else:
+                            vx_c = min(vx_c, _vx_tk)
             # v599: 楼梯区导航 omega 置零——楼梯是直道且横向走廊宽，导航
             # 的 yaw 振荡只会让后轮左右对转空耗推力（tauW ±13.5 对转实测）；
             # 航向保持交给 WBC 反馈（om_f=0 时差速≈0，四轮统一向前推）。
