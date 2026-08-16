@@ -75,22 +75,64 @@ S10_MPC_ENABLE=1 S10_MODE=auto_nav ~/DR_competition/.venv/bin/python \
   src/S10_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
 ```
 
-RL 训练 / 评估 / 导出 / sim2sim：
+> 官方比赛环境（真实 mesh S10_track.xml）使用专用 venv `comp_env`（numpy<2 + mujoco）。
+
+## RL-Stair：训练 / sim2sim / 部署
+
+### 1. 训练（MJX 并行 PPO，T0→T6 课程）
 
 ```bash
 cd ~/DR_competition/deeprobot_competition
+# 训练（默认 1024 env；256 可省显存；--lr 3e-4 用于精炼）
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 ~/DR_competition/.venv/bin/python \
-  rl_stair/train.py --num_envs 256 --max_iters 30000 --logdir rl_stair/logs
+  rl_stair/train.py --num_envs 1024 --max_iters 3000 --logdir rl_stair/logs
+# 断点续训 / 指定单一阶段
+... --resume rl_stair/logs/model_latest.pt [--stage T6_handoff --lr 3e-4]
+# 评估各关卡 succ/progress/fall（只读，不占训练）
 ~/DR_competition/.venv/bin/python rl_stair/eval.py \
-  --ckpt rl_stair/logs/model_latest.pt --stages T3_stairs6,T6_handoff
-~/DR_competition/.venv/bin/python rl_stair/export.py \
-  --ckpt rl_stair/logs/model_latest.pt --out rl_stair/deploy/policy.pt
-~/DR_competition/.venv/bin/python rl_stair/sim2sim.py --ckpt rl_stair/deploy/policy.pt
+  --ckpt rl_stair/logs/model_latest.pt --stages T3_stairs6,T6_handoff \
+  --num_envs 128 --episodes 5
 ```
 
-> 官方比赛环境（真实 mesh S10_track.xml）使用专用 venv `comp_env`；
-> 部署验收走 `rl_stair/sim2sim_exact.py` 与集成流 `cruise_vmc_noros.py`
-> （`S10_VMC_MODE=rlstair` + `S10_RL_ELEV=1`）。
+课程（`rl_stair/configs/rl_stair_config.py`，晋级门槛 succ≥0.35 / 回退 <0.05）：
+
+| 阶段 | 内容 |
+|---|---|
+| T0 | 平地热身（4.5m 达标线，vx 0.4~0.9） |
+| T1a-d | 单阶 5 / 8.1 / 10 / 12.5 cm |
+| T2a-e | 4 级阶梯 5 / 6.1 / 8 / 10 / 12.5 cm（T2d/e 近距 spawn 隔离抬升技能） |
+| T3 | **比赛 6 级**（0.061 + 0.125×5，tread 0.4） |
+| T6_handoff | 比赛 6 级 + 交接（yaw ±1.0、vx −0.5~2.5、初始姿态 DR：yaw±0.3 / squat_frac 0.35 / leg_q_jit 0.25） |
+
+训练随机化：入梯角度 yaw ±0.7 rad、PD/扭矩/质量/摩擦/观测噪声域随机化（DR）；横脊已全部移除（用户指令：只做楼梯 + sim2sim）。
+
+### 2. sim2sim 验证
+
+```bash
+# 精确比赛几何 box harness（等价 6 级 riser + 10m 顶平台，CPU）
+~/DR_competition/.venv/bin/python rl_stair/sim2sim_exact.py \
+  --ckpt rl_stair/logs/model_latest.pt --seeds 20
+# 官方 S10_track.xml 真实赛道（CPU，50Hz 策略）
+~/DR_competition/.venv/bin/python rl_stair/sim2sim.py \
+  --ckpt rl_stair/deploy/policy.pt --x -14.4 --y 37.0 --yaw 1.5708 --vx 1.5 --steps 1500
+```
+
+- 验收口径：爬完 6 级 + 后腿登顶后再走 ~1m（base_y=41.271，即 wp7 交接点），`risers_crossed=6/6`。
+- 部署参数：腿 PD 50/1（clip 48 Nm）、轮速 kp2 / vel 24（clip 13.5 Nm）；观测 53 维（`deploy/obs_np.py`，与 MJX 训练一致，diff 3.7e-9）。
+- 结果：box 地形 **12/12 直立爬完 6 级**（精炼 lr 3e-4）；**真实 mesh 下策略趴地爬行**（base z 0.27~0.44 vs 直立 0.84~0.98）——sim2sim 迁移（MJX box→真实 mesh，轮驱 2.7× + mesh 接触）是当前核心瓶颈；早期"96.7% 官方验收"为平地/趴地假象已更正（`doc/figures/box_vs_real_z.png`）。
+
+### 3. 部署（集成流 cruise→RL→cruise）
+
+```bash
+# 导出策略 → deploy/policy.pt（TorchScript；可选 --onnx）
+~/DR_competition/.venv/bin/python rl_stair/export.py \
+  --ckpt rl_stair/logs/model_latest.pt --out rl_stair/deploy/policy.pt
+```
+
+- 部署控制器 `rl_stair/deploy/rlstair_ctrl.py`：`obs_np(53)` → `policy.pt`（torch.jit.load）→ 腿 PD + 轮速；`S10_RL_POLICY` 可覆盖策略路径（A/B 评估）。
+- 集成：`cruise_vmc_noros.py` 设 `S10_VMC_MODE=rlstair`（STAIR 区启用 RL）+ `S10_RL_ELEV=1`（高程图模式切换）。
+- 交接参数：`S10_PRETRANS_Y0=32.0`（RL 接管）、`S10_PRETRANS_EXIT_Y0=40.5`（爬完回巡航）、`S10_STAIR_ENTER_DIST=5`（已知楼梯表提前触发，y≈34.5）；交接过渡用 carvmc+PD 腿覆盖（kp60/kd4，leg_err→0.122），轮保持速度/yaw 不停车。
+- 端到端验收：rlstair_ctrl 驱动与 sim2sim_exact 逐位一致（17/20 @1.5 m/s）；官方环境 comp_env 复验中。
 
 ## 关键参数
 
