@@ -562,19 +562,25 @@ def main():
             # trigger (update_mode) once the robot is near wp7 (y~34.4).
             if (os.environ.get('S10_TK1', '0') == '1' and _elev_enabled
                     and fol.mode == 'CRUISE'
-                    and next_idx > int(os.environ.get('S10_TK1_AFTER_WP', '6'))):
-                _tk_vx = float(os.environ.get('S10_TK1_VX', '2.2'))
-                vx = min(vx, _tk_vx)
+                    and next_idx == int(os.environ.get('S10_TK1_AFTER_WP', '6')) + 1):
                 _th = _lidar_stair_heading()
                 if _th is not None:
                     _ey = float(np.arctan2(np.sin(_th - yaw), np.cos(_th - yaw)))
-                    _ky = float(os.environ.get('S10_TK1_YAW_K', '2.5'))
-                    _ymax = float(os.environ.get('S10_TK1_YAW_MAX', '1.5'))
-                    vyaw = float(np.clip(_ky * _ey, -_ymax, _ymax))
-                    if os.environ.get('S10_TK1_DEBUG', '0') == '1':
-                        print('[TK1] pos=(%.2f,%.2f) yaw=%.2f target=%.2f err=%.3f vyaw=%.3f'
-                              % (float(body_pos[0]), float(body_pos[1]), yaw, _th, _ey, vyaw),
-                              flush=True)
+                    # DEADBAND: only take over (pause nav tracking + decel + align)
+                    # when the robot is genuinely misaligned. When already aligned
+                    # (verified baseline arrives ~84deg), TK1 is a NO-OP so the known
+                    # decel keeps the ~2.2m/s momentum the RL needs.
+                    _db = float(os.environ.get('S10_TK1_YAW_DB', '0.20'))
+                    if abs(_ey) > _db:
+                        _tk_vx = float(os.environ.get('S10_TK1_VX', '2.2'))
+                        vx = min(vx, _tk_vx)
+                        _ky = float(os.environ.get('S10_TK1_YAW_K', '2.5'))
+                        _ymax = float(os.environ.get('S10_TK1_YAW_MAX', '1.5'))
+                        vyaw = float(np.clip(_ky * _ey, -_ymax, _ymax))
+                        if os.environ.get('S10_TK1_DEBUG', '0') == '1':
+                            print('[TK1] pos=(%.2f,%.2f) yaw=%.2f target=%.2f err=%.3f vyaw=%.3f'
+                                  % (float(body_pos[0]), float(body_pos[1]), yaw, _th, _ey, vyaw),
+                                  flush=True)
             # BUGFIX 2026-08-16 (wp7->wp8 slide-back): after the RL hands back, the nav
             # vlim jumps ~0.5->3.5 m/s and the hard acceleration + the wp8 turn slide the
             # robot on the platform (vx -0.5..-1.0 backward, drifts off). Keep a slow zone
