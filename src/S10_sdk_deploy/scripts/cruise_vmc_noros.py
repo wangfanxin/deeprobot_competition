@@ -340,6 +340,8 @@ def main():
             _elev_enabled = False
     _rl_diag_done = {}
     _rl_was_stair = False
+    _tk2 = False
+    _tk2_was_stair = False
     def body_quat_to_yaw():
         _qw, _qx, _qy, _qz = d.qpos[3], d.qpos[4], d.qpos[5], d.qpos[6]
         return float(np.arctan2(2.0*(_qw*_qz + _qx*_qy), 1.0 - 2.0*(_qy*_qy + _qz*_qz)))
@@ -528,6 +530,12 @@ def main():
                 fol.update_mode(pos2, next_idx, yaw=yaw, local_map=_lm)
             except Exception:
                 pass
+            # TAKEOVER MODE 2 (USER goal 2): enter on STAIR->CRUISE handback
+            # (rear legs above the last step -> update_mode already flipped back to CRUISE).
+            if os.environ.get('S10_TK2', '0') == '1':
+                if fol.mode != 'STAIR' and _tk2_was_stair:
+                    _tk2 = True
+                _tk2_was_stair = (fol.mode == 'STAIR')
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
                 robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]))
@@ -581,6 +589,29 @@ def main():
                             print('[TK1] pos=(%.2f,%.2f) yaw=%.2f target=%.2f err=%.3f vyaw=%.3f'
                                   % (float(body_pos[0]), float(body_pos[1]), yaw, _th, _ey, vyaw),
                                   flush=True)
+            # TAKEOVER MODE 2 (USER goal 2): stair -> cruise hard-switch. After the rear
+            # legs clear the last step (STAIR->CRUISE handback), pause nav yaw tracking,
+            # keep the exit slow speed, and align yaw to the PATH heading; legs are lowered
+            # back to the cruise half-squat by PRETRANS EXIT. Once aligned -> release.
+            if (os.environ.get('S10_TK2', '0') == '1' and _tk2
+                    and fol.mode == 'CRUISE'):
+                _s2 = float(getattr(fol, '_s_cur', 0.0))
+                _ki2 = int(np.searchsorted(fol.path_cum, _s2, side='right')) - 1
+                _ki2 = max(0, min(_ki2, len(fol.path_heading) - 1))
+                _th2 = float(fol.path_heading[_ki2])
+                _ey2 = float(np.arctan2(np.sin(_th2 - yaw), np.cos(_th2 - yaw)))
+                _db2 = float(os.environ.get('S10_TK2_YAW_DB', '0.15'))
+                if abs(_ey2) > _db2:
+                    _k2 = float(os.environ.get('S10_TK2_YAW_K', '2.5'))
+                    _ymax2 = float(os.environ.get('S10_TK2_YAW_MAX', '1.5'))
+                    vyaw = float(np.clip(_k2 * _ey2, -_ymax2, _ymax2))
+                    vx = min(vx, float(os.environ.get('S10_TK2_VX', '1.5')))
+                    if os.environ.get('S10_TK2_DEBUG', '0') == '1':
+                        print('[TK2] pos=(%.2f,%.2f) yaw=%.2f target=%.2f err=%.3f vyaw=%.3f'
+                              % (float(body_pos[0]), float(body_pos[1]), yaw, _th2, _ey2, vyaw),
+                              flush=True)
+                else:
+                    _tk2 = False
             # BUGFIX 2026-08-16 (wp7->wp8 slide-back): after the RL hands back, the nav
             # vlim jumps ~0.5->3.5 m/s and the hard acceleration + the wp8 turn slide the
             # robot on the platform (vx -0.5..-1.0 backward, drifts off). Keep a slow zone
