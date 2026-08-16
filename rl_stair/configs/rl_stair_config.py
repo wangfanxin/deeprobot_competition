@@ -87,6 +87,11 @@ def make_stages(num_envs=1024):
         # on the real mesh without it; the handoff delivers legs with up to ~0.15 rad
         # error (and possibly squat if the transition is cut short).
         c.yaw_lo, c.yaw_hi = -0.3, 0.3
+        # USER-DIRECTED 2026-08-16 (goal 0): full handoff distribution -
+        # initial velocity 0..2 m/s and start 0..3 m before the first riser.
+        # (was default vx -0.5..2.5, spawn_back 0.5..2.0).
+        c.vx_lo, c.vx_hi = 0.0, 2.0
+        c.spawn_back_lo, c.spawn_back_hi = 0.0, 3.0
         c.squat_frac = 0.35
         c.leg_q_jit = 0.25
         return c
