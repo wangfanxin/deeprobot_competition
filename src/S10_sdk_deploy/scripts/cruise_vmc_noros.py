@@ -411,6 +411,7 @@ def main():
         _orig_kp_roll = float(vmc_car.kp_roll)
         _orig_kd_roll = float(vmc_car.kd_roll)
         vmc_rl = RLStairCtrl(m)
+        vmc_rl.set_cmd(float(os.environ.get('S10_RL_VX', '1.5')))
         if stair_world:   # pre-scanned known-map risers -> RL obs
             # BUGFIX 2026-08-16 (integrated handoff root cause): the pre-scan tops
             # come from mj_ray(..., flg_static=False) which IGNORES the static terrain
