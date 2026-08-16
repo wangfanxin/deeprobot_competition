@@ -26,6 +26,12 @@ class LidarTerrainV2:
         self.h = np.full((self.ny, self.nx), np.inf, dtype=np.float64)
         self.hmax = np.full((self.ny, self.nx), -np.inf, dtype=np.float64)
         self.valid = np.zeros((self.ny, self.nx), dtype=np.int32)
+        # WALL CHANNEL (USER 2026-08-16, goal 3.1): separate occupancy grid for
+        # VERTICAL faces (walls) that the terrain channel filters out (NZ_MIN).
+        # Walls are off-path obstacles (stair risers are ON-path and stay in the
+        # terrain channel). Filled only when S10_LIDAR_WALL=1.
+        self.wall_h = np.full((self.ny, self.nx), -np.inf, dtype=np.float64)
+        self.wall_valid = np.zeros((self.ny, self.nx), dtype=np.int32)
         self.sid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, 'lidar_site')
         if self.sid < 0:
             raise ValueError('lidar_site not found in model')
@@ -43,6 +49,20 @@ class LidarTerrainV2:
                              float(np.cos(ph) * np.sin(th)),
                              float(np.sin(ph))])
         self.dirs_local = np.asarray(dirs, dtype=np.float64)
+        # WALL-SCAN ray batch (USER 2026-08-16, goal 3.1): near-horizontal rays that
+        # reach VERTICAL faces (walls) at 2-15m. The site is pitched -40 deg, so
+        # local pitch +25..+50 deg = world elevation -15..+10 deg (horizontal band).
+        # Used only when S10_LIDAR_WALL=1 (keeps the production terrain scan intact).
+        _wfov = float(np.radians(float(os.environ.get("S10_WALL_FOV_H", "100"))))
+        _wth = np.linspace(-_wfov, _wfov, 121)
+        _wph = np.linspace(np.radians(25.0), np.radians(50.0), 26)
+        _wdirs = []
+        for _ph in _wph:
+            for _th in _wth:
+                _wdirs.append([float(np.cos(_ph) * np.cos(_th)),
+                               float(np.cos(_ph) * np.sin(_th)),
+                               float(np.sin(_ph))])
+        self.dirs_wall = np.asarray(_wdirs, dtype=np.float64)
         self.geomgroup = np.zeros((mujoco.mjNGROUP,), dtype=np.ubyte)
         # USER-DIRECTED 2026-08-16 (GOAL #1): the real terrain (group 0) IS ray-hittable
         # once the lidar origin is raised (S10_LIDAR_RAISE_Z): shallow grazing rays from
@@ -115,6 +135,37 @@ class LidarTerrainV2:
                     self.valid[iy, jx] = 1
                     self.h[iy, jx] = h0
                     self.hmax[iy, jx] = hm0
+        # WALL CHANNEL (USER 2026-08-16, goal 3.1/3): keep VERTICAL faces (walls)
+        # in a separate wall_occ grid (terrain channel filters them by NZ_MIN).
+        # Walls sit OFF-path (stair risers are ON-path -> terrain channel), so the
+        # obstacle tile can distinguish traversable vs blocked by lateral distance.
+        if os.environ.get("S10_LIDAR_WALL", "0") == "1":
+            self._scan_wall(m, d, pos, xmat)
+
+    def _scan_wall(self, m, d, pos, xmat):
+        import mujoco
+        vec = (self.dirs_wall @ xmat.T)
+        n = len(vec)
+        geomid = np.full(n, -1, dtype=np.int32)
+        dist = np.full(n, -1.0, dtype=np.float64)
+        norm = np.zeros((n * 3,), dtype=np.float64)
+        mujoco.mj_multiRay(m, d, pos.copy(), vec.reshape(-1),
+                           self.geomgroup, True, 1, geomid, dist, norm,
+                           n, self.cutoff)
+        hit = dist > 0.0
+        _nz = np.abs(norm.reshape(n, 3)[:, 2])
+        _nz_max = float(os.environ.get("S10_WALL_NZ_MAX", "0.4"))
+        _h_min = float(os.environ.get("S10_WALL_H_MIN", "0.25"))
+        for i in np.where(hit & (_nz < _nz_max))[0]:
+            p = pos + dist[i] * vec[i]
+            if p[2] < _h_min:
+                continue
+            ix = int(np.floor((p[0] - self.ox) / self.res))
+            iy = int(np.floor((p[1] - self.oy) / self.res))
+            if 0 <= ix < self.nx and 0 <= iy < self.ny:
+                if p[2] > self.wall_h[iy, ix]:
+                    self.wall_h[iy, ix] = p[2]
+                self.wall_valid[iy, ix] = 1
 
     def has(self, x, y):
         ix = int(np.floor((x - self.ox) / self.res))
