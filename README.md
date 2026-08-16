@@ -159,15 +159,45 @@ sim2sim_exact 逐位一致（17/20 @1.5 m/s）。
 
 ```
 DR_competition/
-├── .venv/                       # 项目虚拟环境（开发机）
-├── comp_env/                    # 官方比赛环境专用 venv（numpy<2 + mujoco）
-├── deeprobot_competition/       # 本仓库：ROS2 工作空间
-│   ├── src/S10_sdk_deploy/      # 仿真节点/感知/导航/控制器/模型
-│   ├── rl_stair/                # RL 爬梯训练（MJX PPO + sim2sim 部署）
-│   ├── dial-mpc/                # DIAL-MPC 采样 MPC（历史，内置保留）
-│   ├── doc/                     # 双管线/巡航/RL 文档 + 官方材料
-│   └── tmp/                     # 测试入口与结果分析脚本
+├── .venv/                        # 项目虚拟环境（开发机，Python 3.12）
+├── comp_env/                     # 官方比赛环境专用 venv（numpy<2 + mujoco）
+├── deeprobot_competition/        # 本仓库：ROS2 工作空间（git repo）
+│   ├── src/S10_sdk_deploy/       # 主包：仿真/感知/导航/控制
+│   │   ├── interface/robot/simulation/   # mujoco_simulation_ros2.py（仿真节点，模式 A/B 入口）
+│   │   ├── perception/                   # 感知：local_map / elevation_lookup / points_to_heightmap
+│   │   ├── s10_mpc/                      # ★ 导航与控制核心（见下方层级映射）
+│   │   │   ├── auto_nav.py               #   AutoNavFollower（Autonav 层，20Hz）
+│   │   │   ├── body_mppi.py              #   BodyMPPI（MPPI 层，20Hz）
+│   │   │   ├── vmc_legs.py               #   CarVMC + LidarTerrain（CarVMC 层，200Hz）
+│   │   │   ├── lidar_terrain_v2.py       #   高程图 + riser 检测（感知层）
+│   │   │   └── stair_*.py                #   历史/备用楼梯控制器（已归档思路）
+│   │   ├── scripts/                      # cruise_vmc_noros.py（双管线集成入口）
+│   │   ├── S10_description/s10_mjcf/mjcf/# 模型与场景（S10_track.xml、new_wp30.xml、s10_mpc.xml）
+│   │   └── config/ include/ third_party/ # 配置 / 头文件 / 三方库（eigen、onnxruntime、gamepad）
+│   ├── rl_stair/                 # ★ RL 爬梯（管线二）
+│   │   ├── train.py / ppo.py / eval.py / export.py   # MJX PPO 训练/评估/导出
+│   │   ├── configs/rl_stair_config.py   # T0-T6 课程与 PPO 配置
+│   │   ├── envs/s10_env.py terrain.py   # MJX 环境与地形生成
+│   │   ├── deploy/rlstair_ctrl.py       # 部署控制器（策略→腿 PD + 轮速）
+│   │   ├── deploy/obs_np.py             # 55 维观测编码（与训练一致）
+│   │   └── sim2sim.py / sim2sim_exact.py# sim2sim 验证 harness
+│   ├── dial-mpc/                 # DIAL-MPC 采样 MPC（历史主线，内置保留）
+│   ├── doc/                      # 双管线/巡航/RL 文档 + figures + yaml + 官方材料
+│   └── tmp/                      # 测试入口与结果分析脚本
 ```
+
+**层级 → 代码位置**
+
+| 层级/组件 | 文件 |
+|---|---|
+| Autonav（20Hz） | `src/S10_sdk_deploy/s10_mpc/auto_nav.py` |
+| MPPI（20Hz） | `src/S10_sdk_deploy/s10_mpc/body_mppi.py` |
+| CarVMC（200Hz） | `src/S10_sdk_deploy/s10_mpc/vmc_legs.py` |
+| 感知（LiDAR 高程图） | `src/S10_sdk_deploy/s10_mpc/lidar_terrain_v2.py` + `perception/` |
+| 双管线集成入口 | `src/S10_sdk_deploy/scripts/cruise_vmc_noros.py`（S10_VMC_MODE=cruise / rlstair） |
+| RL 训练 | `rl_stair/`（train.py、ppo.py、configs/、envs/） |
+| RL 部署 | `rl_stair/deploy/`（rlstair_ctrl.py、obs_np.py）+ `sim2sim*.py` |
+| 仿真节点 | `src/S10_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py` |
 
 ## 环境与快速开始
 
