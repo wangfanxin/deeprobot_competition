@@ -185,6 +185,9 @@ def main():
     ridge_world = []
     try:
         for (sr, dhv) in ridge_arcs:
+            # USER 2026-08-16: keep the SIGNED dh (UP=+, DOWN=-) so the ridge lift
+            # can skip descending steps (roll down in cruise, no lift).
+            dhv = _ridge_signed.get(float(sr), dhv)
             _k = int(np.searchsorted(fol.path_cum, sr, side='right') - 1)
             _k = min(max(_k, 0), len(fol.path_pts) - 1)
             _pt = fol.path_pts[_k, :2].copy()
@@ -1142,7 +1145,7 @@ def main():
                 for (_rp, _tng, _sr, _dh) in ridge_world:
                     # v285: 只对 dh>=0.08 的脊抬轮（<0.08 微脊=轮滚微起伏，
                     # 腿阻抗吸收，不抬）
-                    if _dh < 0.08 or _dh > 0.25:
+                    if _dh <= 0.08 or _dh > 0.25:
                         # v684: dh>0.5 是墙/垂直障碍（如 wp11→12 的 3.55m 墙），
                         # 不是可爬台阶——抬轮无用且会翻车，跳过
                         continue
