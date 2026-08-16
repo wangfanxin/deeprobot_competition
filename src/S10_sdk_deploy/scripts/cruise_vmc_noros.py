@@ -569,17 +569,14 @@ def main():
             if (os.environ.get('S10_W45_PULL', '0') == '1'
                     and next_idx == 5
                     and float(body_pos[1]) > float(os.environ.get('S10_W45_PULL_Y', '19.0'))):
-                # HEADING-AWARE aim at wp5: use the robot's ACTUAL yaw to compute the
-                # heading error to the next waypoint (the hairpin leaves the robot
-                # heading ~west; a north-assumed lateral pull steers the wrong way).
-                _px = float(body_pos[0]); _py = float(body_pos[1])
-                _wx = float(fol.wp[next_idx, 0]); _wy = float(fol.wp[next_idx, 1])
-                _tyaw = float(np.arctan2(_wy - _py, _wx - _px))
-                _err = float(np.arctan2(np.sin(_tyaw - yaw), np.cos(_tyaw - yaw)))
-                _kpull = float(os.environ.get('S10_W45_PULL_K', '2.0'))
-                vyaw = float(np.clip(_kpull * _err, -1.5, 1.5))
+                # AFTER the wp4->5 step: SWITCH BACK TO CRUISE (do NOT override vyaw -
+                # the nav's heading-aware waypoint pursuit already aims at wp5). Only
+                # cap vx so the robot slows down and can turn precisely to hit wp5
+                # instead of overshooting north past it.
+                _pvx = float(os.environ.get('S10_W45_PULL_VX', '1.5'))
+                vx = min(vx, _pvx)
                 if os.environ.get('S10_W45_PULL_DEBUG', '0') == '1':
-                    print('[W45-PULL] pos=(%.2f,%.2f) yaw=%.2f target=%.2f err=%.3f vyaw=%.3f' % (_px, _py, yaw, _tyaw, _err, vyaw), flush=True)
+                    print('[W45-PULL] pos=(%.2f,%.2f) yaw=%.2f vx_cap=%.2f (cruise resumed)' % (float(body_pos[0]), float(body_pos[1]), yaw, _pvx), flush=True)
             # TAKEOVER MODE 1 (USER goal 1.1): cruise -> stair hard-switch preparation.
             # After passing S10_TK1_AFTER_WP while still CRUISE: pause nav yaw tracking,
             # decel toward the stair-acceptable speed, and align yaw to the LIDAR-detected
