@@ -526,7 +526,7 @@ def main():
         _max_ms = float(np.max(plan_times)) * 1000.0
         _hz = 1000.0 / max(_med_ms, 1e-3)
     else:
-        _avg_ms, _med_ms, _max_ms, _hz = 0.0, 0.0, 0.0, 0.0, 0.0
+        _avg_ms = _med_ms = _max_ms = _hz = 0.0
     _brk = getattr(mpc, '_last_plan_times', None)
     if _brk:
         _bavg = {k: float(_brk.get(k, 0.0))
