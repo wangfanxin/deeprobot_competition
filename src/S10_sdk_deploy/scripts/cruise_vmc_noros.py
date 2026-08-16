@@ -669,9 +669,13 @@ def main():
                 # nav err is large (robot 0.8m east of the path) -> vyaw saturates at
                 # 2-2.7 rad/s -> the robot overshoots and oscillates on the platform.
                 # Cap the turn command in the slow zone (gentle, no global yaw-gain cut).
-                vyaw = float(np.clip(vyaw,
-                                     -float(os.environ.get('S10_STAIR_EXIT_VYAW', '1.0')),
-                                      float(os.environ.get('S10_STAIR_EXIT_VYAW', '1.0'))))
+                _exit_vyaw = float(os.environ.get('S10_STAIR_EXIT_VYAW', '1.0'))
+                # EAST RUN (USER 2026-08-16): wp9->10 needs a ~90deg left turn, the
+                # gentle 1.5 cap that stabilizes wp8 makes the robot oscillate at wp9.
+                # Allow a higher turn cap once past wp9.
+                if next_idx >= int(os.environ.get('S10_STAIR_EXIT_VYAW_WP', '10')):
+                    _exit_vyaw = float(os.environ.get('S10_STAIR_EXIT_VYAW_EAST', '2.5'))
+                vyaw = float(np.clip(vyaw, -_exit_vyaw, _exit_vyaw))
             # USER acceptance: decelerate when a stair/ridge is detected AHEAD on the
             # elevation map (AutoNavFollower.decel_request, ramped by proximity).
             v_ref = fol._last_vlim
