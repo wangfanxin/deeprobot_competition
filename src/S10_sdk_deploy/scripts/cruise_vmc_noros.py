@@ -955,10 +955,10 @@ def main():
                     _edb = float(os.environ.get('S10_STEP_HOMING_YAW_DB', '0.12'))
                     _valign = float(os.environ.get('S10_STEP_HOMING_ALIGN_VX', '1.0'))
                     _climb_d = float(os.environ.get('S10_STEP_HOMING_CLIMB_D', '0.8'))
-                    if _home[0] < _climb_d and abs(_e) <= _edb:
-                        # CLIMB phase: close + aligned -> stop steering, push forward only.
-                        # This is the separated TK phase for wp4->5; continuous yaw during
-                        # the step itself was draining forward thrust.
+                    if _home[0] < _climb_d:
+                        # CLIMB phase: close enough -> stop steering, push forward only.
+                        # Residual heading error is accepted because the step is already
+                        # close and yaw fighting was draining forward thrust.
                         om_c = 0.0
                         vx_c = min(vx_c, _v_near)
                     else:
