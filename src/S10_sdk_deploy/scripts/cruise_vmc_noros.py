@@ -1512,7 +1512,7 @@ def main():
             # v449: 软抬轮技能划分——台阶/陡升段（step_zone/stair_zone，
             # 永久升面需保牵引爬升）用 S10_VMC_LIFT_F_SCALE_STEP；巡航平脊
             # 段（z 不升，动量冲过）用默认 1.0 硬抬轮。地形属性=技能切换。
-            _lfs = 1.0
+            _lfs = float(os.environ.get('S10_VMC_LIFT_F_SCALE', '1.0'))
             _lsw = float(os.environ.get('S10_VMC_LIFT_SWING', '0.66'))
             if (next_idx >= 2 and next_idx - 1 < len(fol.step_zone)
                     and fol.step_zone[next_idx - 1]):
