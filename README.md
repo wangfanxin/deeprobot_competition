@@ -83,11 +83,19 @@ Khatib 2005）；轮足高速转向（SKATER, RA-L 2024）；公开代码 go2w_r
 感知(10Hz) → Autonav(20Hz, CRUISE⇄STAIR) → RL 策略(50Hz) → 腿PD+轮速(200Hz) → tau 16 维
 ```
 
-**① Autonav 层（20Hz，含技能切换）** —— 同管线一 + CRUISE→STAIR（高程图
-riser 检测或已知表提前触发，S10_STAIR_ENTER_DIST=5 → y≈34.5）、STAIR→CRUISE
-（前方 0~3m 无 step_flag）；交接流程：cruise 带速接近 → carvmc+PD 腿覆盖抬身
-（kp60/kd4，leg_err→0.122，轮不停车）→ RL 接管 → 爬完（S10_PRETRANS_EXIT_Y0
-=40.5）平滑降回巡航。
+**① Autonav 层（20Hz，含技能切换）** —— 同管线一（平滑路径/速度剖面/判点），
+并向 RL 提供导航输入：
+- **已知 riser 表**（fol.STAIR_RISERS/TOPS → RL 观测 terrain ctx obs[50:54]）；
+- **CRUISE⇄STAIR 切换**：高程图 riser 检测或已知表提前触发（S10_STAIR_ENTER_DIST
+  =5 → y≈34.5），STAIR→CRUISE 判据 = 前方 0~3m 无 step_flag；
+- **轨道航向**（TARGET_HEADING=1.5708 → heading 观测 obs[48:50]）。
+
+> 说明：RL 观测（55 维）**不含 ref path 几何点**（爬梯段为直线任务、yaw 固定，
+> 策略自控速度；nav 的 vx 指令被 rlstair_ctrl 显式忽略——代码注释
+> "stair section does NOT track the nav ref_v"）。ref path 仅供管线一巡航使用。
+
+交接流程：cruise 带速接近 → carvmc+PD 腿覆盖抬身（kp60/kd4，leg_err→0.122，
+轮不停车）→ RL 接管 → 爬完（S10_PRETRANS_EXIT_Y0=40.5）平滑降回巡航。
 
 **② RL 策略（训练，MJX 并行 PPO）** —— `rl_stair/`
 PPO 非对称 actor-critic（actor 本体感知、critic 特权信息），MJX 1024 env
