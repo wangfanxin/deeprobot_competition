@@ -577,22 +577,21 @@ def main():
                 vx = min(vx, _pvx)
                 if os.environ.get('S10_W45_PULL_DEBUG', '0') == '1':
                     print('[W45-PULL] pos=(%.2f,%.2f) yaw=%.2f vx_cap=%.2f (cruise resumed)' % (float(body_pos[0]), float(body_pos[1]), yaw, _pvx), flush=True)
-            # TAKEOVER MODE 1 (USER goal 1.1): cruise -> stair hard-switch preparation.
-            # After passing S10_TK1_AFTER_WP while still CRUISE: pause nav yaw tracking,
-            # decel toward the stair-acceptable speed, and align yaw to the LIDAR-detected
-            # stair heading (perpendicular to the riser line). Legs already raised by the
-            # PRETRANS stand-PD. The actual STAIR switch stays with the normal global
-            # trigger (update_mode) once the robot is near wp7 (y~34.4).
+            # TAKEOVER MODE 1 (USER goal 1.1, PERCEPTION-DRIVEN - no waypoint hardcode):
+            # whenever CRUISE AND the lidar elevation map detects a stair/step AHEAD,
+            # enter takeover: pause nav yaw tracking, decel to the stair-acceptable speed,
+            # and align yaw to the LIDAR-detected stair heading (perpendicular to the
+            # riser line). The actual STAIR/step switch stays with the downstream mode
+            # logic (update_mode for the 6-step RL; step-homing/cruise lift for single
+            # steps). _lidar_stair_heading returns None when no on-path risers ahead.
             if (os.environ.get('S10_TK1', '0') == '1' and _elev_enabled
-                    and fol.mode == 'CRUISE'
-                    and next_idx == int(os.environ.get('S10_TK1_AFTER_WP', '6')) + 1):
+                    and fol.mode == 'CRUISE'):
                 _th = _lidar_stair_heading()
                 if _th is not None:
                     _ey = float(np.arctan2(np.sin(_th - yaw), np.cos(_th - yaw)))
                     # DEADBAND: only take over (pause nav tracking + decel + align)
                     # when the robot is genuinely misaligned. When already aligned
-                    # (verified baseline arrives ~84deg), TK1 is a NO-OP so the known
-                    # decel keeps the ~2.2m/s momentum the RL needs.
+                    # (verified baseline arrives ~84deg), TK1 is a NO-OP.
                     _db = float(os.environ.get('S10_TK1_YAW_DB', '0.20'))
                     if abs(_ey) > _db:
                         _tk_vx = float(os.environ.get('S10_TK1_VX', '2.2'))
