@@ -505,6 +505,28 @@ class AutoNavFollower:
                         self.path_vlim[_k0:_k1 + 1] = np.minimum(
                             self.path_vlim[_k0:_k1 + 1], _sv)
 
+        # USER-DIRECTED 2026-08-16: smooth the speed profile in SPACE so it ramps
+        # gradually and never jumps straight to max_speed.
+        #   S10_VLIM_ACC_UP = max speed INCREASE per metre (default 2.0 = 1 m/s per 0.5m)
+        #   S10_VLIM_ACC_DN = max speed DECREASE per metre (default 3.0, allows braking)
+        # Forward pass limits acceleration; backward pass limits deceleration so the
+        # robot slows down BEFORE a slow zone instead of at its boundary.
+        _acc_up = float(os.environ.get("S10_VLIM_ACC_UP", "2.0"))
+        _acc_dn = float(os.environ.get("S10_VLIM_ACC_DN", "3.0"))
+        _nv = len(self.path_vlim)
+        for _k in range(1, _nv):
+            _ds = float(self.path_cum[_k] - self.path_cum[_k - 1])
+            if _ds > 1e-6:
+                _cap = self.path_vlim[_k - 1] + _acc_up * _ds
+                if self.path_vlim[_k] > _cap:
+                    self.path_vlim[_k] = _cap
+        for _k in range(_nv - 2, -1, -1):
+            _ds = float(self.path_cum[_k + 1] - self.path_cum[_k])
+            if _ds > 1e-6:
+                _cap = self.path_vlim[_k + 1] + _acc_dn * _ds
+                if self.path_vlim[_k] > _cap:
+                    self.path_vlim[_k] = _cap
+
     def compute_cmd(self, robot_xy, yaw, next_idx, robot_z=None, yaw_rate=0.0):
         """返回 (vx, vyaw)。robot_xy: (2,) 全局位置；next_idx: 下一个未到达航点。"""
         if next_idx >= len(self.wp):
