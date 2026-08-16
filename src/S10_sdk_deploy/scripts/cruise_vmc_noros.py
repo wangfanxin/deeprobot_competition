@@ -579,7 +579,7 @@ def main():
                 _nx, _ny = -_ty / _tn, _tx / _tn   # left normal
                 _lat = (_px - float(fol.path_pts[_k, 0])) * _nx + (_py - float(fol.path_pts[_k, 1])) * _ny
                 _kpull = float(os.environ.get('S10_W45_PULL_K', '1.5'))
-                vyaw = float(np.clip(-_kpull * _lat, -1.5, 1.5))
+                vyaw = float(np.clip(vyaw - _kpull * _lat, -1.5, 1.5))
                 if os.environ.get('S10_W45_PULL_DEBUG', '0') == '1':
                     print('[W45-PULL] pos=(%.2f,%.2f) lat=%.3f vyaw=%.3f' % (_px, _py, _lat, vyaw), flush=True)
             # TAKEOVER MODE 1 (USER goal 1.1): cruise -> stair hard-switch preparation.
