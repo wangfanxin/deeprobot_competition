@@ -496,6 +496,7 @@ def main():
     t_start = None
     traj = []
     prev_u = np.zeros(2)
+    _tk_climb = False
     dbg = 0
     last_log = 0.0
     _last_dbg_t = -9.0
@@ -918,6 +919,7 @@ def main():
             _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
             _omcap = min(_omcap, _latmax / max(abs(vx_c), 0.5))
             om_c = float(np.clip(om_c, -_omcap, _omcap))
+            _tk_climb = False
             # STEP HOMING override (USER 2026-08-16, part of the takeover): directly steer
             # the robot toward the next known step's path-crossing point in the last D m,
             # OVERRIDING the MPPI/nav output (a nav-target-only homing is diluted by the
@@ -959,6 +961,7 @@ def main():
                         # CLIMB phase: close enough -> stop steering, push forward only.
                         # Residual heading error is accepted because the step is already
                         # close and yaw fighting was draining forward thrust.
+                        _tk_climb = True
                         om_c = 0.0
                         vx_c = min(vx_c, _v_near)
                     else:
@@ -1751,9 +1754,10 @@ def main():
                 vx_c += float(os.environ.get('S10_LIFT_VX_BOOST', '0.0'))
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
-                      yaw_scale=(1.0 - float(np.clip(
-                          float(np.max(step_lift)) * 0.5, 0.0, 0.55))
-                          if _in_stairzone_now else 1.0 - _lift_act),
+                      yaw_scale=(0.0 if _tk_climb else
+                          (1.0 - float(np.clip(
+                              float(np.max(step_lift)) * 0.5, 0.0, 0.55))
+                           if _in_stairzone_now else 1.0 - _lift_act)),
                       ridge_dist=_ridge_d,
                       hop=hop,
                       step_lift=step_lift,
