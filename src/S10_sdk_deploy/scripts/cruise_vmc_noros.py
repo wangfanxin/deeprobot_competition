@@ -759,6 +759,17 @@ def main():
                         vx_c = min(vx_c, _rv)
                         _rk = float(os.environ.get('S10_SWITCH_RECOVER_K', '2.0'))
                         om_c = float(np.clip(_rk * _err, -1.5, 1.5))
+                        # TURN-IN-PLACE for LARGE heading error (USER 2026-08-16,
+                        # wp9->10 east turn): on the weak-grip platform, turning while
+                        # moving causes wheel slip + oscillation. If the heading error
+                        # is large, STOP and turn in place first.
+                        _rbig = float(os.environ.get('S10_SWITCH_RECOVER_BIG', '1.0'))
+                        _rbig_wp = int(os.environ.get('S10_SWITCH_RECOVER_BIG_WP', '10'))
+                        if abs(_err) > _rbig and next_idx >= _rbig_wp:
+                            _rv0 = float(os.environ.get('S10_SWITCH_RECOVER_VX0', '0.3'))
+                            vx_c = min(vx_c, _rv0)
+                            _rk0 = float(os.environ.get('S10_SWITCH_RECOVER_K0', '1.5'))
+                            om_c = float(np.clip(_rk0 * _err, -1.5, 1.5))
             else:
                 # v270: MPPI 采样中心加曲率前馈 κ·v_ref（导航放开、MPPI
                 # 约束兜底；样本围绕正确转向率，约束仍在摩擦锥内）
