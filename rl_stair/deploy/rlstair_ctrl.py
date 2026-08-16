@@ -83,7 +83,10 @@ class RLStairCtrl:
             lt = np.clip(KP_LEG * (0.0 - q) - KD_LEG * qd, -TORQ_LEG, TORQ_LEG)
             tau[self.leg_idx] = lt[self.leg_idx]
             return tau
-        if self._pol_step % DECIMATION == 1:
+        # BUGFIX 2026-08-16: decimation must be counted from AFTER the warm-start,
+        # otherwise a warm length where (warm+1) % DECIMATION != 1 leaves _action
+        # unset on the first post-warm step (crash). Force a policy step there.
+        if (self._pol_step - self._warm - 1) % DECIMATION == 0:
             # policy step (50Hz): fresh action from current obs
             obs = compute_obs_np(qpos, qvel, self.idx, self.last_action, self.cmd,
                                  self.riser_y, self.riser_top)
