@@ -15,6 +15,10 @@ import torch
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_POLICY = os.path.join(_HERE, "policy.pt")
+# A/B eval: override the policy path per-run (default deploy/policy.pt).
+# 2026-08-16: used to evaluate training checkpoints through the INTEGRATED flow
+# (the only valid real-mesh test - standalone RL falls through the thin mesh shell).
+_DEFAULT_POLICY = os.environ.get("S10_RL_POLICY", _DEFAULT_POLICY)
 
 KP_LEG, KD_LEG = 50.0, 1.0
 KP_WHEEL = 2.0

@@ -1349,6 +1349,13 @@ def main():
             # stance until the handoff so the legs settle (leg_err->0) before RL takes over.
             _y1 = float(os.environ.get('S10_PRETRANS_Y1', '33.0'))
             _tpr = float(np.clip((float(body_pos[1]) - _y0) / max(_y1 - _y0, 1e-3), 0.0, 1.0))
+            # 2026-08-16 EXIT: after the RL climbs the stairs and hands back to CRUISE
+            # (y > S10_PRETRANS_EXIT_Y0), lower the CarVMC pose from the RL tall stance
+            # back to the cruise half-squat smoothly (no abrupt drop on the top platform).
+            _ey0 = float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.5'))
+            _elen = float(os.environ.get('S10_PRETRANS_EXIT_LEN', '2.0'))
+            if float(body_pos[1]) > _ey0:
+                _tpr = float(np.clip(1.0 - (float(body_pos[1]) - _ey0) / max(_elen, 1e-3), 0.0, 1.0))
             vmc_car.pose_target = (1.0 - _tpr) * _sq + _tpr * _ta
         if (os.environ.get('S10_VMC_MODE', 'wbc') == 'dual'):
             vmc = vmc_wbc if fol.mode == 'STAIR' else vmc_car
@@ -1380,7 +1387,8 @@ def main():
         # speed/yaw control (approach keeps speed+angle, NO brake-to-0).
         if (_vmode == 'rlstair' and fol.mode != 'STAIR'
                 and os.environ.get('S10_PRETRANS', '1') == '1'
-                and float(body_pos[1]) >= float(os.environ.get('S10_PRETRANS_Y0', '32.0'))):
+                and float(body_pos[1]) >= float(os.environ.get('S10_PRETRANS_Y0', '32.0'))
+                and float(body_pos[1]) < float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.5'))):
             _li = vmc_rl.idx['leg_idx']
             _lj = vmc_rl.idx['act2jnt'][_li]
             _lv = vmc_rl.idx['act2vel'][_li]
