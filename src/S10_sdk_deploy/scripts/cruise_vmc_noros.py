@@ -1230,8 +1230,7 @@ def main():
                 stair_lift_flag = 1.0
         if (float(os.environ.get('S10_VMC_STAIR_GAIT', '0')) > 0
                 and stair_risers
-                and stair_risers[0][0] - 1.0 <= s_cur
-                <= stair_risers[-1][0] + 2.0):
+                and _in_stairzone_now):
             _fl_max, _rl_max = 0.0, 0.0
             # v238: 收窄抬放窗口（梯面0.4m≈轴距0.456m，宽窗口致前轮持续
             # 抬起不落地）——前轴 df∈[-0.08,0.18]、后轴 dr∈[-0.06,0.20]，
