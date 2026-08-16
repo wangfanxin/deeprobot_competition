@@ -564,18 +564,20 @@ def main():
             # platform (wp7+), the default yaw gain oscillates and low-speed turn authority
             # is too weak -> east drift + slip at the wp7->8 90-degree turn. Enable low-speed
             # differential boost and lower the yaw feedback gain ONLY for the platform.
-            if next_idx >= 8:
+            if _post_stair_s is not None:
                 os.environ['S10_CAR_LOWSPD_TURN'] = os.environ.get('S10_PLAT_LOWSPD_TURN', '1.0')
                 os.environ['S10_CAR_YAW_K_SM'] = os.environ.get('S10_PLAT_YAW_K_SM', '6.0')
                 os.environ['S10_CAR_HIPX_YAW'] = os.environ.get('S10_PLAT_HIPX_YAW', '0.15')
                 vmc_car.wheel_k = float(os.environ.get('S10_PLAT_WHEEL_K', '2.5'))
                 vmc_car.yaw_ff = float(os.environ.get('S10_PLAT_YAW_FF', '2.0'))
+                vmc_car.yaw_wheel_scale = float(os.environ.get('S10_PLAT_YAW_WHEEL_SCALE', '1.0'))
             else:
                 os.environ['S10_CAR_LOWSPD_TURN'] = _orig_lowspd
                 os.environ['S10_CAR_YAW_K_SM'] = _orig_ysm
                 os.environ['S10_CAR_HIPX_YAW'] = _orig_hipx_yaw
                 vmc_car.wheel_k = _orig_wheel_k
                 vmc_car.yaw_ff = 1.0
+                vmc_car.yaw_wheel_scale = 1.0
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
                 robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]))

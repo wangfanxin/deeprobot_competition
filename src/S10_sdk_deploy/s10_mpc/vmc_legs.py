@@ -850,6 +850,7 @@ class CarVMC:
         # yaw friction feed-forward (was fixed 1.0); made an instance attr so the
         # weak-grip platform can temporarily raise it to overcome the turn deadband.
         self.yaw_ff = 1.0
+        self.yaw_wheel_scale = 1.0   # scales wheel-differential + wheel yaw-torque (platform uses legs for yaw)
         # v234: 巡航半蹲（轮足姿态总结）——knee 2.30->1.90 降质心 ~6cm，
         # 减侧翻矩、保四轮法向均载、弱化微起伏传递。S10_CAR_SQUAT=0 回站立
         if os.environ.get("S10_CAR_SQUAT", "1") == "1":
@@ -1187,6 +1188,7 @@ class CarVMC:
                 if _vr_abs < 2.5:
                     _om_ref2 = _om_ref * float(np.clip(
                         1.0 + _lowb * (2.5 - _vr_abs) / 2.5, 1.0, 4.0))
+            _om_ref2 *= float(getattr(self, 'yaw_wheel_scale', 1.0))
             # v870: differential feedforward also scaled by _yv_scale (actual
             # vx) - MU=0.8 MPPI outputs om 0.83 at startup vs 0.36's 0.22,
             # unscaled FF spun (om -4.16 flip). Feedback already uses yv_scale.
@@ -1233,6 +1235,7 @@ class CarVMC:
                       - _kff * _ff_sign
                       + _kd_eff * _om_hf) * side
                      * _ysc * self._ground_f)
+            t_yaw *= float(getattr(self, 'yaw_wheel_scale', 1.0))
             # v246: yaw 力矩限速——滑移权威（YAW_TMAX）下首次过冲瞬态太快
             # （实测 ω 冲到 3.6 翻车）；限 t_yaw 变化率，平滑起转与刹车。
             # v280: 动态 yaw slew——|yaw 误差|大时放开（高速/大 err 需激进
