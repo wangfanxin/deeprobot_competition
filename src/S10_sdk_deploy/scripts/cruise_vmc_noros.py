@@ -625,6 +625,7 @@ def main():
             # x back to the corridor. Gate: S10_W45_PULL=1, segment wp4->5, past the step.
             if (os.environ.get('S10_W45_PULL', '0') == '1'
                     and next_idx == 5
+                    and os.environ.get('S10_CRUISE_TK', '1') != '1'
                     and float(body_pos[1]) > float(os.environ.get('S10_W45_PULL_Y', '19.0'))):
                 # AFTER the wp4->5 step: heading-aware aim at wp5 to KILL the east drift
                 # (the step homing leaves the robot heading ~east; aim at wp5 = north-west
@@ -840,6 +841,20 @@ def main():
                         and next_idx <= 6):
                     print('[MPPI] g_om=%.2f out=(%.2f,%.2f) vref=%.2f'
                           % (_g_om, vx_c, om_c, v_ref), flush=True)
+            # CRUISE-TK (USER 2026-08-16): for the wp4->5 hairpin + 0.125m step, track
+            # the path-planner reference heading + speed instead of the reactive step-homing.
+            # This avoids the +/-13 deg yaw limit cycle at the step (verified: yaw 87-113 deg,
+            # vx -0.74..0.48 oscillation -> stuck 17s).
+            if (os.environ.get('S10_CRUISE_TK', '1') == '1' and next_idx == 5):
+                _s_tk = float(getattr(fol, '_s_cur', 0.0)) + float(
+                    os.environ.get('S10_CRUISE_TK_LOOKAHEAD', '1.0'))
+                _ki = int(np.searchsorted(fol.path_cum, _s_tk, side='right')) - 1
+                _ki = max(0, min(_ki, len(fol.path_heading) - 1))
+                _ref_yaw = float(fol.path_heading[_ki])
+                _err_tk = float(np.arctan2(np.sin(_ref_yaw - yaw), np.cos(_ref_yaw - yaw)))
+                _k_tk = float(os.environ.get('S10_CRUISE_TK_K', '2.0'))
+                om_c = float(np.clip(_k_tk * _err_tk, -1.5, 1.5))
+                vx_c = min(vx_c, float(os.environ.get('S10_CRUISE_TK_VX', '1.8')))
             # POST-STAIR DETERMINISTIC AIM (USER 2026-08-16): after the RL hands back,
             # the body has eastward drift and the nav yaw wraps around +/-pi on the
             # platform. Override om with a direct aim-at-next-waypoint and stop-and-turn
@@ -1175,7 +1190,8 @@ def main():
                         'S10_VMC_LIFT_RAMP', '0.15'))
                     _lift_r = float(
                         np.clip((_lstart - _dmin_r) / _lramp, 0.0, 1.0)
-                        * np.clip((_release - _dmin_r) / _span, 0.0, 1.0))
+                        * np.clip((_release - _dmin_r) / _span, 0.0, 1.0)
+                        * float(os.environ.get('S10_VMC_LIFT_MAX', '1.0')))
                     if _lift_r > 0.02:
                         if _ai == 0:
                             step_lift[0:2] = np.maximum(
