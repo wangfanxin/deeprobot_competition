@@ -942,7 +942,13 @@ def main():
                     if _hs < 0.0:
                         _hom = -_hom
                     om_c = (1.0 - _w) * om_c + _w * _hom
-                    vx_c = min(vx_c, float(os.environ.get('S10_STEP_HOMING_VX', '1.5')))
+                    # TK speed blend: gradually reduce approach speed as the step gets
+                    # close, instead of a late hard cap (prevents both stall and tip-over
+                    # on the wp4->5 hairpin+step composite).
+                    _v_near = float(os.environ.get('S10_STEP_HOMING_VX', '2.0'))
+                    _v_far = float(os.environ.get('S10_STEP_HOMING_VX_FAR', '3.0'))
+                    _vx_tk = _v_near + (_v_far - _v_near) * (1.0 - _w)
+                    vx_c = min(vx_c, _vx_tk)
             # v599: 楼梯区导航 omega 置零——楼梯是直道且横向走廊宽，导航
             # 的 yaw 振荡只会让后轮左右对转空耗推力（tauW ±13.5 对转实测）；
             # 航向保持交给 WBC 反馈（om_f=0 时差速≈0，四轮统一向前推）。
