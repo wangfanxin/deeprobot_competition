@@ -1808,6 +1808,13 @@ def main():
                                     roll=_bs["roll"], pitch=_bs["pitch"])
             _rl_was_stair = (fol.mode == 'STAIR')
             vmc = vmc_rl if fol.mode == 'STAIR' else vmc_car
+        # REAR PUSH COMPENSATION (USER 2026-08-16): when the FRONT wheels are lifted for a
+        # step/ridge, keep the rear wheels pushing (weaken the slip reduction) so the body
+        # does not deadlock at the step (front lift -> no traction -> rear slip -> stuck).
+        if _vmode == 'rlstair':
+            _fl = float(np.max(step_lift[0:2]))
+            vmc_car.slip_gain = float(os.environ.get('S10_LIFT_SLIP_GAIN', '0.8')) if _fl < 0.3 else float(
+                os.environ.get('S10_LIFT_SLIP_GAIN_LIFT', '0.2'))
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         # USER-DIRECTED 2026-08-16 (carvmc+PD body-raise transition): during the RL-stair
         # approach (CRUISE, y >= S10_PRETRANS_Y0), override the LEG torques with a direct

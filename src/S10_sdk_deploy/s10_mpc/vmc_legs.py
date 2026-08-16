@@ -851,6 +851,7 @@ class CarVMC:
         # weak-grip platform can temporarily raise it to overcome the turn deadband.
         self.yaw_ff = 1.0
         self.yaw_wheel_scale = 1.0   # scales wheel-differential + wheel yaw-torque (platform uses legs for yaw)
+        self.slip_gain = 0.8        # slip reduction gain (lower = keep pushing while front wheels lift)
         # v234: 巡航半蹲（轮足姿态总结）——knee 2.30->1.90 降质心 ~6cm，
         # 减侧翻矩、保四轮法向均载、弱化微起伏传递。S10_CAR_SQUAT=0 回站立
         if os.environ.get("S10_CAR_SQUAT", "1") == "1":
@@ -1203,7 +1204,7 @@ class CarVMC:
             # 车身速度连续收敛（减少空转，恢复抓地；差速保留）。
             _slip = abs(v_wheel) - abs(_vx_bod)
             if _slip > 0.5:
-                v_ref -= 0.8 * (_slip - 0.5)
+                v_ref -= float(getattr(self, 'slip_gain', 0.8)) * (_slip - 0.5)
             # v241/v242: yaw 摩擦前馈（RobuROC6 库仑摩擦补偿）——差速转向需
             # 先克服侧向滑移阻力才有 yaw 运动，纯误差反馈有死区滞后；按指令
             # 方向给基础差速力矩。**默认 0**：v241 线性 FF 在导航指令突变时
