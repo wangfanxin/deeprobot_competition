@@ -234,6 +234,8 @@ def main():
         _tf = open(traj_file, 'w')
         _tf.write('t,x,y,yaw,next_idx,err,d_wp,vx,vyaw,cte,s_cur,tgt_x,tgt_y\n')
 
+    _rl_was_stair = False
+    _rl_trans_t0 = None
     while t < MAX_SIM:
         step = int(t / DT)
         if not auto_active:
@@ -323,8 +325,11 @@ def main():
                                 percept_confirmed=_pc)
                 mpc.set_mode(fol.mode)
                 if rl_ctrl is not None and fol.mode == 'STAIR':
+                    if not _rl_was_stair:
+                        _rl_trans_t0 = float(t)
                     _rs, _ts = fol._stair_tables()
                     rl_ctrl.set_risers(np.asarray(_rs), np.asarray(_ts))
+                _rl_was_stair = (fol.mode == 'STAIR')
                 if fol.mode == 'STAIR':
                     _wy = np.asarray([d.xpos[_wb, 1] for _wb in (5, 9, 13, 17)], dtype=np.float64)
                     _wz = np.asarray([d.xpos[_wb, 2] for _wb in (5, 9, 13, 17)], dtype=np.float64)
@@ -421,6 +426,15 @@ def main():
                 _cmd_rl = dict(vx=0.0, omega=0.0, roll_tar=0.0, pitch_tar=0.0)
                 mpc.latest_tau = rl_ctrl.compute_tau(
                     qq, qqd, wheel_xyz, wheel_vel, _cmd_rl, terr, DT)
+                _pretrans = float(os.environ.get('S10_DIAL_RL_PRETRANS_TIME', '1.0'))
+                if _rl_trans_t0 is not None and (float(t) - _rl_trans_t0) < _pretrans:
+                    _li = rl_ctrl.idx['leg_idx']
+                    _lj = rl_ctrl.idx['act2jnt'][_li]
+                    _lv = rl_ctrl.idx['act2vel'][_li]
+                    _tau_leg = np.clip(
+                        60.0 * (rl_ctrl.default_dof[_li] - qq[_lj])
+                        - 4.0 * qqd[_lv], -48.0, 48.0)
+                    mpc.latest_tau[_li] = _tau_leg
             else:
                 mpc.latest_tau = mpc.compute_tau(last_act, qq, qqd)
             if rl_ctrl is None and fol.mode == 'STAIR':
