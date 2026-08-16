@@ -1742,6 +1742,13 @@ def main():
                     _ridge_d = float(min(_rd))
             except Exception:
                 pass
+            # USER-DIRECTED 2026-08-17: when the FRONT wheels are lifted for a step,
+            # add a small forward-command boost so the rear wheels keep pushing instead
+            # of the body stalling at the riser (wp4->5 mode). Bounded, only while the
+            # front lift flag is active.
+            _fl_boost = float(np.max(step_lift[0:2]))
+            if _fl_boost > 0.3:
+                vx_c += float(os.environ.get('S10_LIFT_VX_BOOST', '0.0'))
             cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar,
                       pitch_tar=pitch_tar,
                       yaw_scale=(1.0 - float(np.clip(
