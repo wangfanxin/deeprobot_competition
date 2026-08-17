@@ -1,11 +1,10 @@
 # S10 巡逻赛题 · 感知-控制工程仓库
 
 基于山猫 S10 四足轮式机器人的**巡逻赛题**参赛方案：LiDAR 感知 + 高程地形建模 +
-导航（Autonav 平滑路径/速度剖面）→ 执行层 **carvmc+mppi / rl stair / dial-mpc**，
+导航（Autonav 平滑路径/速度剖面）→ 执行层 **carvmc+mppi（巡航） / rl stair（爬梯）**，
 在 MuJoCo 仿真中完成 33 航点全程巡检。
 
-> 双管线逐层详解见 [doc/双数据管线_autonav_20260816.md](doc/双数据管线_autonav_20260816.md)；
-> 用户指定 DIAL-MPC 方案见 [doc/DIALMPC_方案_20260817.md](doc/DIALMPC_方案_20260817.md)。
+> 双管线逐层详解（方法/论文/公开代码）见 [doc/双数据管线_autonav_20260816.md](doc/双数据管线_autonav_20260816.md)。
 
 ## 赛题与计分
 
@@ -37,9 +36,7 @@ graph LR
 | 频率 | 10 / 20 / 20 / 200 Hz | 10 / 20 / 50 / 200 Hz |
 | 当前状态 | v890 稳定（wp0→4 ≈13.5s） | 真实 mesh wp5→wp9 打通 |
 
-两管线共享感知层与 Autonav 层，分歧在执行层。**用户指定 DIAL-MPC 方案
-（08-17）**：巡航 = nav + DIAL-MPC（采样 MPC，wp0→3 已通过）、切换 = TK1/TK2、
-楼梯/横脊 = RL-stair，见 [DIALMPC_方案](doc/DIALMPC_方案_20260817.md)。
+两管线共享感知层与 Autonav 层，分歧在执行层。
 
 ## 双数据管线详解
 
@@ -110,7 +107,7 @@ DR_competition/
 │   │   ├── deploy/rlstair_ctrl.py       # 部署控制器（策略→腿 PD + 轮速）
 │   │   ├── deploy/obs_np.py             # 55 维观测编码（与训练一致）
 │   │   └── sim2sim.py / sim2sim_exact.py# sim2sim 验证 harness
-│   ├── dial-mpc/                 # DIAL-MPC 采样 MPC 库（内置）
+│   ├── dial-mpc/                 # dial-mpc 采样 MPC 库（MPPI 层文献/代码支撑，内置）
 │   ├── doc/                      # 方案/交付/RL 文档 + figures + yaml + 官方材料
 │   └── tmp/                      # 测试入口与结果分析脚本
 ```
@@ -163,17 +160,15 @@ S10_MPC_ENABLE=1 S10_MODE=auto_nav ~/DR_competition/.venv/bin/python \
 - **组合技能交付（08-16~17）**：stair 复训 **95.0%**（190/200）；TK1/TK2 接管
   wp5→9 全通；MPPI 避障实现+单测；扫墙判别与分段 ref_v 完成。全部新能力
   env 门控默认关（见 [组合技能_交付总结](doc/组合技能_交付总结_20260816.md)）。
-- **管线一（巡航）**：v890 稳定（wp0→6 30.5s）；**DIAL-MPC 方案（08-17 用户
-  指定）**：巡航 wp0→3 已通过，楼梯段 wp4→5 调试中。
+- **管线一（巡航）**：v890 稳定（wp0→6 30.5s）；卡点 = 坡底脊区 / wp17 大弯 / wp4→5 发卡+横脊。
 - **管线二（RL 爬梯）**：真实 mesh **wp5→wp9 全流程打通**（直立爬 6 级），
   最优迁移模型已锁定。
-- 待办：① DIAL-MPC 楼梯段 wp4→5；② wp10 微升弱轮 + wp10-33；③ wp0-33 全程；
-  ④ 高速（cruise 侧根本限制）；⑤ 真机迁移；⑥ 初赛材料（8.20）。
+- 待办：① wp10 微升弱轮 + wp10-33；② wp0-33 全程；③ 高速（cruise 侧根本限制）；
+  ④ 真机迁移；⑤ 初赛材料（8.20）。
 
 ## 相关文档
 
 - **[doc/双数据管线_autonav_20260816.md](doc/双数据管线_autonav_20260816.md) —— 双数据管线逐层详解（方法/论文/公开代码）**
-- **[doc/DIALMPC_方案_20260817.md](doc/DIALMPC_方案_20260817.md) —— 用户指定 DIAL-MPC 方案（nav+DIAL-MPC / TK1-2 / RL-stair）**
 - [doc/carvmc_方案与数据管线_20260810.md](doc/carvmc_方案与数据管线_20260810.md) —— 巡航 carvmc+mppi（v890）方案
 - [doc/组合技能_交付总结_20260816.md](doc/组合技能_交付总结_20260816.md) —— 组合技能交付（TK1/2、MPPI 避障、扫墙、分段 ref_v）
 - [doc/RL_stair_方案_20260814.md](doc/RL_stair_方案_20260814.md)、[最终验收](doc/RL_stair_最终验收_20260815.md)、[迁移达标](doc/RL_stair_迁移达标方案_95percent.md) —— RL-Stair
