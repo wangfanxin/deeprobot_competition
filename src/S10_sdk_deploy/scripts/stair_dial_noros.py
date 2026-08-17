@@ -142,6 +142,61 @@ def main():
         lookahead=float(os.environ.get('S10_AUTO_LOOKAHEAD', '1.5')),
     )
     planner = StairContactPlanner(m, d, fol)
+
+    def _lidar_stair_heading():
+        _sc = float(getattr(fol, '_s_cur', 0.0))
+        _lo = _sc + 0.5
+        _hi = _sc + 3.0
+        _cum = fol.path_cum
+        _k0 = int(np.searchsorted(_cum, _lo))
+        _k1 = int(np.searchsorted(_cum, _hi))
+        if _k1 <= _k0 + 3:
+            return None
+        try:
+            _rs = planner.lidar.detect_risers(
+                fol.path_pts[_k0:_k1], _cum[_k0:_k1], _lo, _hi,
+                rise=0.05, max_dh=0.16)
+        except Exception:
+            _rs = []
+        if _rs:
+            _sm = float(np.mean([float(r[0]) for r in _rs]))
+            _ki = int(np.searchsorted(_cum, _sm, side='right')) - 1
+            _ki = max(0, min(_ki, len(fol.path_heading) - 1))
+            return float(fol.path_heading[_ki])
+        _wpts = fol.path_pts[_k0:_k1]
+        _x0 = float(_wpts[:, 0].min() - 1.0)
+        _x1 = float(_wpts[:, 0].max() + 1.0)
+        _y0 = float(_wpts[:, 1].min() - 1.0)
+        _y1 = float(_wpts[:, 1].max() + 1.0)
+        _res = planner.lidar.res
+        _wi0 = max(int(np.floor((_y0 - planner.lidar.oy) / _res)), 0)
+        _wi1 = min(int(np.ceil((_y1 - planner.lidar.oy) / _res)), planner.lidar.ny - 1)
+        _wj0 = max(int(np.floor((_x0 - planner.lidar.ox) / _res)), 0)
+        _wj1 = min(int(np.ceil((_x1 - planner.lidar.ox) / _res)), planner.lidar.nx - 1)
+        if _wi1 <= _wi0 or _wj1 <= _wj0:
+            return None
+        _wv = planner.lidar.wall_valid[_wi0:_wi1, _wj0:_wj1]
+        _iy, _ix = np.where(_wv > 0)
+        if len(_ix) == 0:
+            return None
+        _wx = planner.lidar.ox + (_wj0 + _ix) * _res
+        _wy = planner.lidar.oy + (_wi0 + _iy) * _res
+        _lat_min = float(os.environ.get('S10_OBST_LAT_MIN', '0.5'))
+        _d2 = ((_wpts[None, :, 0] - _wx[:, None]) ** 2
+               + (_wpts[None, :, 1] - _wy[:, None]) ** 2)
+        _lat = np.sqrt(_d2.min(axis=1))
+        _op = _lat < _lat_min
+        if int(_op.sum()) < int(os.environ.get('S10_TK1_MIN_CELLS', '8')):
+            return None
+        _scs = []
+        for _ii in np.where(_op)[0]:
+            _dd = ((_wpts[:, 0] - _wx[_ii]) ** 2
+                   + (_wpts[:, 1] - _wy[_ii]) ** 2)
+            _scs.append(_cum[_k0 + int(np.argmin(_dd))])
+        _sm = float(np.mean(_scs))
+        _ki = int(np.searchsorted(_cum, _sm, side='right')) - 1
+        _ki = max(0, min(_ki, len(fol.path_heading) - 1))
+        return float(fol.path_heading[_ki])
     guard = StairStanceGuard(m, d)
     mpc.set_yaw_gain_lo(float(os.environ.get('S10_AUTO_YAW_FF_GAIN', '20.0')))
     # 已知地图横脊预扫描（与节点 _scan_ridge_zones 同法）：段内 0.12m+ 棱限速。
@@ -236,6 +291,7 @@ def main():
 
     _rl_was_stair = False
     _rl_trans_t0 = None
+    _tk2 = False
     while t < MAX_SIM:
         step = int(t / DT)
         if not auto_active:
@@ -333,6 +389,8 @@ def main():
                                   [round(float(v),2) for v in _ts], flush=True)
                     _rs, _ts = fol._stair_tables()
                     rl_ctrl.set_risers(np.asarray(_rs), np.asarray(_ts))
+                if _rl_was_stair and fol.mode != 'STAIR':
+                    _tk2 = True
                 _rl_was_stair = (fol.mode == 'STAIR')
                 if fol.mode == 'STAIR':
                     _wy = np.asarray([d.xpos[_wb, 1] for _wb in (5, 9, 13, 17)], dtype=np.float64)
@@ -347,6 +405,35 @@ def main():
                 vx, vyaw = fol.compute_cmd(
                     pos, yaw, next_idx,
                     robot_z=float(d.xpos[track_body][2]), yaw_rate=_wyaw_real)
+                # TK1: CRUISE + lidar stair heading -> align before handoff
+                if (os.environ.get('S10_TK1', '0') == '1'
+                        and fol.mode == 'CRUISE'):
+                    _th = _lidar_stair_heading()
+                    if _th is not None:
+                        _ey = float(np.arctan2(np.sin(_th - yaw), np.cos(_th - yaw)))
+                        _db = float(os.environ.get('S10_TK1_YAW_DB', '0.20'))
+                        if abs(_ey) > _db:
+                            vx = min(vx, float(os.environ.get('S10_TK1_VX', '2.2')))
+                            _ky = float(os.environ.get('S10_TK1_YAW_K', '2.5'))
+                            _ymax = float(os.environ.get('S10_TK1_YAW_MAX', '1.5'))
+                            vyaw = float(np.clip(_ky * _ey, -_ymax, _ymax))
+                # TK2: after stair handback, align to path heading then release
+                if (os.environ.get('S10_TK2', '0') == '1' and _tk2
+                        and fol.mode == 'CRUISE'):
+                    _s2 = float(getattr(fol, '_s_cur', 0.0))
+                    _ki2 = int(np.searchsorted(fol.path_cum, _s2, side='right')) - 1
+                    _ki2 = max(0, min(_ki2, len(fol.path_heading) - 1))
+                    _th2 = float(fol.path_heading[_ki2])
+                    _ey2 = float(np.arctan2(np.sin(_th2 - yaw), np.cos(_th2 - yaw)))
+                    _db2 = float(os.environ.get('S10_TK2_YAW_DB', '0.15'))
+                    if abs(_ey2) > _db2:
+                        _k2 = float(os.environ.get('S10_TK2_YAW_K', '2.5'))
+                        _ymax2 = float(os.environ.get('S10_TK2_YAW_MAX', '1.5'))
+                        vyaw = float(np.clip(_k2 * _ey2, -_ymax2, _ymax2))
+                        vx = min(vx, float(os.environ.get('S10_TK2_VX', '1.5')))
+                    else:
+                        _tk2 = False
+
                 if _bmpi is not None:
                     # 路径参考轨迹（弧长采样）
                     _ref = []
