@@ -764,6 +764,12 @@ class AutoNavFollower:
                            self._last_vx - dv,
                            self._last_vx + dv))
         vx = float(np.clip(vx, 0.0, self.max_speed))
+        # USER 2026-08-18: waypoint stop-turn. Near the current target waypoint,
+        # drop to a very low speed so MPPI+CarVMC can turn the heading before
+        # the next segment accelerates again.
+        _wp_arrive_r = float(os.environ.get("S10_WP_ARRIVE_R", "0.0"))
+        if _wp_arrive_r > 0.0 and d_wp < _wp_arrive_r:
+            vx = min(vx, float(os.environ.get("S10_WP_TURN_VX", "0.3")))
         self._last_vlim = v_lim
         self._last_vx = vx
         self._last_vyaw = vyaw
