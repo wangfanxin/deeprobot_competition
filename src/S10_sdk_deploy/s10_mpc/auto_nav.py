@@ -1020,10 +1020,11 @@ class AutoNavFollower:
                     return [s_cur + float(ds)]
             return []
         step_th = float(os.environ.get("S10_ELEV_STEP_TH", "0.10"))
+        max_step = float(os.environ.get("S10_ELEV_MAX_STEP", "0.50"))
         steps = []
         prev_h = prof[0][1]
         for (ds, h) in prof[1:]:
-            if h - prev_h > step_th and ds >= 0.5:
+            if (step_th < h - prev_h <= max_step) and ds >= 0.5:
                 _conf = any(h2 > prev_h + step_th
                             for (ds2, h2) in prof
                             if 0.0 < ds2 - ds <= 0.5)

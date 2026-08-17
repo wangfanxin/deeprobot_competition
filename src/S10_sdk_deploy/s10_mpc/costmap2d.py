@@ -128,12 +128,14 @@ def build_costmap(lterr, path_pts, path_cum, s_cur, cx, cy,
         lat[k0:k0 + CH] = np.sqrt(d2.min(axis=1))
 
     tall = protrusion > h_min
+    hard = protrusion > h_hard
     offpath = lat > lat_min
-    # USER-DIRECTED 3.1: walls are on the path SIDES; stairs are ON the path.
-    # On-path tall structures (start gate, tunnels) must be passable, so an
-    # obstacle = tall AND off-path. NO on-path hard-block (it blocked the start
-    # gate at wp0->1 - verified 2026-08-16).
-    keep = tall & offpath
+    # USER 2026-08-17: path high walls must be bypassed. Only climb steps
+    # whose rise is <= h_hard (default 0.5m). So:
+    #   obstacle = very tall (hard) regardless of on/off path
+    #            OR side wall taller than h_min
+    # Stairs <=0.5m are NOT obstacles.
+    keep = hard | (tall & offpath)
     wx, wy = wx[keep], wy[keep]
     if len(wx) == 0:
         return None
