@@ -702,9 +702,13 @@ class AutoNavFollower:
             # v272: 离线（|cte|>S10_AUTO_CTE_MAX 默认0.5）时丢弃 cte——让
             # 前视转向主导（恢复路线，避免 cte 与 err 抵消致不转漂西，
             # wp4→5 实测）；在线小偏差保持 cte 精修。连续幅值条件，非门控。
-            if (abs(cte) < float(os.environ.get("S10_AUTO_CTE_MAX", "0.5"))
+            _cte_max_env = ("S10_AUTO_CTE_MAX_STAIR" if self.mode == "STAIR"
+                            else "S10_AUTO_CTE_MAX")
+            _cte_gate_env = ("S10_AUTO_CTE_ERR_GATE_STAIR" if self.mode == "STAIR"
+                             else "S10_AUTO_CTE_ERR_GATE")
+            if (abs(cte) < float(os.environ.get(_cte_max_env, "0.5"))
                     and abs(err) < float(os.environ.get(
-                        "S10_AUTO_CTE_ERR_GATE", "0.6"))
+                        _cte_gate_env, "0.6"))
                     and cte_corr * err >= -0.5):
                 vyaw = float(_yg * err + yaw_ff
                              - self.yaw_damp * yaw_rate + cte_corr)
