@@ -21,7 +21,6 @@ from s10_mpc.mpc_controller import MPCController
 from s10_mpc.auto_nav import AutoNavFollower
 from s10_mpc.stair_contact_planner import StairContactPlanner
 from s10_mpc.stair_stance_guard import StairStanceGuard
-from s10_mpc.body_mppi import BodyMPPI
 from s10_mpc.costmap2d import build_costmap
 from s10_mpc.vmc_legs import WHEEL_BODY
 from rl_stair.deploy.rlstair_ctrl import RLStairCtrl
@@ -226,14 +225,6 @@ def main():
             print(f'[NOROS] 横脊预扫描 {len(_ri)} 处，限速 {_rv}', flush=True)
         except Exception as _e:
             print('[NOROS] 横脊预扫描失败', _e, flush=True)
-
-    # v218: 身体层 MPPI（S10_BODY_MPPI=1 启用）——替代 compute_cmd 直出，输出 [vx,ω]
-    _bmpi = None
-    if os.environ.get('S10_BODY_MPPI', '0') == '1':
-        from s10_mpc.body_mppi import BodyMPPI as _B
-        _bmpi = _B(N=int(os.environ.get('S10_BODY_MPPI_N', '256')),
-                   H=int(os.environ.get('S10_BODY_MPPI_H', '20')))
-        print('[NOROS] 身体层 MPPI 启用', flush=True)
 
     # 进程内 JIT 预热（2026-08-08 修复“卡在起点”）：本机 JAX 持久化编译缓存
     # 跨进程不生效（实测首次 plan_once 仍编译 17.5s），单独预编译对真跑无帮助。
@@ -445,50 +436,26 @@ def main():
                         _tk2 = False
                         _tk2_active = False
 
-                if _bmpi is not None:
-                    if (os.environ.get('S10_MPPI_OBSTACLE', '0') == '1'
-                            and hasattr(planner, 'lidar')):
-                        try:
-                            _cm = build_costmap(
-                                planner.lidar, fol.path_pts, fol.path_cum,
-                                float(getattr(fol, '_s_cur', 0.0)),
-                                float(pos[0]), float(pos[1]),
-                                half=float(os.environ.get('S10_OBST_HALF', '8.0')),
-                                res=float(os.environ.get('S10_OBST_RES', '0.2')),
-                                lat_min=float(os.environ.get('S10_OBST_LAT_MIN', '0.5')),
-                                inflate=float(os.environ.get('S10_OBST_INFLATE', '0.3')),
-                                dmax=float(os.environ.get('S10_MPPI_OBSTACLE_DMAX', '2.0')),
-                                h_min=float(os.environ.get('S10_OBST_H_MIN', '0.3')),
-                                h_hard=float(os.environ.get('S10_OBST_H_HARD', '0.5')))
-                            _bmpi.set_costmap(_cm)
-                        except Exception:
-                            _bmpi.set_costmap(None)
-                    else:
-                        _bmpi.set_costmap(None)
-                    # 路径参考轨迹（弧长采样）
-                    _ref = []
-                    _s0 = float(fol._s_cur)
-                    for _ds in np.arange(0.0, 8.0, 0.5):
-                        _sp = _s0 + _ds
-                        if _sp >= fol.path_total:
-                            break
-                        _k = int(np.searchsorted(fol.path_cum, _sp, side="right") - 1)
-                        _k = min(max(_k, 0), len(fol.path_pts) - 2)
-                        _t = ((_sp - fol.path_cum[_k])
-                              / max(fol.path_cum[_k + 1] - fol.path_cum[_k], 1e-6))
-                        _ref.append([fol.path_pts[_k, 0] + _t * (fol.path_pts[_k + 1, 0] - fol.path_pts[_k, 0]),
-                                     fol.path_pts[_k, 1] + _t * (fol.path_pts[_k + 1, 1] - fol.path_pts[_k, 1]),
-                                     fol.path_heading[min(_k, len(fol.path_heading) - 1)]])
-                    _ref = np.array(_ref) if len(_ref) else np.array([[pos[0], pos[1], yaw]])
-                    _Rm = np.asarray(d.xmat[track_body]).reshape(3, 3)
-                    _vw = _Rm.T @ np.asarray(d.cvel[track_body][3:6])
-                    _st = np.array([pos[0], pos[1], yaw,
-                                    float(_vw[0]), float(_vw[1]),
-                                    float(d.cvel[track_body][5])])
-                    _vx_c, _om_c = _bmpi.plan(_st, _ref, float(fol._last_vlim))
-                    mpc.set_cmd(float(_vx_c), 0.0, float(_om_c))
+                if (os.environ.get('S10_MPPI_OBSTACLE', '0') == '1'
+                        and hasattr(planner, 'lidar')):
+                    try:
+                        _cm = build_costmap(
+                            planner.lidar, fol.path_pts, fol.path_cum,
+                            float(getattr(fol, '_s_cur', 0.0)),
+                            float(pos[0]), float(pos[1]),
+                            half=float(os.environ.get('S10_OBST_HALF', '8.0')),
+                            res=float(os.environ.get('S10_OBST_RES', '0.2')),
+                            lat_min=float(os.environ.get('S10_OBST_LAT_MIN', '0.5')),
+                            inflate=float(os.environ.get('S10_OBST_INFLATE', '0.3')),
+                            dmax=float(os.environ.get('S10_MPPI_OBSTACLE_DMAX', '2.0')),
+                            h_min=float(os.environ.get('S10_OBST_H_MIN', '0.3')),
+                            h_hard=float(os.environ.get('S10_OBST_H_HARD', '0.5')))
+                        mpc.set_obstacle_costmap(_cm)
+                    except Exception:
+                        mpc.set_obstacle_costmap(None)
                 else:
-                    mpc.set_cmd(vx, 0.0, vyaw)
+                    mpc.set_obstacle_costmap(None)
+                mpc.set_cmd(vx, 0.0, vyaw)
                 if os.environ.get('S10_CURVE_DEBUG') == '1':
                     _q = d.xquat[track_body]
                     _roll = float(np.arctan2(

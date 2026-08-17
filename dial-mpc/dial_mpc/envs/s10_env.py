@@ -92,6 +92,30 @@ def quat_to_euler_z(q):
     return jnp.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
+def _sample_distance_field(d, origin, res, dmax, xy):
+    """Bilinear sample of a fixed-shape 2D distance field.
+
+    Out-of-window queries return dmax (far), matching the costmap query contract
+    used by costmap2d.CostMap2D. Input xy may be (..., 2).
+    """
+    gx = (xy[..., 0] - origin[0]) / res
+    gy = (xy[..., 1] - origin[1]) / res
+    ix = jnp.floor(gx).astype(jnp.int32)
+    iy = jnp.floor(gy).astype(jnp.int32)
+    inb = ((ix >= 0) & (ix < d.shape[1] - 1)
+           & (iy >= 0) & (iy < d.shape[0] - 1))
+    ix0 = jnp.clip(ix, 0, d.shape[1] - 1)
+    iy0 = jnp.clip(iy, 0, d.shape[0] - 1)
+    ix1 = jnp.clip(ix + 1, 0, d.shape[1] - 1)
+    iy1 = jnp.clip(iy + 1, 0, d.shape[0] - 1)
+    fx = gx - ix
+    fy = gy - iy
+    top = d[iy0, ix0] * (1.0 - fx) + d[iy0, ix1] * fx
+    bot = d[iy1, ix0] * (1.0 - fx) + d[iy1, ix1] * fx
+    interp = top * (1.0 - fy) + bot * fy
+    return jnp.where(inb, interp, dmax)
+
+
 @struct.dataclass
 class MjxLikeState:
     """mjx Data 包装：提供 MBDPI 需要的 .q/.qd/.x/.xd 别名 + mjx 字段透传。"""
@@ -1148,6 +1172,24 @@ def _reward_pure(cfg, ctx, d, info, ctrl):
     # 后轮还在下一级时 max 保持当前级 → 机身不提前抽高、不失去重心。
     # 与 r_ground（轮-地形贴合）互补：r_ground 管"轮子抬到哪"，
     # r_clear 管"机身跟着抬到哪"。空洞回退 = 当前机身高度（不惩罚）。
+    # ---- DIAL-MPC wall/obstacle cost (USER 2026-08-17) ----
+    # Same costmap contract as BodyMPPI was removed from; direct soft potential on
+    # body + four wheels. dmax -> no penalty, so the fixed-shape info key stays
+    # JIT-stable whether or not a wall is visible.
+    r_obstacle = 0.0
+    obstacle_d = info.get("obstacle_d")
+    if obstacle_d is not None:
+        body_xy = d.xpos[ctx["torso"]][:2]
+        wheel_xy = d.xpos[WHEEL_BODY_IDS][:, :2]
+        probe_xy = jnp.concatenate([body_xy[None, :], wheel_xy], axis=0)
+        obs_d = _sample_distance_field(
+            obstacle_d, info["obstacle_origin"], info["obstacle_res"],
+            info["obstacle_dmax"], probe_xy)
+        v_abs = jnp.sqrt(jnp.sum(jnp.square(vb[:2])))
+        safe_d = 0.30 + 0.10 * v_abs
+        rho = jnp.square(jnp.clip(safe_d - obs_d, 0.0, None) / safe_d)
+        r_obstacle = -cfg.get("w_obstacle", 0.0) * jnp.sum(rho)
+
     r_clear = 0.0
     if (elev is not None and terrain_cost is not None
             and USE_ELEV > 0):
@@ -1208,7 +1250,7 @@ def _reward_pure(cfg, ctx, d, info, ctrl):
             + r_height * cfg["height_weight"] + r_energy * 0.0001
             + r_terrain + r_ground + r_overlift + r_stumble
             + r_wheel_air + r_leg + r_pose + r_path + r_path_head
-            + r_path_z + r_clear + r_ext + r_lockpush + r_crouch
+            + r_path_z + r_obstacle + r_clear + r_ext + r_lockpush + r_crouch
             + r_push + r_swing_ok + r_z_smooth + r_wheel_ref
             + r_pitch + r_sym + r_airpen + r_progress + r_brake
             + r_foothold + r_lift_prog + r_roll_level + r_support

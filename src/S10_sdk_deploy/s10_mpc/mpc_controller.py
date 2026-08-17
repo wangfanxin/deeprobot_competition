@@ -463,6 +463,12 @@ class MPCController:
         # set_elevation_map 后 _elev_np 才变，版本号不变则复用 jnp 转换。
         self._elev_jnp_cache = None
         self._elev_np_version = 0
+        # Obstacle distance field for DIAL-MPC cost (wall avoidance, cruise only).
+        # Fixed 80x80 at 0.2 m resolution -> 16 m local window; far = dmax means no penalty.
+        self._obst_np = np.full((80, 80), 2.0, dtype=np.float32)
+        self._obst_origin = np.zeros(2, dtype=np.float32)
+        self._obst_res = 0.2
+        self._obst_dmax = 2.0
 
         def _scan_body(rng_Y0_state, factor):
             rng, Y0, state = rng_Y0_state
@@ -560,6 +566,28 @@ class MPCController:
         }
         self._elev_np_version += 1
         self._elev_jnp_cache = None
+
+    def set_obstacle_costmap(self, cmap):
+        """Inject the wall/obstacle 2D distance field for DIAL-MPC cost.
+
+        cmap: CostMap2D or None. Fixed 80x80 at 0.2 m resolution; when None the
+        grid is filled with dmax (far), which yields zero obstacle penalty (same
+        fixed shape so the JAX trace does not change between no wall and wall).
+        """
+        if cmap is None:
+            self._obst_np[:] = self._obst_dmax
+            return
+        d = np.asarray(cmap.d, dtype=np.float32)
+        if d.shape != self._obst_np.shape:
+            self._obst_np[:] = self._obst_dmax
+            h = min(d.shape[0], self._obst_np.shape[0])
+            w = min(d.shape[1], self._obst_np.shape[1])
+            self._obst_np[:h, :w] = d[:h, :w]
+        else:
+            self._obst_np[:] = d
+        self._obst_origin = np.asarray(cmap.origin, dtype=np.float32)
+        self._obst_res = float(cmap.res)
+        self._obst_dmax = float(cmap.dmax)
 
     def set_stair_action_bias(self, bias):
         # v168: 注入场驱动抬腿动作偏置（numpy (H+1,12) 或 (12,)，动作空间）。
@@ -685,6 +713,10 @@ class MPCController:
             getattr(self, "_stair_prox", np.full(4, 1e9, dtype=np.float32)),
             dtype=jnp.float32)
         info["elevation_map"] = self._elev_jnp()
+        info["obstacle_d"] = jnp.asarray(self._obst_np)
+        info["obstacle_origin"] = jnp.asarray(self._obst_origin)
+        info["obstacle_res"] = jnp.array(float(self._obst_res), dtype=jnp.float32)
+        info["obstacle_dmax"] = jnp.array(float(self._obst_dmax), dtype=jnp.float32)
         # E3：地形自适应姿态目标（上坡仰头/下坡低头/过弯压弯）
         p_tar, r_tar = self._terrain_pose_targets()
         # v162：STAIR 已知地图几何剖面覆盖（pitch 负=仰头；base_z 世界系）
@@ -1086,6 +1118,7 @@ class MPCController:
                     "S10_STAIR_PITCH_TAR", "-0.45")),
                 "stair_sym_w": _w("S10_STAIR_SYM_W", 80.0),
                 "stair_air_w": _w("S10_STAIR_AIR_W", 0.0),
+                "w_obstacle": 0.0,
             }
         else:  # CRUISE
             overrides = {
@@ -1112,6 +1145,9 @@ class MPCController:
                 "w_path_head": float(os.environ.get(
                     "S10_MPC_W_PATH_HEAD", "20.0")),
                 "w_path_z": 0.0,
+                # DIAL-MPC wall/obstacle soft cost (USER 2026-08-17). Cruise only;
+                # STAIR keeps 0 to avoid fighting the stair corridor geometry.
+                "w_obstacle": float(os.environ.get("S10_MPC_W_OBS", "0.0")),
             }
         cfg.update(overrides)
 
