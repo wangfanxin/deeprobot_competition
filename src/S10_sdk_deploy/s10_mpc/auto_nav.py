@@ -363,7 +363,11 @@ class AutoNavFollower:
         n = len(wp)
         res = self.path_res
         xy = self._stair_corridor_xy(wp[:, :2])
-        raw = self._biarc_path(xy)
+        if self.fillet_r <= 0.0:
+            # USER 2026-08-18: straight waypoint-to-waypoint segments.
+            raw = xy
+        else:
+            raw = self._biarc_path(xy)
         # v133: navigation smooth path also gets the diagonal bump so that
         # pursuit/yaw-FF and MPC r_path use the SAME path (v132 r1 drifted
         # back onto the ridge partly because the two layers diverged).
