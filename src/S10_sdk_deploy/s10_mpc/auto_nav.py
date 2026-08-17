@@ -752,6 +752,13 @@ class AutoNavFollower:
         _k_far = min(_k_near_v + int(_vll / self.path_res),
                      len(self.path_vlim) - 1)
         v_lim = float(np.min(self.path_vlim[_k_near_v:_k_far + 1]))
+        # USER 2026-08-17: perception-driven stair decel (continuous, no hard gate).
+        # decel_request goes 0->1 as the detected first riser approaches; use it to
+        # ramp cruise speed toward TK1/RL handoff speed instead of braking to zero.
+        if self.mode == "CRUISE" and self.decel_request > 0.0:
+            _v_hand = float(os.environ.get("S10_TK1_VX", "1.5"))
+            v_lim = min(v_lim, self.max_speed
+                        - (self.max_speed - _v_hand) * self.decel_request)
         # v825: 删除航点转角制动（用户指令；交 MPPI）
         # v825: 删除 err 门控/出弯加速/到达制动/高架限速（用户指令，
         # 速度由曲率剖面+MPPI 决定）
@@ -816,7 +823,7 @@ class AutoNavFollower:
                 return True
         return False
 
-    def update_mode(self, robot_xy, next_idx, yaw=None, local_map=None):
+    def update_mode(self, robot_xy, next_idx, yaw=None, local_map=None, wheel_xy=None):
         """PERCEPTION-DRIVEN stair takeover (USER 2026-08-16). No waypoint/z-rise hardcode.
 
         - CRUISE -> STAIR (TK1) when an on-path staircase rise sequence is detected ahead
@@ -835,9 +842,13 @@ class AutoNavFollower:
         _elook = float(os.environ.get("S10_ELEV_LOOKAHEAD", "6.0"))
         _eenter = float(os.environ.get("S10_ELEV_ENTER", "2.0"))
 
-        # perception: on-path staircase riser arc-lengths ahead
-        self.stair_rises_s = self._elev_rises_on_path(
+        # perception: on-path staircase riser arc-lengths ahead.
+        # While STAIR, keep the last non-empty riser list if a mid-climb lidar gap
+        # returns empty; otherwise the wheel-based TK2 exit loses the target riser.
+        _rises_new = self._elev_rises_on_path(
             robot_xy, yaw, local_map, lookahead=_elook)
+        if _rises_new or self.mode != "STAIR":
+            self.stair_rises_s = _rises_new
         if self.stair_rises_s:
             _sc = float(getattr(self, "_s_cur", 0.0))
             self.stair_ahead_dist = float(self.stair_rises_s[0] - _sc)
@@ -856,18 +867,26 @@ class AutoNavFollower:
                       flush=True)
 
         if self.mode == "STAIR":
-            # TK2 handback (perception-driven, physical): exit only when no staircase is
-            # detected ahead AND the robot has advanced at least S10_STAIR_MIN_CLIMB_S
-            # metres PAST the first detected riser along the path heading. This covers a
-            # full staircase without relying on the s_cur projection (which is unreliable
-            # while sliding/laterally-offset) and cannot flap on a flat tread.
+            # TK2 handback (perception-driven, physical): all four wheels have passed
+            # the highest detected riser (USER 2026-08-17). This works for single and
+            # multi-step stairs; falls back to body-progress only if wheel_xy is absent.
             if self._stair_first_riser_xy is not None:
                 _fwd = np.array([np.cos(self._stair_first_heading),
                                  np.sin(self._stair_first_heading)])
                 _prog = float(np.dot(
                     np.asarray(robot_xy) - self._stair_first_riser_xy, _fwd))
-                _min_climb = float(os.environ.get("S10_STAIR_MIN_CLIMB_S", "2.5"))
-                if _prog > _min_climb:
+                _exit = False
+                if wheel_xy is not None and self.stair_rises_s:
+                    _last_s = float(self.stair_rises_s[-1])
+                    _last_xy = self._path_point_at(_last_s)[:2]
+                    _progs = [float(np.dot(np.asarray(w)[:2] - _last_xy, _fwd))
+                              for w in wheel_xy]
+                    _clear = float(os.environ.get("S10_STAIR_WHEEL_CLEAR", "0.05"))
+                    _exit = (float(min(_progs)) > _clear)
+                else:
+                    _min_climb = float(os.environ.get("S10_STAIR_MIN_CLIMB_S", "2.5"))
+                    _exit = (_prog > _min_climb)
+                if _exit:
                     self.mode = "CRUISE"
                     self.decel_request = 0.0
                     self._stair_first_riser_xy = None

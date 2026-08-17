@@ -271,6 +271,7 @@ def main():
     crashed = None
     last_progress_idx = 0
     last_progress_t = None
+    _stuck_timeout = float(os.environ.get('S10_STUCK_TIMEOUT', '15.0'))
     plan_interval = int(os.environ.get('S10_MPC_PLAN_INTERVAL_AUTO', '10'))
     dbg_cnt = 0
     plan_times = []
@@ -371,17 +372,51 @@ def main():
                 local_tile = planner.get_tile(pos, t)
                 mpc.set_elevation_map(local_tile)
                 _pc = planner.stair_confirmed(pos, yaw)
-                fol.update_mode(pos, next_idx, yaw=yaw, local_map=local_tile)
+                _wheel_xy = np.asarray([d.xpos[_wb][:2] for _wb in WHEEL_BODY], dtype=np.float64)
+                fol.update_mode(pos, next_idx, yaw=yaw, local_map=local_tile,
+                                wheel_xy=_wheel_xy)
                 mpc.set_mode(fol.mode)
                 if rl_ctrl is not None and fol.mode == 'STAIR':
                     if not _rl_was_stair:
                         _rl_trans_t0 = float(t)
-                        if os.environ.get('S10_DIAL_RL_DEBUG', '0') == '1':
+                        # Local riser table for the CURRENT stair only. fol._stair_tables()
+                        # is a global/known-map fallback that can point at the far big
+                        # staircase, which would make RL climb with the wrong target.
+                        _sc = float(getattr(fol, '_s_cur', 0.0))
+                        _sl = getattr(fol, 'stair_rises_s', [])
+                        if _sl:
+                            _hm = local_tile.get('heightmap')
+                            _valid = local_tile.get('valid')
+                            _ox = float(local_tile['origin'][0])
+                            _oy = float(local_tile['origin'][1])
+                            _res = float(local_tile['resolution'])
+                            _rys = []
+                            _tops = []
+                            for _s in _sl:
+                                _k = int(np.searchsorted(fol.path_cum, _s, side='right') - 1)
+                                _k = max(0, min(_k, len(fol.path_pts) - 1))
+                                _rys.append(float(fol.path_pts[_k, 1]))
+                                _hh = []
+                                for _ds in (0.0, 0.10, 0.20, 0.30):
+                                    _sp = min(_s + _ds, float(fol.path_total))
+                                    _kk = int(np.searchsorted(fol.path_cum, _sp, side='right') - 1)
+                                    _kk = max(0, min(_kk, len(fol.path_pts) - 1))
+                                    _x = float(fol.path_pts[_kk, 0])
+                                    _y = float(fol.path_pts[_kk, 1])
+                                    _i = int(np.floor((_y - _oy) / _res))
+                                    _j = int(np.floor((_x - _ox) / _res))
+                                    if (0 <= _i < _valid.shape[0] and 0 <= _j < _valid.shape[1]
+                                            and _valid[_i, _j]):
+                                        _hh.append(float(_hm[_i, _j]))
+                                _tops.append(max(_hh) if _hh else float(fol.path_pts[_k, 2]))
+                            _rs = np.asarray(_rys, dtype=np.float64)
+                            _ts = np.asarray(_tops, dtype=np.float64)
+                        else:
                             _rs, _ts = fol._stair_tables()
+                        rl_ctrl.set_risers(np.asarray(_rs), np.asarray(_ts))
+                        if os.environ.get('S10_DIAL_RL_DEBUG', '0') == '1':
                             print('[RLRISERS]', [round(float(v),2) for v in _rs],
                                   [round(float(v),2) for v in _ts], flush=True)
-                    _rs, _ts = fol._stair_tables()
-                    rl_ctrl.set_risers(np.asarray(_rs), np.asarray(_ts))
                 if _rl_was_stair and fol.mode != 'STAIR':
                     _tk2 = True
                 _rl_was_stair = (fol.mode == 'STAIR')
@@ -627,8 +662,8 @@ def main():
         if next_idx != last_progress_idx:
             last_progress_idx = next_idx
             last_progress_t = t
-        if last_progress_t is not None and t - last_progress_t > 15.0:
-            print(f'[NOROS] 卡住 15s（wp={next_idx} 无推进），提前结束',
+        if last_progress_t is not None and t - last_progress_t > _stuck_timeout:
+            print(f'[NOROS] 卡住 {t-last_progress_t:.0f}s（wp={next_idx} 无推进），提前结束',
                   flush=True)
             break
 
