@@ -785,6 +785,9 @@ def main():
                 mppi.set_costmap(_build_costmap())
             else:
                 mppi.set_costmap(None)
+            # USER 2026-08-18: Line-Turn direct controller. Straight segments + point
+            # turns do not need MPPI sampling; use nav vx/vyaw directly.
+            _line_turn = os.environ.get('S10_LINE_TURN', '0') == '1'
             # CONFIG SWITCH (USER 2026-08-16, wp0->33): v890 MPPI cruise for the early
             # track, then switch to direct-nav + lower vx after S10_SWITCH_WP so the RL
             # stair section (wp5->9) gets the verified handoff config (USE_NAV=1 + VMAX
@@ -793,12 +796,22 @@ def main():
             _switch_back_wp = int(os.environ.get('S10_SWITCH_BACK_WP', '8'))
             # direct-nav only for the RL stair approach (wp5->7); revert to MPPI for the
             # platform (wp8+) where the corner handling is better than raw pursuit.
-            _use_nav_eff = (os.environ.get('S10_VMC_USE_NAV', '0') == '1'
+            _use_nav_eff = (_line_turn
+                            or os.environ.get('S10_VMC_USE_NAV', '0') == '1'
                             or (_switch_wp < next_idx < _switch_back_wp))
             if _use_nav_eff:
                 vx_c, om_c = vx, vyaw   # 直接导航指令（无 MPPI 随机性）
                 _switch_vx = float(os.environ.get('S10_SWITCH_VX', '3.5'))
                 vx_c = min(vx_c, _switch_vx)
+                if _line_turn and next_idx + 1 < len(wp):
+                    _lt_nx = float(wp[next_idx + 1, 0] - wp[next_idx, 0])
+                    _lt_ny = float(wp[next_idx + 1, 1] - wp[next_idx, 1])
+                    _lt_th = float(np.arctan2(_lt_ny, _lt_nx))
+                    _lt_err = float(np.arctan2(np.sin(_lt_th - yaw),
+                                               np.cos(_lt_th - yaw)))
+                    _lt_k = float(os.environ.get('S10_LINE_TURN_K', '4.0'))
+                    _lt_max = float(os.environ.get('S10_LINE_TURN_OM_MAX', '4.0'))
+                    om_c = float(np.clip(_lt_k * _lt_err, -_lt_max, _lt_max))
                 # POST-SWITCH RECOVERY (USER 2026-08-16): after the wp4->5 step the
                 # robot is east-drifted and heading ~east. If the heading error to the
                 # next waypoint is large, SLOW + STEER toward it (stop-and-turn) so it
