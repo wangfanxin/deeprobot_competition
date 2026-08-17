@@ -230,8 +230,7 @@ def main():
     # v218: 身体层 MPPI（S10_BODY_MPPI=1 启用）——替代 compute_cmd 直出，输出 [vx,ω]
     _bmpi = None
     if os.environ.get('S10_BODY_MPPI', '0') == '1':
-        from s10_mpc.body_mppi import BodyMPPI
-from s10_mpc.costmap2d import build_costmap as _B
+        from s10_mpc.body_mppi import BodyMPPI as _B
         _bmpi = _B(N=int(os.environ.get('S10_BODY_MPPI_N', '256')),
                    H=int(os.environ.get('S10_BODY_MPPI_H', '20')))
         print('[NOROS] 身体层 MPPI 启用', flush=True)
