@@ -163,40 +163,6 @@ def main():
             _ki = int(np.searchsorted(_cum, _sm, side='right')) - 1
             _ki = max(0, min(_ki, len(fol.path_heading) - 1))
             return float(fol.path_heading[_ki])
-        _wpts = fol.path_pts[_k0:_k1]
-        _x0 = float(_wpts[:, 0].min() - 1.0)
-        _x1 = float(_wpts[:, 0].max() + 1.0)
-        _y0 = float(_wpts[:, 1].min() - 1.0)
-        _y1 = float(_wpts[:, 1].max() + 1.0)
-        _res = planner.lidar.res
-        _wi0 = max(int(np.floor((_y0 - planner.lidar.oy) / _res)), 0)
-        _wi1 = min(int(np.ceil((_y1 - planner.lidar.oy) / _res)), planner.lidar.ny - 1)
-        _wj0 = max(int(np.floor((_x0 - planner.lidar.ox) / _res)), 0)
-        _wj1 = min(int(np.ceil((_x1 - planner.lidar.ox) / _res)), planner.lidar.nx - 1)
-        if _wi1 <= _wi0 or _wj1 <= _wj0:
-            return None
-        _wv = planner.lidar.wall_valid[_wi0:_wi1, _wj0:_wj1]
-        _iy, _ix = np.where(_wv > 0)
-        if len(_ix) == 0:
-            return None
-        _wx = planner.lidar.ox + (_wj0 + _ix) * _res
-        _wy = planner.lidar.oy + (_wi0 + _iy) * _res
-        _lat_min = float(os.environ.get('S10_OBST_LAT_MIN', '0.5'))
-        _d2 = ((_wpts[None, :, 0] - _wx[:, None]) ** 2
-               + (_wpts[None, :, 1] - _wy[:, None]) ** 2)
-        _lat = np.sqrt(_d2.min(axis=1))
-        _op = _lat < _lat_min
-        if int(_op.sum()) < int(os.environ.get('S10_TK1_MIN_CELLS', '8')):
-            return None
-        _scs = []
-        for _ii in np.where(_op)[0]:
-            _dd = ((_wpts[:, 0] - _wx[_ii]) ** 2
-                   + (_wpts[:, 1] - _wy[_ii]) ** 2)
-            _scs.append(_cum[_k0 + int(np.argmin(_dd))])
-        _sm = float(np.mean(_scs))
-        _ki = int(np.searchsorted(_cum, _sm, side='right')) - 1
-        _ki = max(0, min(_ki, len(fol.path_heading) - 1))
-        return float(fol.path_heading[_ki])
     guard = StairStanceGuard(m, d)
     mpc.set_yaw_gain_lo(float(os.environ.get('S10_AUTO_YAW_FF_GAIN', '20.0')))
     # 已知地图横脊预扫描（与节点 _scan_ridge_zones 同法）：段内 0.12m+ 棱限速。
