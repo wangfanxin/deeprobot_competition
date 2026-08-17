@@ -437,6 +437,18 @@ def main():
                         _tk2 = False
                         _tk2_active = False
 
+                # STAIR lateral lock: if CTE is large, give a strong yaw-return command
+                # and cap speed until the robot is back near the path. This prevents the
+                # west drift observed after the wp4 single step.
+                if fol.mode == 'STAIR':
+                    _cte_lock = float(getattr(fol, '_last_cte', 0.0))
+                    _lock = float(os.environ.get('S10_STAIR_LAT_LOCK', '0.8'))
+                    if abs(_cte_lock) > _lock:
+                        _ky = float(os.environ.get('S10_STAIR_LAT_K', '3.0'))
+                        _ymax = float(os.environ.get('S10_STAIR_LAT_YAW_MAX', '1.8'))
+                        vyaw = float(np.clip(-_ky * _cte_lock, -_ymax, _ymax))
+                        vx = min(vx, float(os.environ.get('S10_STAIR_LAT_VX', '1.0')))
+
                 if (os.environ.get('S10_MPPI_OBSTACLE', '0') == '1'
                         and hasattr(planner, 'lidar')):
                     try:
