@@ -403,25 +403,14 @@ class MPCController:
         self.env = S10WheeledEnv(self.env_config)
         print(f"[MPC] 构建 MBDPI (Nsample={self.dial_config.Nsample}, "
               f"Hsample={self.dial_config.Hsample}) ...")
-        # 双视界 MBDPI（用户方案模式化 H）：CRUISE H=14（0.28s 横脊动量、
-        # chain 44 3/3 验证）、STAIR H=20（0.4s 长视界爬梯）。Hnode 相同
-        # （4）→ Y 状态 (5,16) 可直接复用，切换无重映射。
+        # DIAL-MPC CRUISE only (USER 2026-08-17): no internal STAIR MBDPI/mode.
         _h_cruise = int(os.environ.get("S10_MPC_H_CRUISE", "20"))
-        _h_stair = int(os.environ.get("S10_MPC_H_STAIR", "20"))
         import dataclasses as _dc
-        # v217: 巡航/台阶允许不同采样规模（S10_MPC_NSAMPLE_CRUISE/STAIR，
-        # 默认沿用全局 S10_MPC_NSAMPLE）：巡航小 N 提频，台阶保留大 N 稳定。
         _n_cruise = int(os.environ.get(
             "S10_MPC_NSAMPLE_CRUISE", "0")) or self.dial_config.Nsample
-        _n_stair = int(os.environ.get(
-            "S10_MPC_NSAMPLE_STAIR", "0")) or self.dial_config.Nsample
         _cfg14 = _dc.replace(self.dial_config, Hsample=_h_cruise,
                              Nsample=_n_cruise)
-        _cfg20 = _dc.replace(self.dial_config, Hsample=_h_stair,
-                             Nsample=_n_stair)
-        self.mbdpi_h14 = MBDPI(_cfg14, self.env, ctx=self.env._ctx)
-        self.mbdpi_h20 = MBDPI(_cfg20, self.env, ctx=self.env._ctx)
-        self.mbdpi = self.mbdpi_h14
+        self.mbdpi = MBDPI(_cfg14, self.env, ctx=self.env._ctx)
         self.rng = jax.random.PRNGKey(seed=self.dial_config.seed)
 
         self.Y = jnp.zeros([self.dial_config.Hnode + 1, self.mbdpi.nu])
@@ -979,177 +968,6 @@ class MPCController:
                           dtype=jnp.float32))
         self._last_vx = float(vx)
         self._last_vyaw = float(vyaw)
-
-    def set_mode(self, mode: str):
-        """CRUISE / STAIR_SEQUENCE 双模式 reward 权重切换（用户方案 2.3/2.4）。
-
-        ctx["cfg"] 是 jit 动态输入（参数化后），改值不 retrace——reward 权重
-        随模式切换：CRUISE 防趴低+轻蹲姿、STAIR 放开屈膝+抬腿引导+做功奖励。
-        """
-        if mode == getattr(self, "_mode", None):
-            return
-        self._mode = mode
-        # 模式化视界（用户方案）：STAIR 用长视界 MBDPI（H=20），
-        # CRUISE 用短视界（H=14）。Hnode 相同，Y 状态直接复用。
-        self.mbdpi = (self.mbdpi_h20 if mode == "STAIR"
-                      else self.mbdpi_h14)
-        cfg = self.env._ctx["cfg"]
-        # 恒定项（chain 64 验证基线，两种模式共用）：轮-地形贴合 300、
-        # 机身净高 60——避免 CRUISE 退化（chain 68 r1 东漂复现：
-        # ground 120/clear 10 削弱横脊通过能力）。
-        cfg["terrain_w_ground"] = 300.0
-        cfg["w_clear"] = 60.0
-        # 模式化采样 σ（用户方案 6"退火 z 向关节 sigma 放大"）：STAIR 腿维
-        # 噪声放大让 MPC 探索到大幅抬腿；CRUISE 小 σ 保平地/横脊稳定。
-        # sigma_dim 已参数化（reverse_once 动态参数），切换无 retrace。
-        # 2026-08-07 解耦：CRUISE/STAIR 用独立 env（S10_STAIR_LEG_SIGMA 曾
-        # 同时覆盖两者——σ0.6 爬梯时巡航段也变"乱"，横脊失败率升高）。
-        if mode == "STAIR":
-            leg_sigma = float(os.environ.get(
-                "S10_STAIR_LEG_SIGMA", "2.0"))
-            wheel_sigma = float(os.environ.get(
-                "S10_STAIR_WHEEL_SIGMA", "1.0"))
-        else:
-            leg_sigma = float(os.environ.get(
-                "S10_CRUISE_LEG_SIGMA", "0.3"))
-            wheel_sigma = float(os.environ.get(
-                "S10_CRUISE_WHEEL_SIGMA", "1.0"))
-        self.mbdpi.sigma_dim = jnp.asarray(
-            [leg_sigma] * 12 + [wheel_sigma] * 4, dtype=jnp.float32)
-        # v200: DBaS 基线快照（自适应在其上缩放，模式切换时重置状态）
-        self._sigma_dim_base = np.asarray(
-            self.mbdpi.sigma_dim, dtype=np.float32)
-        self._ada_se = None
-        self._elite_sigma = None
-        self._elite_bias = None
-        # 采样偏置（用户 2026-08-07 平衡项）：STAIR 时给 Y 腿节点注入
-        # 软偏置（动作空间）——前膝缩回（抬前轮）、后膝弯曲（抬后轮），
-        # 让"抬腿"成为采样均值方向；扩散/M PPI 权重可覆盖（非门控）。
-        if mode == "STAIR":
-            _b = os.environ.get(
-                "S10_STAIR_LEG_BIAS",
-                "0,0,-0.45,0,0,-0.45,0,0,0.45,0,0,0.45")
-            self._leg_bias = np.asarray(
-                [float(x) for x in _b.replace(" ", "").split(",")],
-                dtype=np.float32)
-            if self._leg_bias.shape[0] != 12:
-                self._leg_bias = np.zeros(12, dtype=np.float32)
-        else:
-            self._leg_bias = np.zeros(12, dtype=np.float32)
-        # 模式化腿动作尺度（2026-08-07 根因修复）：rollout 采样动作被
-        # clip 到 ±1，leg_action_scale=0.45 → 膝角可摆范围仅 ±0.45 rad；
-        # 前轮爬 0.125m riser 需缩膝 ~0.71 rad（2.30→1.59），超出动作
-        # 下限 1.85 → 抬腿动作在采样空间内不可达，狗只能顶死打滑。
-        # STAIR 放大尺度让 swing 可达；CRUISE 恢复小尺度防乱甩。
-        # 必须同时改 ctx cfg（rollout）与 env._config（主仿真 act2tau）。
-        if mode == "STAIR":
-            leg_as = float(os.environ.get(
-                "S10_STAIR_LEG_ACTION_SCALE", "0.45"))
-        else:
-            leg_as = float(os.environ.get(
-                "S10_LEG_ACTION_SCALE", "0.45"))
-        cfg["leg_action_scale"] = leg_as
-        if getattr(self.env, "_config", None) is not None:
-            self.env._config.leg_action_scale = leg_as
-        if mode == "STAIR":
-            def _w(name, default):
-                v = os.environ.get(name)
-                return float(v) if v is not None else default
-            overrides = {
-                # 放开屈膝（w_crouch=0 同义）：腿自由伸展爬梯
-                "terrain_w_leg": _w("S10_STAIR_W_LEG", 0.0),
-                "w_crouch": _w("S10_STAIR_W_CROUCH", 0.0),
-                # 抬腿引导（chain 64 验证基线）；push/swing/z_smooth
-                # 临时关（chain 75 A/B：新 reward 可能干扰爬梯）
-                # 2026-08-07 恢复组合：r_ext=30（伸展引导）+ lockpush=8
-                # （顶死锁轮）——纯 foot_place 卡底部（r_ext 必要），
-                # kp=2.0 时能到 riser 3-4（3/3 到 wp7 稳定）。
-                "leg_ext_w": _w("S10_STAIR_LEG_EXT_W", 30.0),
-                "lockpush_w": _w("S10_STAIR_LOCKPUSH_W", 8.0),
-                # 轮速参考保持（2026-08-07）：v5b 实测无效（-57~+29 仍
-                # 振荡且整体变差 wp7/6/7/6 vs v4 4/4）——轮速振荡是 riser
-                # 边缘物理打滑，非 reward 可压；回退 0 恢复 v4 最优。
-                "w_wheel_ref": _w("S10_STAIR_W_WHEEL_REF", 0.0),
-                # 后轮蹬做功 + 抬轮到位微奖（2026-08-07 开）：foot_place
-                # 抬前轮后卡 riser 顶（kp=2.0 3/3 复现），r_push 激励后轮
-                # 蹬推、r_swing_ok 奖励抬到位。
-                "w_swing_ok": _w("S10_STAIR_W_SWING", 2.0),
-                "w_push": _w("S10_STAIR_W_PUSH", 1.0),
-                "w_z_smooth": _w("S10_STAIR_W_ZSMOOTH", 0.0),
-                "terrain_w_attdamp": _w("S10_STAIR_W_ATTDAMP", 2.0),
-                # 爬升中直立加强（2026-08-06）：σ=2.0 腿伸展时车身侧倾
-                # 累积（batch v28 r1 z=1.01 roll -1.16 侧翻），r_upright
-                # 25→40 抑制爬升中侧翻。
-                "terrain_w_upright": _w("S10_STAIR_W_UPRIGHT", 40.0),
-                # v162c：轮-地形贴合/过抬权重可配（场目标下 300 过强 →
-                # bang-bang 过冲翻车；100~150 温和跟随；过抬惩罚加强防甩高）
-                "terrain_w_ground": _w("S10_STAIR_W_GROUND", 300.0),
-                "terrain_w_overlift": _w("S10_STAIR_W_OVERLIFT", 200.0),
-                # v164：r_ground 单向（只罚低于目标，高于目标交给 overlift）——
-                # 消除"低于目标猛抬、高于目标猛压"的 bang-bang 过冲振荡
-                "ground_oneway": float(os.environ.get(
-                    "S10_STAIR_GROUND_ONEWAY", "0")),
-                # v169：分相 ground——摆动相只罚没抬到位、支撑相只罚悬空
-                "ground_phase": float(os.environ.get(
-                    "S10_STAIR_GROUND_PHASE", "0")),
-                # 机身抬升强化（2026-08-07）：卡点分析——后腿近直腿
-                # （body 0.95-后轮 0.62=0.33 vs 直腿 0.36），后轮上
-                # riser 需 body 先抬到 r_clear 目标 1.125；r_clear 60→120、
-                # w_path_z 0→40 强制机身逐级抬升。
-                "w_clear": _w("S10_STAIR_W_CLEAR", 120.0),
-                "w_path_z": _w("S10_STAIR_W_PATH_Z", 40.0),
-                # 爬梯时路径/航向跟踪加强（2026-08-06 修复 wp7 西漂）：
-                # r_clear/r_ext 在台阶区主导时 MPC 忽视 yaw 指令 → 向西
-                # 漂移侧翻（full_course_27）；权重翻倍让 MPC 兼顾导航。
-                "ang_vel_weight": _w("S10_STAIR_W_ANG", 40.0),
-                "w_path": _w("S10_STAIR_W_PATH", 40.0),
-                # v139c：MPCC 进度项——奖励沿路径切线的推进速度，直接对抗
-                # "轮子空转但车不前进"的 riser 卡点振荡（v136 r1 卡 8.5s）。
-                "w_prog": _w("S10_STAIR_W_PROG", 0.0),
-                # v184：STAIR 线速度跟踪权重可配（默认 25；死锁时提高到 40
-                # 打破"轮子到位、无推进"局部最优）
-                "vel_weight": _w("S10_STAIR_VEL_W", 25.0),
-                # 航向跟踪加强（2026-08-07 用户问题 1）：run3 爬梯西漂 4m
-                # （x -15→-19），w_path_head 25→40 让 MPC 在爬梯时保持
-                # 路径切线航向，抑制横向漂移。
-                "w_path_head": _w("S10_STAIR_W_PATH_HEAD", 60.0),
-                "stair_pitch_w": _w("S10_STAIR_PITCH_W", 30.0),
-                "stair_pitch_tar": float(os.environ.get(
-                    "S10_STAIR_PITCH_TAR", "-0.45")),
-                "stair_sym_w": _w("S10_STAIR_SYM_W", 80.0),
-                "stair_air_w": _w("S10_STAIR_AIR_W", 0.0),
-                "w_obstacle": 0.0,
-            }
-        else:  # CRUISE
-            overrides = {
-                "terrain_w_leg": 0.3,
-                "w_crouch": 15.0,
-                # CRUISE 小权重 r_ext（2026-08-06）：横脊 0.13m > 轮半径
-                # 0.081 需抬腿，但 r_ext=0 时 σ=0.3 采样不抬 → 靠动量方差
-                # 大（wp4→5 横脊通过率 ~60%）。r_ext=5 在横脊（lift_on）
-                # 引导适度伸展，平地不触发（lift_on=False）。
-                "leg_ext_w": 5.0,
-                "lockpush_w": 0.0,
-                "w_wheel_ref": 0.0,
-                "w_swing_ok": 0.0,
-                "w_push": 0.0,
-                "w_z_smooth": 0.0,
-                "w_prog": float(os.environ.get("S10_MPC_W_PROG", "0.0")),
-                "terrain_w_attdamp": 0.8,
-                "ang_vel_weight": 10.0,
-                # 2026-08-07 修复 CRUISE 污染：STAIR 覆盖过的字段必须恢复，
-                # 否则泄漏到 CRUISE（w_path_head=40/upright=40/w_path_z=40
-                # 让 CRUISE 横脊/弯道退化）。恢复为外部/默认值。
-                "terrain_w_upright": 25.0,
-                "w_path": float(os.environ.get("S10_MPC_W_PATH", "15.0")),
-                "w_path_head": float(os.environ.get(
-                    "S10_MPC_W_PATH_HEAD", "20.0")),
-                "w_path_z": 0.0,
-                # DIAL-MPC wall/obstacle soft cost (USER 2026-08-17). Cruise only;
-                # STAIR keeps 0 to avoid fighting the stair corridor geometry.
-                "w_obstacle": float(os.environ.get("S10_MPC_W_OBS", "0.0")),
-            }
-        cfg.update(overrides)
 
     def set_yaw_gain_lo(self, gain):
         """覆盖低速 yaw 前馈增益（自动导航用 15 防过冲；None 恢复默认 50）。"""
