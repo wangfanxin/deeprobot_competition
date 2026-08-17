@@ -411,6 +411,9 @@ def main():
                 if (os.environ.get('S10_TK1', '0') == '1'
                         and fol.mode == 'CRUISE'):
                     _th = _lidar_stair_heading()
+                    if os.environ.get('S10_TK1_DEBUG', '0') == '1':
+                        print('[TK1DBG] t=%.1f pos=(%.2f,%.2f) yaw=%.2f th=%s mode=%s'
+                              % (t, float(pos[0]), float(pos[1]), yaw, _th, fol.mode), flush=True)
                     if _th is not None:
                         _ey = float(np.arctan2(np.sin(_th - yaw), np.cos(_th - yaw)))
                         _db = float(os.environ.get('S10_TK1_YAW_DB', '0.20'))
