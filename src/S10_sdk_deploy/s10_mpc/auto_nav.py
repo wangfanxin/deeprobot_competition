@@ -910,13 +910,22 @@ class AutoNavFollower:
                 if _dx < _guard:
                     return
             if self.stair_ahead_dist <= _enter:
+                _first_s = float(self.stair_rises_s[0])
+                _kf = int(np.searchsorted(self.path_cum, _first_s, side="right") - 1)
+                _kf = min(max(_kf, 0), len(self.path_heading) - 1)
+                _first_heading = float(self.path_heading[_kf])
+                _yaw_db = float(os.environ.get("S10_STAIR_ENTER_YAW_DB", "0.15"))
+                if yaw is not None and _yaw_db > 0.0:
+                    _eyaw = float(np.arctan2(np.sin(_first_heading - yaw),
+                                             np.cos(_first_heading - yaw)))
+                    if abs(_eyaw) > _yaw_db:
+                        # TK1 keeps aligning; do not hand off to RL until heading is close
+                        # (USER-DIRECTED 2026-08-17).
+                        return
                 self.mode = "STAIR"
                 self._stair_enter_s = float(getattr(self, "_s_cur", 0.0))
-                _first_s = float(self.stair_rises_s[0])
                 self._stair_first_riser_xy = self._path_point_at(_first_s)[:2]
-                _k = int(np.searchsorted(self.path_cum, _first_s, side="right") - 1)
-                _k = min(max(_k, 0), len(self.path_heading) - 1)
-                self._stair_first_heading = float(self.path_heading[_k])
+                self._stair_first_heading = _first_heading
                 if _dbg:
                     print(f"[MODE] STAIR (perception) ad={self.stair_ahead_dist:.1f} "
                           f"risers={[round(float(v),1) for v in self.stair_rises_s]}",
