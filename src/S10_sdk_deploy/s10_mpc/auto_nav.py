@@ -849,8 +849,10 @@ class AutoNavFollower:
         # perception: on-path staircase riser arc-lengths ahead.
         # While STAIR, keep the last non-empty riser list if a mid-climb lidar gap
         # returns empty; otherwise the wheel-based TK2 exit loses the target riser.
+        _min_steps = (1 if next_idx >= int(os.environ.get("S10_STAIR_MIN_WP", "5"))
+                      else int(os.environ.get("S10_ELEV_MIN_STEPS", "2")))
         _rises_new = self._elev_rises_on_path(
-            robot_xy, yaw, local_map, lookahead=_elook)
+            robot_xy, yaw, local_map, lookahead=_elook, min_steps=_min_steps)
         if _rises_new or self.mode != "STAIR":
             self.stair_rises_s = _rises_new
         if self.stair_rises_s:
@@ -966,7 +968,7 @@ class AutoNavFollower:
                 return True
         return False
 
-    def _elev_rises_on_path(self, robot_xy, yaw, local_map, lookahead=None, start=0.5):
+    def _elev_rises_on_path(self, robot_xy, yaw, local_map, lookahead=None, start=0.5, min_steps=None):
         """Perception-only: return the absolute arc-lengths (world s) of on-path
         staircase riser edges detected AHEAD of the robot by the lidar elevation map."""
         if local_map is None:
@@ -1032,7 +1034,9 @@ class AutoNavFollower:
                     steps.append((ds, h - prev_h))
             prev_h = max(prev_h, h)
         self._elev_last_steps = [(float(d), float(j)) for d, j in steps]
-        if len(steps) < int(os.environ.get("S10_ELEV_MIN_STEPS", "2")):
+        _min_steps = (int(os.environ.get("S10_ELEV_MIN_STEPS", "2"))
+                      if min_steps is None else int(min_steps))
+        if len(steps) < _min_steps:
             return []
         d0 = steps[0][0]
         span = float(os.environ.get("S10_ELEV_SEQ_SPAN", "3.0"))
