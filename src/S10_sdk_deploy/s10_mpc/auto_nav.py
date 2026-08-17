@@ -903,6 +903,11 @@ class AutoNavFollower:
             return
 
         # CRUISE -> STAIR (TK1 entry)
+        # USER 2026-08-17: do not trigger STAIR before the intended staircase
+        # waypoint. wp3->4 is pure cruise tracking, not a stair.
+        _min_wp = int(os.environ.get("S10_STAIR_MIN_WP", "5"))
+        if next_idx < _min_wp:
+            return
         if self.stair_ahead_dist is not None:
             _enter = float(os.environ.get("S10_STAIR_ENTER_DIST", "3.5"))
             # RE-ENTRY GUARD: after a STAIR->CRUISE handback, do not re-enter STAIR until the
