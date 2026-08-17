@@ -804,14 +804,18 @@ def main():
                 _switch_vx = float(os.environ.get('S10_SWITCH_VX', '3.5'))
                 vx_c = min(vx_c, _switch_vx)
                 if _line_turn and next_idx + 1 < len(wp):
-                    _lt_nx = float(wp[next_idx + 1, 0] - wp[next_idx, 0])
-                    _lt_ny = float(wp[next_idx + 1, 1] - wp[next_idx, 1])
-                    _lt_th = float(np.arctan2(_lt_ny, _lt_nx))
-                    _lt_err = float(np.arctan2(np.sin(_lt_th - yaw),
-                                               np.cos(_lt_th - yaw)))
-                    _lt_k = float(os.environ.get('S10_LINE_TURN_K', '4.0'))
-                    _lt_max = float(os.environ.get('S10_LINE_TURN_OM_MAX', '4.0'))
-                    om_c = float(np.clip(_lt_k * _lt_err, -_lt_max, _lt_max))
+                    _d_wp = float(np.linalg.norm(
+                        np.asarray(body_pos[:2]) - wp[next_idx, :2]))
+                    _arr_r = float(os.environ.get('S10_WP_ARRIVE_R', '0.2'))
+                    if _d_wp < _arr_r:
+                        _lt_nx = float(wp[next_idx + 1, 0] - wp[next_idx, 0])
+                        _lt_ny = float(wp[next_idx + 1, 1] - wp[next_idx, 1])
+                        _lt_th = float(np.arctan2(_lt_ny, _lt_nx))
+                        _lt_err = float(np.arctan2(np.sin(_lt_th - yaw),
+                                                   np.cos(_lt_th - yaw)))
+                        _lt_k = float(os.environ.get('S10_LINE_TURN_K', '4.0'))
+                        _lt_max = float(os.environ.get('S10_LINE_TURN_OM_MAX', '4.0'))
+                        om_c = float(np.clip(_lt_k * _lt_err, -_lt_max, _lt_max))
                 # POST-SWITCH RECOVERY (USER 2026-08-16): after the wp4->5 step the
                 # robot is east-drifted and heading ~east. If the heading error to the
                 # next waypoint is large, SLOW + STEER toward it (stop-and-turn) so it
