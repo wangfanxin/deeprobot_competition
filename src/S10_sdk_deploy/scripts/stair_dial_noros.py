@@ -146,7 +146,7 @@ def main():
     def _lidar_stair_heading():
         _sc = float(getattr(fol, '_s_cur', 0.0))
         _lo = _sc + 0.5
-        _hi = _sc + 3.0
+        _hi = _sc + float(os.environ.get('S10_TK1_LOOKAHEAD', '6.0'))
         _cum = fol.path_cum
         _k0 = int(np.searchsorted(_cum, _lo))
         _k1 = int(np.searchsorted(_cum, _hi))
