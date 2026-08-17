@@ -417,9 +417,10 @@ def main():
                     if _th is not None:
                         _ey = float(np.arctan2(np.sin(_th - yaw), np.cos(_th - yaw)))
                         _db = float(os.environ.get('S10_TK1_YAW_DB', '0.20'))
+                        # Always cap approach speed when a stair is detected ahead
+                        vx = min(vx, float(os.environ.get('S10_TK1_VX', '2.2')))
                         if abs(_ey) > _db:
                             _tk1_active = True
-                            vx = min(vx, float(os.environ.get('S10_TK1_VX', '2.2')))
                             _ky = float(os.environ.get('S10_TK1_YAW_K', '2.5'))
                             _ymax = float(os.environ.get('S10_TK1_YAW_MAX', '1.5'))
                             vyaw = float(np.clip(_ky * _ey, -_ymax, _ymax))
