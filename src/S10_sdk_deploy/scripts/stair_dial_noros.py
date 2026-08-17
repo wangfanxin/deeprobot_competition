@@ -22,6 +22,7 @@ from s10_mpc.auto_nav import AutoNavFollower
 from s10_mpc.stair_contact_planner import StairContactPlanner
 from s10_mpc.stair_stance_guard import StairStanceGuard
 from s10_mpc.body_mppi import BodyMPPI
+from s10_mpc.costmap2d import build_costmap
 from s10_mpc.vmc_legs import WHEEL_BODY
 from rl_stair.deploy.rlstair_ctrl import RLStairCtrl
 
@@ -229,7 +230,8 @@ def main():
     # v218: 身体层 MPPI（S10_BODY_MPPI=1 启用）——替代 compute_cmd 直出，输出 [vx,ω]
     _bmpi = None
     if os.environ.get('S10_BODY_MPPI', '0') == '1':
-        from s10_mpc.body_mppi import BodyMPPI as _B
+        from s10_mpc.body_mppi import BodyMPPI
+from s10_mpc.costmap2d import build_costmap as _B
         _bmpi = _B(N=int(os.environ.get('S10_BODY_MPPI_N', '256')),
                    H=int(os.environ.get('S10_BODY_MPPI_H', '20')))
         print('[NOROS] 身体层 MPPI 启用', flush=True)
@@ -445,6 +447,25 @@ def main():
                         _tk2_active = False
 
                 if _bmpi is not None:
+                    if (os.environ.get('S10_MPPI_OBSTACLE', '0') == '1'
+                            and hasattr(planner, 'lidar')):
+                        try:
+                            _cm = build_costmap(
+                                planner.lidar, fol.path_pts, fol.path_cum,
+                                float(getattr(fol, '_s_cur', 0.0)),
+                                float(pos[0]), float(pos[1]),
+                                half=float(os.environ.get('S10_OBST_HALF', '8.0')),
+                                res=float(os.environ.get('S10_OBST_RES', '0.2')),
+                                lat_min=float(os.environ.get('S10_OBST_LAT_MIN', '0.5')),
+                                inflate=float(os.environ.get('S10_OBST_INFLATE', '0.3')),
+                                dmax=float(os.environ.get('S10_MPPI_OBSTACLE_DMAX', '2.0')),
+                                h_min=float(os.environ.get('S10_OBST_H_MIN', '0.3')),
+                                h_hard=float(os.environ.get('S10_OBST_H_HARD', '0.5')))
+                            _bmpi.set_costmap(_cm)
+                        except Exception:
+                            _bmpi.set_costmap(None)
+                    else:
+                        _bmpi.set_costmap(None)
                     # 路径参考轨迹（弧长采样）
                     _ref = []
                     _s0 = float(fol._s_cur)
