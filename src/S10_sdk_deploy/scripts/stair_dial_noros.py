@@ -287,11 +287,13 @@ def main():
     traj_file = os.environ.get('S10_TRAJ_FILE')
     if traj_file:
         _tf = open(traj_file, 'w')
-        _tf.write('t,x,y,yaw,next_idx,err,d_wp,vx,vyaw,cte,s_cur,tgt_x,tgt_y\n')
+        _tf.write('t,x,y,yaw,next_idx,err,d_wp,vx,vyaw,cte,s_cur,tgt_x,tgt_y,mode,tk1,tk2\n')
 
     _rl_was_stair = False
     _rl_trans_t0 = None
     _tk2 = False
+    _tk1_active = False
+    _tk2_active = False
     while t < MAX_SIM:
         step = int(t / DT)
         if not auto_active:
@@ -413,10 +415,13 @@ def main():
                         _ey = float(np.arctan2(np.sin(_th - yaw), np.cos(_th - yaw)))
                         _db = float(os.environ.get('S10_TK1_YAW_DB', '0.20'))
                         if abs(_ey) > _db:
+                            _tk1_active = True
                             vx = min(vx, float(os.environ.get('S10_TK1_VX', '2.2')))
                             _ky = float(os.environ.get('S10_TK1_YAW_K', '2.5'))
                             _ymax = float(os.environ.get('S10_TK1_YAW_MAX', '1.5'))
                             vyaw = float(np.clip(_ky * _ey, -_ymax, _ymax))
+                        else:
+                            _tk1_active = False
                 # TK2: after stair handback, align to path heading then release
                 if (os.environ.get('S10_TK2', '0') == '1' and _tk2
                         and fol.mode == 'CRUISE'):
@@ -427,12 +432,14 @@ def main():
                     _ey2 = float(np.arctan2(np.sin(_th2 - yaw), np.cos(_th2 - yaw)))
                     _db2 = float(os.environ.get('S10_TK2_YAW_DB', '0.15'))
                     if abs(_ey2) > _db2:
+                        _tk2_active = True
                         _k2 = float(os.environ.get('S10_TK2_YAW_K', '2.5'))
                         _ymax2 = float(os.environ.get('S10_TK2_YAW_MAX', '1.5'))
                         vyaw = float(np.clip(_k2 * _ey2, -_ymax2, _ymax2))
                         vx = min(vx, float(os.environ.get('S10_TK2_VX', '1.5')))
                     else:
                         _tk2 = False
+                        _tk2_active = False
 
                 if _bmpi is not None:
                     # 路径参考轨迹（弧长采样）
@@ -486,7 +493,8 @@ def main():
                               f'{getattr(fol,"_last_cte",0.0):.3f},'
                               f'{fol._s_cur:.3f},'
                               f'{getattr(fol,"_last_tgt",[0,0])[0]:.3f},'
-                              f'{getattr(fol,"_last_tgt",[0,0])[1]:.3f}\n')
+                              f'{getattr(fol,"_last_tgt",[0,0])[1]:.3f},'
+                              f'{fol.mode},{1 if _tk1_active else 0},{1 if _tk2_active else 0}\n')
                     _tf.flush()
                 if os.environ.get('S10_AUTO_DEBUG') == '1' and dbg_cnt % 40 == 1:
                     print(f'[NAVDBG] next={next_idx} vx={vx:.2f} '
