@@ -1101,8 +1101,8 @@ class MPCController:
                 # 爬梯时路径/航向跟踪加强（2026-08-06 修复 wp7 西漂）：
                 # r_clear/r_ext 在台阶区主导时 MPC 忽视 yaw 指令 → 向西
                 # 漂移侧翻（full_course_27）；权重翻倍让 MPC 兼顾导航。
-                "ang_vel_weight": _w("S10_STAIR_W_ANG", 25.0),
-                "w_path": _w("S10_STAIR_W_PATH", 15.0),
+                "ang_vel_weight": _w("S10_STAIR_W_ANG", 40.0),
+                "w_path": _w("S10_STAIR_W_PATH", 40.0),
                 # v139c：MPCC 进度项——奖励沿路径切线的推进速度，直接对抗
                 # "轮子空转但车不前进"的 riser 卡点振荡（v136 r1 卡 8.5s）。
                 "w_prog": _w("S10_STAIR_W_PROG", 0.0),
@@ -1112,7 +1112,7 @@ class MPCController:
                 # 航向跟踪加强（2026-08-07 用户问题 1）：run3 爬梯西漂 4m
                 # （x -15→-19），w_path_head 25→40 让 MPC 在爬梯时保持
                 # 路径切线航向，抑制横向漂移。
-                "w_path_head": _w("S10_STAIR_W_PATH_HEAD", 40.0),
+                "w_path_head": _w("S10_STAIR_W_PATH_HEAD", 60.0),
                 "stair_pitch_w": _w("S10_STAIR_PITCH_W", 30.0),
                 "stair_pitch_tar": float(os.environ.get(
                     "S10_STAIR_PITCH_TAR", "-0.45")),
