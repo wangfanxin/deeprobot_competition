@@ -205,26 +205,6 @@ def main():
         mpc.plan_once(_q0, _qd0, 0.02 * _k)
         if time.time() - _t1 < 0.5:
             break
-    try:
-        if hasattr(mpc, 'mbdpi_h20'):
-            mpc.set_mode('STAIR')
-            # 预热同时编译 hard-mode 摆动激活态的 STAIR trace：运行中首次
-            # 激活 gait_swing 会触发 ~25s 重编译（2026-08-14 实测 max
-            # plan_ms 6.7~26s 尖峰），吃掉仿真时间并扰动爬梯。
-            _gsw_bak = getattr(mpc, '_gait_swing', None)
-            mpc._gait_swing = np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float32)
-            for _k in range(3):
-                _t1 = time.time()
-                mpc.plan_once(_q0, _qd0, 0.02 * _k)
-                if time.time() - _t1 < 0.5:
-                    break
-            if _gsw_bak is not None:
-                mpc._gait_swing = _gsw_bak
-            else:
-                mpc._gait_swing = np.zeros(4, dtype=np.float32)
-            mpc.set_mode('CRUISE')
-    except Exception:
-        pass
     print(f'[NOROS] MPC JIT 预热完成（{time.time()-_w0:.1f}s），即将开始', flush=True)
 
     next_idx = START_WP if 'START_WP' in dir() else 0
@@ -341,7 +321,6 @@ def main():
                 _wheel_xy = np.asarray([d.xpos[_wb][:2] for _wb in WHEEL_BODY], dtype=np.float64)
                 fol.update_mode(pos, next_idx, yaw=yaw, local_map=local_tile,
                                 wheel_xy=_wheel_xy)
-                mpc.set_mode(fol.mode)
                 if rl_ctrl is not None and fol.mode == 'STAIR':
                     if not _rl_was_stair:
                         _rl_trans_t0 = float(t)

@@ -22,5 +22,6 @@ export S10_MPC_YAML=/home/wfx/DR_competition/0810new/deeprobot_competition/doc/s
 export S10_MPC_NSAMPLE=512 S10_MPC_HSAMPLE=14 S10_MPC_NDIFFUSE=1
 export S10_MPC_VEL_SCALE=56 S10_MPC_WHEEL_TAU_SCALE=3.0 S10_MPC_KP=80 S10_MPC_KD=2.0 S10_MPC_HEIGHT_WEIGHT=0.1
 export S10_STAND_TIME=0.6 S10_STAND_KP=120 S10_STAND_KD=3.0
+export S10_DIAL_RL_STAIR=1 S10_RL_VX=1.5 S10_RL_WARMUP=200 S10_DIAL_RL_PRETRANS_TIME=1.0
 export S10_TRAJ_FILE=tmp/dialmpc_stair_traj.csv
 exec /home/wfx/DR_competition/.venv/bin/python src/S10_sdk_deploy/scripts/stair_dial_noros.py
