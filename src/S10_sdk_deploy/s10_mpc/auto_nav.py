@@ -769,7 +769,20 @@ class AutoNavFollower:
         # the next segment accelerates again.
         _wp_arrive_r = float(os.environ.get("S10_WP_ARRIVE_R", "0.0"))
         if _wp_arrive_r > 0.0 and d_wp < _wp_arrive_r:
-            vx = min(vx, float(os.environ.get("S10_WP_TURN_VX", "0.3")))
+            # USER 2026-08-18: refv=0 until the heading is aligned to the next segment.
+            if next_idx + 1 < len(self.wp):
+                _nx = float(self.wp[next_idx + 1, 0] - self.wp[next_idx, 0])
+                _ny = float(self.wp[next_idx + 1, 1] - self.wp[next_idx, 1])
+                _next_head = float(np.arctan2(_ny, _nx))
+                _turn_err = float(np.arctan2(np.sin(_next_head - yaw),
+                                             np.cos(_next_head - yaw)))
+                _turn_db = float(os.environ.get("S10_WP_TURN_YAW_DB", "0.10"))
+                if abs(_turn_err) > _turn_db:
+                    vx = 0.0
+                else:
+                    vx = min(vx, float(os.environ.get("S10_WP_TURN_VX", "0.3")))
+            else:
+                vx = min(vx, float(os.environ.get("S10_WP_TURN_VX", "0.3")))
         self._last_vlim = v_lim
         self._last_vx = vx
         self._last_vyaw = vyaw
