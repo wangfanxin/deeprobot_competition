@@ -54,8 +54,8 @@ class LidarTerrainV2:
         # local pitch +25..+50 deg = world elevation -15..+10 deg (horizontal band).
         # Used only when S10_LIDAR_WALL=1 (keeps the production terrain scan intact).
         _wfov = float(np.radians(float(os.environ.get("S10_WALL_FOV_H", "100"))))
-        _wth = np.linspace(-_wfov, _wfov, 121)
-        _wph = np.linspace(np.radians(25.0), np.radians(50.0), 26)
+        _wth = np.linspace(-_wfov, _wfov, 61)
+        _wph = np.linspace(np.radians(25.0), np.radians(50.0), 13)
         _wdirs = []
         for _ph in _wph:
             for _th in _wth:
@@ -63,6 +63,7 @@ class LidarTerrainV2:
                                float(np.cos(_ph) * np.sin(_th)),
                                float(np.sin(_ph))])
         self.dirs_wall = np.asarray(_wdirs, dtype=np.float64)
+        self._wall_tick = 0
         self.geomgroup = np.zeros((mujoco.mjNGROUP,), dtype=np.ubyte)
         # USER-DIRECTED 2026-08-16 (GOAL #1): the real terrain (group 0) IS ray-hittable
         # once the lidar origin is raised (S10_LIDAR_RAISE_Z): shallow grazing rays from
@@ -140,7 +141,11 @@ class LidarTerrainV2:
         # Walls sit OFF-path (stair risers are ON-path -> terrain channel), so the
         # obstacle tile can distinguish traversable vs blocked by lateral distance.
         if os.environ.get("S10_LIDAR_WALL", "0") == "1":
-            self._scan_wall(m, d, pos, xmat)
+            # Halve wall-scan rate to 5Hz; the terrain scan is the critical path
+            # and the full 121x26 wall batch was causing plan spikes.
+            self._wall_tick += 1
+            if self._wall_tick % 2 == 1:
+                self._scan_wall(m, d, pos, xmat)
 
     def _scan_wall(self, m, d, pos, xmat):
         import mujoco
