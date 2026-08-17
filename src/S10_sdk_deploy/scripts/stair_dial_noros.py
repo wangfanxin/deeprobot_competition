@@ -18,7 +18,7 @@ os.environ.setdefault('JAX_COMPILATION_CACHE_DIR',
                       os.path.expanduser('~/.cache/s10_dial_mpc'))
 
 from s10_mpc.mpc_controller import MPCController
-from s10_mpc.stair_auto_nav import AutoNavFollower
+from s10_mpc.auto_nav import AutoNavFollower
 from s10_mpc.stair_contact_planner import StairContactPlanner
 from s10_mpc.stair_stance_guard import StairStanceGuard
 from s10_mpc.body_mppi import BodyMPPI
