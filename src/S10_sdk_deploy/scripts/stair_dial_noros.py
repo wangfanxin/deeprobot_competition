@@ -379,8 +379,7 @@ def main():
                 local_tile = planner.get_tile(pos, t)
                 mpc.set_elevation_map(local_tile)
                 _pc = planner.stair_confirmed(pos, yaw)
-                fol.update_mode(pos, next_idx, yaw=yaw, local_map=local_tile,
-                                percept_confirmed=_pc)
+                fol.update_mode(pos, next_idx, yaw=yaw, local_map=local_tile)
                 mpc.set_mode(fol.mode)
                 if rl_ctrl is not None and fol.mode == 'STAIR':
                     if not _rl_was_stair:
