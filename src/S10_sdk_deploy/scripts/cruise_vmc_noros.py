@@ -857,6 +857,11 @@ def main():
                 _turn_split = os.environ.get('S10_TURN_SPLIT', '0') == '1'
                 _turn_used = False
                 if _turn_split and next_idx + 1 < len(wp):
+                    _d_wp = float(np.linalg.norm(
+                        np.asarray(body_pos[:2]) - wp[next_idx, :2]))
+                    _near_wp = float(os.environ.get('S10_TURN_NEAR_WP', '0.3'))
+                    if _d_wp > _near_wp:
+                        _turn_split = False
                     _nx = float(wp[next_idx + 1, 0] - wp[next_idx, 0])
                     _ny = float(wp[next_idx + 1, 1] - wp[next_idx, 1])
                     _next_head = float(np.arctan2(_ny, _nx))
