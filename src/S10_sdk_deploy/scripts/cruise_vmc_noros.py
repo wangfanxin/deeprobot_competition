@@ -859,19 +859,16 @@ def main():
                 if _turn_split and next_idx + 1 < len(wp):
                     _d_wp = float(np.linalg.norm(
                         np.asarray(body_pos[:2]) - wp[next_idx, :2]))
-                    _near_wp = float(os.environ.get('S10_TURN_NEAR_WP', '0.3'))
-                    if _d_wp > _near_wp:
-                        _turn_split = False
-                    _nx = float(wp[next_idx + 1, 0] - wp[next_idx, 0])
-                    _ny = float(wp[next_idx + 1, 1] - wp[next_idx, 1])
-                    _next_head = float(np.arctan2(_ny, _nx))
-                    _turn_err = float(np.arctan2(np.sin(_next_head - yaw),
-                                                 np.cos(_next_head - yaw)))
-                    _turn_db = float(np.radians(float(os.environ.get('S10_TURN_ERR_DEG', '10'))))
-                    if abs(_turn_err) > _turn_db:
+                    _near_wp = float(os.environ.get('S10_WP_ARRIVE_R', '0.2'))
+                    if _d_wp < _near_wp:
+                        _nx = float(wp[next_idx + 1, 0] - wp[next_idx, 0])
+                        _ny = float(wp[next_idx + 1, 1] - wp[next_idx, 1])
+                        _next_head = float(np.arctan2(_ny, _nx))
+                        _turn_err = float(np.arctan2(np.sin(_next_head - yaw),
+                                                     np.cos(_next_head - yaw)))
                         _turn_k = float(os.environ.get('S10_TURN_K', '3.0'))
                         _turn_max = float(os.environ.get('S10_TURN_OM_MAX', '2.0'))
-                        vx_c = 0.0
+                        vx_c = min(vx_c, float(os.environ.get('S10_WP_TURN_VX', '0.2')))
                         om_c = float(np.clip(_turn_k * _turn_err, -_turn_max, _turn_max))
                         _turn_used = True
                 if _turn_used:
