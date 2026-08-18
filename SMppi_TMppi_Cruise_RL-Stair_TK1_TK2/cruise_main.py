@@ -96,6 +96,7 @@ def main():
     _correction = ''
     _planner = ''
     _prev_line_head = None
+    _last_lift = np.zeros(4)
 
     while t < float(os.environ.get('S10_TEST_MAX_SIM', '600')):
         qpos = np.asarray(d.qpos, dtype=np.float64)
@@ -272,7 +273,28 @@ def main():
             * abs(vx_c),
             -float(os.environ.get('S10_CAR_ROLL_AMP', '0.06')),
             float(os.environ.get('S10_CAR_ROLL_AMP', '0.06'))))
-        cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar, pitch_tar=0.0)
+        # lidar 前方小台阶连续抬轮（只给 CarVMC 做前馈；不是独立技能）
+        _fwd_lift = np.array([np.cos(yaw), np.sin(yaw)])
+        _step_lift = np.zeros(4, dtype=np.float64)
+        if stair.mode == 'CRUISE':
+            for _li in range(4):
+                _lx = float(wheel_xyz[_li, 0] + _fwd_lift[0] * 0.30)
+                _ly = float(wheel_xyz[_li, 1] + _fwd_lift[1] * 0.30)
+                _ha = perc.height(_lx, _ly, t, float(body_pos[2]),
+                                        fallback_h=float(np.max(terr)))
+                _rise = float(_ha - terr[_li])
+                if 0.06 <= _rise <= 0.25:
+                    _step_lift[_li] = float(np.clip(
+                        (_rise - 0.05) / 0.08, 0.0, 1.0))
+        _max_lift = float(np.max(_step_lift))
+        _last_lift = _step_lift.copy()
+        cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar, pitch_tar=0.0,
+                   step_lift=_step_lift,
+                   lift_swing=1.2,
+                   yaw_scale=1.0 - 0.6 * _max_lift,
+                   ridge_dist=99.0,
+                   lift_f_scale=(0.3 if _max_lift > 0.05 else 1.0),
+                   wheel_press=(0.1 if _max_lift > 0.05 else 0.0))
 
         # PRETRANS：楼梯前按 riser 距离进入 RL 高站姿；楼梯后按 handback 距离退出
         if os.environ.get('S10_PRETRANS', '1') == '1' and stair.mode != 'STAIR':
@@ -369,10 +391,12 @@ def main():
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
             spd = float(np.hypot(d.cvel[1][3], d.cvel[1][4]))
             print('[T] t=%.0f wp=%d pos=(%.1f,%.1f,%.2f) yaw=%.2f '
-                  'spd=%.2f roll=%.2f cmd=(%.2f,%.2f) mode=%s corr=%s plan=%s'
+                  'spd=%.2f roll=%.2f cmd=(%.2f,%.2f) mode=%s corr=%s plan=%s '
+                  'lift=%.2f terr=%s'
                   % (t, next_idx, body_pos[0], body_pos[1], body_pos[2],
                      yaw, spd, roll, vx_c, om_c, stair.mode,
-                     (_correction or 'NONE'), _planner), flush=True)
+                     (_correction or 'NONE'), _planner,
+                     float(np.max(_last_lift)), np.round(terr, 2)), flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[T] *** 侧翻/摔倒 ***', flush=True)
                 break
