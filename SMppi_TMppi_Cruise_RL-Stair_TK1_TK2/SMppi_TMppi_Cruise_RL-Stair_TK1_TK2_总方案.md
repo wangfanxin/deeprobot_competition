@@ -7,7 +7,7 @@
 > god-view ray / 已知地图预扫描均已从主链路删除或禁用。
 
 主链路脚本：`src/S10_sdk_deploy/scripts/cruise_vmc_noros.py`
-启动脚本：`run_dialmpc_stair_wp033.sh`
+启动脚本：`run_smppi_tmppi_cruise_rlstair_tk12_wp033.sh`
 
 ## 1. 技能划分
 

@@ -158,7 +158,7 @@ DR_competition/
 ├── .venv/                        # 项目虚拟环境（开发机，Python 3.12）
 ├── comp_env/                     # 官方比赛环境专用 venv（numpy<2 + mujoco）
 ├── deeprobot_competition/        # 本仓库
-│   ├── run_dialmpc_stair_wp033.sh # ★ 当前主链路入口（无 ROS，wp0→33）
+│   ├── run_smppi_tmppi_cruise_rlstair_tk12_wp033.sh # ★ 当前主链路入口（无 ROS，wp0→33）
 │   ├── src/S10_sdk_deploy/
 │   │   ├── interface/robot/simulation/   # ROS2 仿真节点（模式 A/B 入口，备用）
 │   │   ├── perception/                   # 感知：local_map / elevation_lookup / points_to_heightmap
@@ -192,7 +192,7 @@ DR_competition/
 ```bash
 # 1) 当前主链路：直接运行（无 ROS）
 cd ~/DR_competition/0810new/deeprobot_competition
-bash run_dialmpc_stair_wp033.sh
+bash run_smppi_tmppi_cruise_rlstair_tk12_wp033.sh
 # 等价于：
 #   export ...（见脚本全部 env）
 #   /home/wfx/DR_competition/.venv/bin/python src/S10_sdk_deploy/scripts/cruise_vmc_noros.py
@@ -217,7 +217,7 @@ S10_MPC_ENABLE=1 S10_MODE=auto_nav ~/DR_competition/.venv/bin/python \
 > 当前 run 脚本使用开发 `.venv`（numpy 2.2 + mujoco 3.11）。官方比赛环境
 > `comp_env` 为 numpy 1.26 + mujoco 3.11，如需切换请修改 run 脚本的 Python 路径。
 
-## 关键参数（当前 run_dialmpc_stair_wp033.sh）
+## 关键参数（当前 run_smppi_tmppi_cruise_rlstair_tk12_wp033.sh）
 
 | 参数 | 当前值 | 说明 |
 | --- | --- | --- |

@@ -64,7 +64,8 @@ def main():
         wheel_vel = np.asarray([d.cvel[WHEEL_BODY[i]][0:3] for i in range(4)])
         terr = np.asarray([perc.height(float(wheel_xyz[i, 0]),
                                        float(wheel_xyz[i, 1]), t,
-                                       float(d.xpos[1][2]))
+                                       float(d.xpos[1][2]),
+                                       float(wheel_xyz[i, 2]) - 0.081)
                            for i in range(4)])
         tau = carvmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel,
                                  dict(vx=0.0, omega=0.0, roll_tar=0.0,
@@ -94,6 +95,7 @@ def main():
     _ctrl_cnt = 0
     _correction = ''
     _planner = ''
+    _prev_line_head = None
 
     while t < float(os.environ.get('S10_TEST_MAX_SIM', '600')):
         qpos = np.asarray(d.qpos, dtype=np.float64)
@@ -134,8 +136,21 @@ def main():
             if line is None:
                 vx, vyaw = 0.0, 0.0
             else:
-                line_head = float(line['heading'])
                 dist_wp = float(line['dist_to_wp'] or 0.0)
+                # 直线导航只输出直线段；主循环做“航段方向 + 横向纠偏”，
+                # 接近 wp 时再直接瞄准 wp，确保 0.2m 判点圆可达。
+                _seg = np.asarray(line['end']) - np.asarray(line['start'])
+                _segl = max(float(np.linalg.norm(_seg)), 1e-9)
+                _ux, _uy = _seg / _segl
+                _seg_head = float(np.arctan2(_uy, _ux))
+                _rel = pos2 - np.asarray(line['start'])
+                _cte = float(-_uy * _rel[0] + _ux * _rel[1])
+                _cte_k = float(os.environ.get('S10_LINE_CTE_K', '1.0'))
+                _des = _seg_head - _cte_k * float(np.clip(_cte, -1.0, 1.0))
+                if dist_wp < 0.5:
+                    _des = float(np.arctan2(line['end'][1] - pos2[1],
+                                            line['end'][0] - pos2[0]))
+                line_head = _des
                 head_err = float(np.arctan2(np.sin(line_head - yaw),
                                             np.cos(line_head - yaw)))
                 vyaw = float(np.clip(
@@ -147,12 +162,37 @@ def main():
                     / max(float(os.environ.get('S10_LINE_BRAKE_DIST', '1.5')),
                           1e-3), 0.0, 1.0))
                 vx = float(os.environ.get('S10_LINE_VMAX', '3.0')) * brake
+                # 下一航段是锐角时，提前在当前段内减速，不能带 3m/s 冲入弯
+                if next_idx + 1 < len(wp) and dist_wp < 3.0:
+                    _next_vec = wp[next_idx + 1, :2] - wp[next_idx, :2]
+                    _next_head = float(np.arctan2(_next_vec[1], _next_vec[0]))
+                    _delta_next = abs(float(np.arctan2(
+                        np.sin(_next_head - line_head),
+                        np.cos(_next_head - line_head))))
+                    if _delta_next > float(os.environ.get(
+                            'S10_LINE_TURN_ANGLE', '0.5')):
+                        vx = min(vx, float(os.environ.get(
+                            'S10_LINE_TURN_VMAX', '1.2')))
+                # 近点：未对准时允许降到 TMppi 触发速度；对准后给最低速度过点
+                if abs(head_err) <= float(os.environ.get(
+                        'S10_LINE_ALIGNED_DB', '0.15')):
+                    vx = max(vx, float(os.environ.get('S10_LINE_MIN_VX', '0.5')))
+                elif dist_wp > 0.35:
+                    vx = max(vx, float(os.environ.get('S10_LINE_MIN_VX', '0.5')))
+                if _prev_line_head is not None:
+                    delta = abs(float(np.arctan2(
+                        np.sin(line_head - _prev_line_head),
+                        np.cos(line_head - _prev_line_head))))
+                    if delta > float(os.environ.get('S10_LINE_TURN_ANGLE', '0.5')):
+                        vx = min(vx, float(os.environ.get(
+                            'S10_LINE_TURN_VMAX', '1.2')))
+                _prev_line_head = line_head
 
             # TK1：CRUISE 中检测到前方楼梯，只做“限速 + 对准”，不改模式
             if (os.environ.get('S10_TK1', '0') == '1'
                     and os.environ.get('S10_RL_ELEV', '0') == '1'
                     and stair.mode == 'CRUISE'):
-                th = perc.stair_heading(nav)
+                th = perc.stair_heading(stair)
                 if th is not None:
                     ey = float(np.arctan2(np.sin(th - yaw),
                                           np.cos(th - yaw)))
@@ -224,7 +264,8 @@ def main():
         # 全局 lidar 轮下地形
         terr = np.asarray([perc.height(float(wheel_xyz[i, 0]),
                                        float(wheel_xyz[i, 1]), t,
-                                       float(body_pos[2]))
+                                       float(body_pos[2]),
+                                       float(wheel_xyz[i, 2]) - 0.081)
                            for i in range(4)], dtype=np.float64)
         roll_tar = float(np.clip(
             -float(os.environ.get('S10_CAR_ROLL_K', '0.06')) * om_c
@@ -326,10 +367,11 @@ def main():
                 2.0 * (d.xquat[1][0] * d.xquat[1][1]
                        + d.xquat[1][2] * d.xquat[1][3]),
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
+            spd = float(np.hypot(d.cvel[1][3], d.cvel[1][4]))
             print('[T] t=%.0f wp=%d pos=(%.1f,%.1f,%.2f) yaw=%.2f '
-                  'vx_w=%.2f roll=%.2f cmd=(%.2f,%.2f) mode=%s corr=%s plan=%s'
+                  'spd=%.2f roll=%.2f cmd=(%.2f,%.2f) mode=%s corr=%s plan=%s'
                   % (t, next_idx, body_pos[0], body_pos[1], body_pos[2],
-                     yaw, d.cvel[1][3], roll, vx_c, om_c, stair.mode,
+                     yaw, spd, roll, vx_c, om_c, stair.mode,
                      (_correction or 'NONE'), _planner), flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[T] *** 侧翻/摔倒 ***', flush=True)
@@ -343,7 +385,7 @@ def main():
         if os.environ.get('S10_TRAJ_DENSE', '0') == '1':
             traj.append([t, body_pos[0], body_pos[1], body_pos[2], yaw,
                          1.0 if stair.mode == 'STAIR' else 0.0,
-                         d.cvel[1][3]])
+                         float(np.hypot(d.cvel[1][3], d.cvel[1][4]))])
 
         # 航点推进：只按原始折线水平距离
         if next_idx < len(wp):

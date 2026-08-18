@@ -31,14 +31,20 @@ class LidarPerception:
             self.lterr.update()
             self._last_upd = t
 
-    def height(self, x, y, t, body_z):
-        """轮下地形：只用 lidar；无数据/高架伪影用运动学兜底。"""
+    def height(self, x, y, t, body_z, fallback_h=None):
+        """轮下地形：只用 lidar；无数据/高架伪影用运动学接触兜底。
+
+        fallback_h 建议传 wheel_z - 0.081，避免无 lidar 数据时把地面误判到
+        机身下方 0.55m，导致 CarVMC 把四轮判为腾空、轮矩清零。
+        """
         self.update(t)
+        if fallback_h is None:
+            fallback_h = float(body_z - 0.55)
         if not self.lterr.has(x, y):
-            return float(body_z - 0.55)
+            return float(fallback_h)
         h = self.lterr.height(x, y)
         if h > body_z + 1.0:
-            return float(body_z - 0.55)
+            return float(fallback_h)
         return h
 
     def local_tile(self, body_xy, t):
@@ -63,7 +69,8 @@ class LidarPerception:
                 rise=0.05, max_dh=0.16)
         except Exception:
             rs = []
-        if rs:
+        # TK1 只对“连续楼梯”响应；至少 4 级，避免 2 级小台阶/缓坡误触发
+        if len(rs) >= 4:
             sm = float(np.mean([float(r[0]) for r in rs]))
             ki = int(np.searchsorted(cum, sm, side='right') - 1)
             ki = max(0, min(ki, len(fol.path_heading) - 1))

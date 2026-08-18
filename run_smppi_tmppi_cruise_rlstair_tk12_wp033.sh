@@ -8,7 +8,7 @@ export S10_USE_VIEWER=0
 
 # 仿真 / 任务
 export S10_INIT_YAW=1.5708
-export S10_AUTO_MAX_WP=33 S10_TEST_MAX_SIM=600 S10_STUCK_TIMEOUT=90
+export S10_AUTO_MAX_WP=${S10_AUTO_MAX_WP:-33} S10_TEST_MAX_SIM=${S10_TEST_MAX_SIM:-600} S10_STUCK_TIMEOUT=${S10_STUCK_TIMEOUT:-90}
 export S10_VMC_TERRAIN=lidar S10_VMC_MODE=rlstair
 
 # 导航（原始航点折线，不圆角、不走廊平移）
@@ -46,5 +46,5 @@ export S10_VMC_YAW_K_WHEEL=60 S10_VMC_OM_ABS_MAX=2.0 S10_VMC_OM_CAP=2.0
 export S10_VMC_WHEEL_TMAX=13.5 S10_VMC_MU=0.8
 
 # 轨迹（代码读取 VMC_TRAJ）
-export VMC_TRAJ=tmp/cruise_vmc_stair_traj.npy
+export VMC_TRAJ=${VMC_TRAJ:-tmp/cruise_vmc_stair_traj.npy}
 exec /home/wfx/DR_competition/.venv/bin/python src/S10_sdk_deploy/scripts/cruise_vmc_noros.py
