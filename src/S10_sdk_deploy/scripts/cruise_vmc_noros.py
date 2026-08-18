@@ -656,13 +656,12 @@ def main():
                 _th = _lidar_stair_heading()
                 if _th is not None:
                     _ey = float(np.arctan2(np.sin(_th - yaw), np.cos(_th - yaw)))
-                    # DEADBAND: only take over (pause nav tracking + decel + align)
-                    # when the robot is genuinely misaligned. When already aligned
-                    # (verified baseline arrives ~84deg), TK1 is a NO-OP.
+                    # USER 2026-08-18: TK1 is low-speed turn MPPI. Always cap speed
+                    # when a stair is detected; align yaw to riser climb direction.
+                    _tk_vx = float(os.environ.get('S10_TK1_VX', '2.0'))
+                    vx = min(vx, _tk_vx)
                     _db = float(os.environ.get('S10_TK1_YAW_DB', '0.20'))
                     if abs(_ey) > _db:
-                        _tk_vx = float(os.environ.get('S10_TK1_VX', '2.2'))
-                        vx = min(vx, _tk_vx)
                         _ky = float(os.environ.get('S10_TK1_YAW_K', '2.5'))
                         _ymax = float(os.environ.get('S10_TK1_YAW_MAX', '1.5'))
                         vyaw = float(np.clip(_ky * _ey, -_ymax, _ymax))
