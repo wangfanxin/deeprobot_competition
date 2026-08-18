@@ -23,7 +23,7 @@ python rl_stair/watchdog.py
 ## 结构
 | 文件 | 说明 |
 |---|---|
-| `envs/s10_env.py` | 函数式 MJX 环境（53 obs / 70 priv / 16 act；PD 控制；交接态热启动；自动重置；only_positive_rewards + velocity-tracking 奖励） |
+| `envs/s10_env.py` | 函数式 MJX 环境（55 obs / 72 priv / 16 act；PD 控制；交接态热启动；自动重置；only_positive_rewards + velocity-tracking 奖励） |
 | `envs/terrain.py` | 地形生成（flat/single_step/stairs/ridge/mixed；比赛几何 0.061+0.125×5、tread 0.4） |
 | `configs/rl_stair_config.py` | T0-T6 课程 + PPO 配置 |
 | `ppo.py` | PPO 非对称 actor-critic（rsl_rl 风格） |
@@ -39,8 +39,10 @@ python rl_stair/watchdog.py
 2. **only_positive_rewards=True**（go2w_rl_gym/legged_gym）：密集奖励 clip≥0，终止惩罚在 clip 后加
 3. **velocity-tracking 主奖励**（legged_gym：`exp(-err/tracking_sigma)`，4.0/2.0/σ0.25）
 
-## 观测布局（53 维，部署端必须逐位复刻）
-`angvel*0.25(3) | gravity(3) | cmd vx/yaw(2) | leg_err(12) | leg_vel*0.05(12) | last_action(16) | terrain_ctx(4) | rough(1)`
+## 观测布局（55 维，部署端必须逐位复刻）
+`angvel*0.25(3) | gravity(3) | cmd vx/yaw(2) | leg_err(12) | leg_vel*0.05(12) | last_action(16) | heading[cos,sin](2) | terrain_ctx(4) | rough(1)`
+
+heading 目标 = `S10_RL_HEADING`（默认 pi/2），TK1 交接时由 `RLStairCtrl.set_heading()` 设为楼梯爬升方向。
 
 ## 待批准改进（有源码背书，未落地，等用户确认）
 1. priv 真接触力（legged_gym net_contact_forces）

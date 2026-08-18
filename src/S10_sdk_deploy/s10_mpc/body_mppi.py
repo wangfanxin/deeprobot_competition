@@ -69,17 +69,7 @@ class BodyMPPI:
         self.sigma_vx0, self.sigma_om0 = sigma_vx, sigma_om
         self.w_dist, self.w_v, self.w_h, self.w_s = w_dist, w_v, w_h, w_s
         self.w_g = w_g
-        # OBSTACLE AVOIDANCE (USER goal 3): truncated 2D distance field (ESDF) +
-        # velocity-dependent safe distance -> soft potential added to MPPI cost.
-        # Costmap built upstream (costmap2d.py) from lidar wall/terrain channel
-        # with on/off-path filtering + inflation. w_obs=0 = disabled (zero
-        # regression). Queries are bilinear, world-frame (same as MPPI state).
-        self.w_obs = float(_os.environ.get('S10_MPPI_W_OBS', '0.0'))
-        self.obs_safe_base = float(_os.environ.get(
-            'S10_MPPI_OBSTACLE_BASE', '0.30'))
-        self.obs_safe_kv = float(_os.environ.get(
-            'S10_MPPI_OBSTACLE_KV', '0.10'))
-        self.costmap = None
+        # 2026-08-18: 避障 costmap 已完全删除；BodyMPPI 不再持有障碍势场。
         self.ada_alpha, self.ada_min, self.ada_max = ada_alpha, ada_min, ada_max
         # v506: DBaS 自适应 sigma 可调（S10_MPPI_ADA）——N=2048 时成本
         # 均值估计噪声大，sigma_scale 震荡导致起步（门架刀刃）失稳翻车。
@@ -97,8 +87,8 @@ class BodyMPPI:
         self.sigma_scale = 1.0
 
     def set_costmap(self, costmap):
-        """costmap: object with query(xy)->(...,) truncated distance, or None."""
-        self.costmap = costmap
+        """兼容旧调用；避障功能已删除，costmap 恒为 None。"""
+        self.costmap = None
 
     def _rollout(self, s0, u_seq, prev_u):
         """u_seq: (N, H, 2) 控制序列 -> states (N, H+1, 6)。"""
@@ -150,15 +140,6 @@ class BodyMPPI:
                 + self.w_h * h_err ** 2
                 + self.w_v * v_err ** 2)
         cost = cost.sum(axis=1)
-        # OBSTACLE COST (USER goal 3): soft potential from the truncated distance
-        # field. rho = max(0, d_safe-d)^2 / d_safe^2, d_safe = base + kv*|vx|.
-        # Inside an obstacle d=0 -> full penalty; free-space gradient pulls the
-        # trajectory toward the corridor center (no hard 0/1 discontinuity).
-        if self.costmap is not None and self.w_obs > 0.0:
-            _d = self.costmap.query(s[:, :, 0:2])       # (N,H+1) truncated dist
-            _dsafe = self.obs_safe_base + self.obs_safe_kv * np.abs(s[:, :, 3])
-            _rho = (np.clip(_dsafe - _d, 0.0, None) / _dsafe) ** 2
-            cost += self.w_obs * _rho.sum(axis=1)
         if guide is not None and self.w_g > 0.0:
             cost += self.w_g * np.sum(
                 (u_seq - np.asarray(guide, dtype=np.float64)[None, None, :])

@@ -1,8 +1,7 @@
 #!/bin/bash
-# 2026-08-18: SMppi/TMppi + CarVMC + RL-Stair + TK1/TK2 主链路
-# 只允许：SMppi / TMppi / CarVMC(Cruise) / RL-Stair / TK1 / TK2。
-cd /home/wfx/DR_competition/0810new/deeprobot_competition
-export JAX_COMPILATION_CACHE_DIR="/home/wfx/.cache/s10_dial_mpc"
+# SMppi/TMppi Cruise + RL-Stair + TK1/TK2 启动脚本
+cd /home/wfx/DR_competition/0810new/deeprobot_competition/SMppi_TMppi_Cruise_RL-Stair_TK1_TK2
+export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-$HOME/.cache/s10_dial_mpc}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export S10_USE_VIEWER=0
 
@@ -11,31 +10,31 @@ export S10_INIT_YAW=1.5708
 export S10_AUTO_MAX_WP=33 S10_TEST_MAX_SIM=600 S10_STUCK_TIMEOUT=90
 export S10_VMC_TERRAIN=lidar S10_VMC_MODE=rlstair
 
-# 导航（原始航点折线，不圆角、不走廊平移）
+# nav 层：只输出原始航点直线，不输出 vx/vyaw，不做曲率/CTE/模式判定
 export S10_GLOBAL_FILLET_R=0 S10_WP_ARRIVE_R=0.2 S10_WP_ADVANCE_DIST=0.2
 export S10_NAV_HZ=20
-export S10_AUTO_VMAX=3.0 S10_AUTO_LOOKAHEAD=3.5 S10_AUTO_VLIM_LOOKAHEAD=3.0
-export S10_CTE_GAIN=4.0 S10_AUTO_CTE_MAX=2.0 S10_AUTO_CTE_ERR_GATE=1.0
+# 主循环里的简单直线控制参数（不是 nav 层）
+export S10_AUTO_VMAX=3.0 S10_LINE_VMAX=3.0
+export S10_LINE_YAW_GAIN=2.5 S10_LINE_YAW_MAX=2.0 S10_LINE_BRAKE_DIST=1.5
 
 # SMppi / TMppi
 export VMC_MPPI_N=512 VMC_MPPI_H=20 S10_MPPI_ADA=1
 export S10_MPPI_A_MAX=2.0 S10_MPPI_OMAX=2.5 S10_MPPI_W_GUIDE=0.5 S10_MPPI_W_DIST=2.0 S10_MPPI_W_HEAD=0.0
 export S10_TURN_SPLIT=1 S10_TURN_ERR_DEG=10 S10_TURN_K=3.0 S10_TURN_OM_MAX=2.0 S10_TURN_V_MAX=0.2 S10_WP_TURN_VX=0.2
 
-# lidar 高程图（TK1/TK2/RL 共用）；不使用 god-view ray，不使用避障 costmap
-export S10_ELEV_HZ=4 S10_LIDAR_WALL=1
-export S10_TK1_MIN_CELLS=8
+# 全局 lidar 高程图（TK1/TK2/RL 共用；无 god-view ray，无避障 costmap）
+export S10_ELEV_HZ=4 S10_LIDAR_WALL=1 S10_TK1_MIN_CELLS=8
 
-# TK1：5m 检测，2m 内完成减速，交付 RL
+# TK1
 export S10_TK1=1 S10_TK1_LOOKAHEAD=5.0 S10_ELEV_ENTER=2.0 S10_ELEV_DECEL_VX=2.0
 export S10_STAIR_ENTER_DIST=2.0 S10_TK1_VX=2.0 S10_TK1_YAW_DB=0.20 S10_TK1_YAW_K=2.5 S10_TK1_YAW_MAX=1.5
 
-# RL-Stair：lidar 在线 riser 表；PRETRANS 按距离切换，不用 y 坐标硬编码
-export S10_RL_ELEV=1 S10_RL_POLICY=rl_stair/deploy/policy.pt S10_RL_VX=1.5 S10_RL_WARMUP=0
+# RL-Stair（lidar 在线 riser 表 + 距离式 PRETRANS）
+export S10_RL_ELEV=1 S10_RL_POLICY=policy.pt S10_RL_VX=1.5 S10_RL_WARMUP=0
 export S10_PRETRANS=1 S10_PRETRANS_ENTER_DIST=2.0 S10_PRETRANS_BLEND_LEN=1.0
 export S10_PRETRANS_HOLD_DIST=2.0 S10_PRETRANS_EXIT_LEN=2.0
 
-# TK2：四轮全部站上最后一级台阶后立即对准下一航点，然后交回 SMppi/TMppi
+# TK2：四轮全上最后一级台阶后立即对准下一航点，随后交回 SMppi/TMppi
 export S10_TK2=1 S10_TK2_YAW_DB=0.15 S10_TK2_YAW_K=2.5 S10_TK2_YAW_MAX=1.5 S10_TK2_VX=1.5
 export S10_STAIR_WHEEL_CLEAR=0.05
 
@@ -45,6 +44,7 @@ export S10_VMC_KPH=300 S10_VMC_KDH=60 S10_VMC_WHEEL_K=4.0 S10_VMC_WHEEL_D=0.08
 export S10_VMC_YAW_K_WHEEL=60 S10_VMC_OM_ABS_MAX=2.0 S10_VMC_OM_CAP=2.0
 export S10_VMC_WHEEL_TMAX=13.5 S10_VMC_MU=0.8
 
-# 轨迹（代码读取 VMC_TRAJ）
-export VMC_TRAJ=tmp/cruise_vmc_stair_traj.npy
-exec /home/wfx/DR_competition/.venv/bin/python src/S10_sdk_deploy/scripts/cruise_vmc_noros.py
+# 轨迹
+export VMC_TRAJ=tmp_cruise_traj.npy
+mkdir -p tmp
+exec /home/wfx/DR_competition/.venv/bin/python cruise_main.py

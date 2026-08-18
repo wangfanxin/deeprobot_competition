@@ -2,7 +2,7 @@
 
 结构：导航（AutoNavFollower pursuit/vlim）→ 身体层 MPPI [vx,ω]（20Hz）
      → VMC/阻抗腿层（200Hz）→ mujoco。
-已知地图：地形高 mj_ray 逐轮查询；横脊预扫描 dh>0.12 → 弧长表 → 抬轮前馈。
+地形感知：全局 lidar 高程图；禁止 god-view mj_ray 与已知地图预扫描。
 """
 import os, sys, time
 import numpy as np
@@ -133,101 +133,28 @@ def main():
     if os.environ.get('S10_DUMP_ONLY', '0') == '1':
         return
 
-    # 已知地图横脊预扫描（与节点 _scan_ridge_zones 同法）
+    # 2026-08-18: 禁止上帝视角 mj_ray 预扫描；ridge/stair 几何表保持空。
+    # 所有地形、台阶与楼梯信息只能来自 lidar 高程图在线感知。
     ridge_arcs = []
-    _ridge_signed = {}
-    try:
-        pts = fol.path_pts
-        hs = np.empty(len(pts))
-        for k, p in enumerate(pts):
-            g = np.array([-1], dtype=np.int32); dist = np.zeros(1); nrm = np.zeros(3)
-            hit = mujoco.mj_ray(m, d, [p[0], p[1], 8.0], [0, 0, -1],
-                                None, False, -1, g, nrm)
-            hs[k] = (8.0 - hit) if g[0] >= 0 else float(p[2])
-        dh_s = np.diff(hs)
-        dh = np.abs(dh_s)
-        skip_s = float(fol.path_wp_s[1]) - 2.0
-        ridge_idx = np.where((dh > 0.12) & (fol.path_cum[:len(dh)] > skip_s))[0]
-        ridge_arcs = [(float(fol.path_cum[k]), float(dh[k])) for k in ridge_idx]
-        _ridge_signed = {float(fol.path_cum[k]): float(dh_s[k])
-                         for k in ridge_idx}
-        fol.ridge_s = [float(fol.path_cum[k]) for k in ridge_idx]
-        print(f'[VMC] 预扫描横脊 {len(ridge_arcs)} 处', flush=True)
-        # v825: 删除横脊限速/下降沿限速（用户指令）
-
-    except Exception as e:
-        print('[VMC] 横脊预扫描失败', e, flush=True)
-    # v236: 台阶几何预扫描——wp6->7 楼梯区 riser 弧长表（已知地图，供
-    # 相位步态）。wp5->6 台阶间距 2m 与相位窗不匹配（v447 卡第一级），
-    # 仍由连续抬轮处理。
-    stair_risers = []
-    try:
-        _s6 = float(fol.path_wp_s[6]); _s7 = float(fol.path_wp_s[7])
-        # v587: 楼梯 riser 只取**上升沿**（dh_s>=0.12）——wp5→6 第二级是
-        # 0.60 平台降到 0.48 的**下降沿**，|dh| 误判为台阶导致 CPG 空转。
-        # v627: 楼梯区 riser 阈值 0.12→0.05——y=37.94 的 0.06m 小台阶是
-        # 第一个真障碍（前轮上平台后后轮卸载爬不动）；下降沿仍排除。
-        # v630: 直接用 signed dh_s 扫全路径 [s6,s7]——旧法从 ridge_arcs
-        # 派生（ridge 扫描 |dh|>0.12），0.06m 小台阶进不了表
-        # v699: 楼梯表只留**真楼梯**（段末 4m 内，y≥37.4）——wp5→6 第二级
-        # （y=32.88）也是 0.12m 台阶但由巡航处理，误归入楼梯表会让
-        # FootPlace 过早接管翻车（v696-698）
-        _stair_idx = np.where((dh_s >= 0.05)
-                              & (fol.path_cum[:len(dh_s)] >= _s7 - 4.0)
-                              & (fol.path_cum[:len(dh_s)] <= _s7))[0]
-        stair_risers = [(float(fol.path_cum[k]), float(dh_s[k]))
-                        for k in _stair_idx]
-        print(f'[VMC] 楼梯区 riser {len(stair_risers)} 处', flush=True)
-    except Exception as e:
-        print('[VMC] 楼梯预扫描失败', e, flush=True)
-    # v247: 横脊世界坐标表（供物理距离触发，替代 s_cur 投影——转向时 s_cur
-    # 滞后导致步态漏触发，wp4→5 撞脊翻车实测）
     ridge_world = []
-    try:
-        for (sr, dhv) in ridge_arcs:
-            # USER 2026-08-16: keep the SIGNED dh (UP=+, DOWN=-) so the ridge lift
-            # can skip descending steps (roll down in cruise, no lift).
-            dhv = _ridge_signed.get(float(sr), dhv)
-            _k = int(np.searchsorted(fol.path_cum, sr, side='right') - 1)
-            _k = min(max(_k, 0), len(fol.path_pts) - 1)
-            _pt = fol.path_pts[_k, :2].copy()
-            # v259: 存脊点处路径切线（脊近似垂直路径；距离沿切线投影，
-            # 忽略横向偏移——狗偏西 0.5m 时欧氏距离误判 0.44m 不触发抬轮）
-            _tng = np.zeros(2)
-            if _k < len(fol.path_heading):
-                _th = float(fol.path_heading[_k])
-                _tng = np.array([np.cos(_th), np.sin(_th)])
-            ridge_world.append((_pt, _tng, sr, dhv))
-    except Exception as e:
-        print('[VMC] 横脊坐标表失败', e, flush=True)
-    # v571: 楼梯 riser 世界坐标表（供几何同步抬放窗——s_cur 投影在转弯/
-    # 卡死时不可靠，用轮轴到 riser 面的沿路径物理距离触发）
+    stair_risers = []
     stair_world = []
-    try:
-        # v629: 直接从 stair_risers（0.05 阈值）构建——旧版从 ridge_world
-        # 派生（0.12 阈值），0.06m 小台阶不在 ridge_world，CPG 看不到它
-        for (sr, dhv) in stair_risers:
-            _k = int(np.searchsorted(fol.path_cum, sr, side='right') - 1)
-            _k = min(max(_k, 0), len(fol.path_pts) - 2)
-            _pt = fol.path_pts[_k, :2].copy()
-            _th = float(fol.path_heading[_k])
-            _tng = np.array([np.cos(_th), np.sin(_th)])
-            _g9 = np.array([-1], dtype=np.int32)
-            _d9 = np.zeros(1); _n9 = np.zeros(3)
-            _hit9 = mujoco.mj_ray(
-                m, d, [_pt[0] + _tng[0] * 0.06,
-                      _pt[1] + _tng[1] * 0.06, 8.0],
-                [0, 0, -1], None, False, -1, _g9, _n9)
-            _top9 = (8.0 - _hit9) if _hit9 > 0 else 0.0
-            stair_world.append((_pt, _tng, sr, float(dhv), float(_top9)))
-        print(f'[VMC] 楼梯世界坐标 {len(stair_world)} 处', flush=True)
-    except Exception as e:
-        print('[VMC] 楼梯坐标表失败', e, flush=True)
 
     mppi = BodyMPPI(
         N=int(os.environ.get('VMC_MPPI_N', '4096')),
         H=int(os.environ.get('VMC_MPPI_H', '40')),
         vx_max=float(os.environ.get('S10_AUTO_VMAX', '4.5')))
+
+    # 2026-08-18: 全局使用 lidar 地形源（TK1/TK2/RL 高程图与轮下 terrain_at 共用）。
+    from s10_mpc.lidar_terrain_v2 import LidarTerrainV2
+    lterr = LidarTerrainV2(m, d)
+    _lidar_last_upd = [-1e9]
+    def _update_lidar():
+        _now = float(t)  # sim time
+        _hz = float(os.environ.get('S10_ELEV_HZ', '4'))
+        if _now - _lidar_last_upd[0] >= 1.0 / max(_hz, 1.0):
+            lterr.update()
+            _lidar_last_upd[0] = _now
 
     # 2026-08-15 23:15 (USER acceptance): elevation-map STAIR entry/exit.
     # S10_RL_ELEV=1 -> build local_map tile from lidar LidarTerrainV2 and feed
@@ -237,11 +164,11 @@ def main():
     _lterr = None
     _build_elev_tile = lambda: None
     _lidar_stair_heading = lambda: None
+    _lidar_riser_table = lambda: (None, None)
     if _elev_enabled:
         try:
-            from s10_mpc.lidar_terrain_v2 import LidarTerrainV2
             from rl_stair.deploy.elev_tile import build_local_tile
-            _lterr = LidarTerrainV2(m, d)
+            _lterr = lterr
             # GOAL #1 perf: the elevation map is an INCREMENTAL world grid, so the
             # lidar raycast only needs to run at S10_ELEV_HZ (default 4Hz); the tile
             # build + detection still run every nav cycle on the accumulated map.
@@ -249,43 +176,9 @@ def main():
             def _build_elev_tile():
                 _now = float(t)  # sim time (deterministic; wall-clock made runs non-reproducible)
                 _hz = float(os.environ.get('S10_ELEV_HZ', '4'))
-                if _now - _elev_last_upd[0] >= 1.0 / max(_hz, 1.0):
-                    _lterr.update()
-                    _elev_last_upd[0] = _now
+                _update_lidar()
                 return build_local_tile(_lterr, float(body_pos[0]), float(body_pos[1]),
                                         half=float(os.environ.get('S10_ELEV_HALF', '8.0')))
-            # OBSTACLE COSTMAP (USER goal 3): lidar wall channel -> on/off-path
-            # 2D truncated distance field (ESDF) for BodyMPPI soft potential.
-            # Updated at S10_ELEV_HZ (same as lidar); only CRUISE uses it.
-            _costmap_last = [-1e9]
-            _costmap_cache = [None]
-            if (os.environ.get('S10_MPPI_OBSTACLE', '0') == '1'
-                    or os.environ.get('S10_TK1', '0') == '1'):
-                os.environ.setdefault('S10_LIDAR_WALL', '1')
-            def _build_costmap():
-                _now = float(t)  # sim time (deterministic)
-                _hz = float(os.environ.get('S10_ELEV_HZ', '4'))
-                if _now - _costmap_last[0] < 1.0 / max(_hz, 1.0):
-                    return _costmap_cache[0]
-                _costmap_last[0] = _now
-                _cm = None
-                try:
-                    from s10_mpc.costmap2d import build_costmap
-                    _cm = build_costmap(
-                        _lterr, fol.path_pts, fol.path_cum,
-                        float(getattr(fol, '_s_cur', 0.0)),
-                        float(body_pos[0]), float(body_pos[1]),
-                        half=float(os.environ.get('S10_OBST_HALF', '8.0')),
-                        res=float(os.environ.get('S10_OBST_RES', '0.2')),
-                        lat_min=float(os.environ.get('S10_OBST_LAT_MIN', '0.5')),
-                        inflate=float(os.environ.get('S10_OBST_INFLATE', '0.3')),
-                        dmax=float(os.environ.get('S10_MPPI_OBSTACLE_DMAX', '2.0')),
-                        h_min=float(os.environ.get('S10_OBST_H_MIN', '0.3')),
-                        h_hard=float(os.environ.get('S10_OBST_H_HARD', '0.5')))
-                except Exception:
-                    _cm = None
-                _costmap_cache[0] = _cm
-                return _cm
             # LIDAR STAIR HEADING (USER goal 1.1): detect >=2 risers along the path
             # AHEAD and return the path heading at their mean arc-length (the heading
             # the robot must face to be perpendicular to the stairs). Lidar-only; the
@@ -301,7 +194,7 @@ def main():
                 # Use either; return the path heading at the detected riser arc-length.
                 _sc = float(getattr(fol, '_s_cur', 0.0))
                 _lo = _sc + 0.5
-                _hi = _sc + 3.0
+                _hi = _sc + float(os.environ.get('S10_TK1_LOOKAHEAD', '5.0'))  # doc §9: 5m
                 _cum = fol.path_cum
                 _k0 = int(np.searchsorted(_cum, _lo))
                 _k1 = int(np.searchsorted(_cum, _hi))
@@ -354,16 +247,43 @@ def main():
                 _ki = int(np.searchsorted(_cum, _sm, side='right')) - 1
                 _ki = max(0, min(_ki, len(fol.path_heading) - 1))
                 return float(fol.path_heading[_ki])
+
         except Exception as _e:
             print('[VMC] 高程图初始化失败:', _e, flush=True)
             _elev_enabled = False
     _rl_diag_done = {}
+
+    # lidar 在线检测的 riser 表（供 RL policy terrain_ctx；禁止已知地图表/预扫描）
+    def _lidar_riser_table():
+        try:
+            _sc = float(getattr(fol, '_s_cur', 0.0))
+            _lo = _sc + 0.3
+            _hi = _sc + max(6.0, float(os.environ.get('S10_TK1_LOOKAHEAD', '5.0')))
+            _k0 = int(np.searchsorted(fol.path_cum, _lo))
+            _k1 = int(np.searchsorted(fol.path_cum, _hi))
+            if _k1 <= _k0 + 3:
+                return None, None
+            _rs = lterr.detect_risers(
+                fol.path_pts[_k0:_k1], fol.path_cum[_k0:_k1], _lo, _hi,
+                rise=0.05, max_dh=0.16)
+            if not _rs:
+                return None, None
+            _xy = []
+            _tops = []
+            for (_sr, _dh, _top) in _rs:
+                _ki = int(np.searchsorted(fol.path_cum, _sr,
+                                          side='right') - 1)
+                _ki = max(0, min(_ki, len(fol.path_pts) - 1))
+                _xy.append(fol.path_pts[_ki, :2].copy())
+                _tops.append(float(_top))
+            return np.asarray(_xy, dtype=np.float64), np.asarray(
+                _tops, dtype=np.float64)
+        except Exception:
+            return None, None
     _rl_was_stair = False
     _tk2 = False
     _tk2_was_stair = False
-    _post_stair_s = None   # arc-length of the STAIR->CRUISE handback (perception-driven exit)
-    _post_stair_xy = None  # world xy at handback (physical travel distance)
-    _post_stair_slow_v = None
+    _post_stair_xy = None
     _last_next_idx = 0
     _trans_pause_until = -1.0
     _orig_lowspd = os.environ.get('S10_CAR_LOWSPD_TURN', '0.0')
@@ -415,26 +335,8 @@ def main():
         _orig_kd_roll = float(vmc_car.kd_roll)
         vmc_rl = RLStairCtrl(m)
         vmc_rl.set_cmd(float(os.environ.get('S10_RL_VX', '1.5')))
-        if stair_world:   # pre-scanned known-map risers -> RL obs
-            # BUGFIX 2026-08-16 (integrated handoff root cause): the pre-scan tops
-            # come from mj_ray(..., flg_static=False) which IGNORES the static terrain
-            # mesh -> hits overlay/ramp geoms -> tops [0.48,0.67,0.67,0.92,0.92,1.04]
-            # instead of the real tread tops [0.54,0.67,0.79,0.92,1.04,1.17]. The RL
-            # height-context (obs[52:54]) was wrong (0.125m steps read as ~0.05m) and
-            # the policy misbehaved on the stairs. Feed the KNOWN map table
-            # (fol.STAIR_RISERS/TOPS, same values as the accepted 30/30 harness).
-            _r_scan = [float(w[0][1]) for w in stair_world]
-            _t_scan = [float(w[4]) for w in stair_world]
-            _r_tbl = [float(v) for v in fol.STAIR_RISERS]
-            _t_tbl = [float(v) for v in fol.STAIR_TOPS]
-            print('[VMC] RL riser y scan=%s tbl=%s' % ([round(v,3) for v in _r_scan],
-                                                       [round(v,3) for v in _r_tbl]), flush=True)
-            print('[VMC] RL riser top scan=%s tbl=%s' % ([round(v,3) for v in _t_scan],
-                                                         [round(v,3) for v in _t_tbl]), flush=True)
-            if len(_r_tbl) == len(_t_tbl) and len(_r_tbl) > 0:
-                vmc_rl.set_risers(_r_tbl, _t_tbl)
-            else:
-                vmc_rl.set_risers(_r_scan, _t_scan)
+        # 2026-08-18: RL riser 表只能在主循环中由 lidar 在线检测注入；
+        # 禁止预扫描/已知地图表。
         vmc = vmc_car
         print('[VMC] 双技能 RL-stair：CRUISE=CarVMC, STAIR=RLStairCtrl(policy.pt)', flush=True)
     else:
@@ -451,14 +353,11 @@ def main():
         qvel_s = np.asarray(d.qvel, dtype=np.float64)
         wheel_xyz_s = np.asarray([d.xpos[WHEEL_BODY[i]] for i in range(4)])
         wheel_vel_s = np.asarray([d.cvel[WHEEL_BODY[i]][0:3] for i in range(4)])
+        _update_lidar()
         terr_s = np.zeros(4)
         for _li in range(4):
-            _g = np.array([-1], dtype=np.int32)
-            _dist = np.zeros(1); _nrm = np.zeros(3)
-            _hit = mujoco.mj_ray(
-                m, d, [wheel_xyz_s[_li, 0], wheel_xyz_s[_li, 1], 8.0],
-                [0, 0, -1], None, True, -1, _g, _nrm)
-            terr_s[_li] = (8.0 - _hit) if _hit > 0 else 0.0
+            terr_s[_li] = lterr.height(float(wheel_xyz_s[_li, 0]),
+                                       float(wheel_xyz_s[_li, 1]))
         cmd_s = dict(vx=0.0, omega=0.0, roll_tar=0.0, pitch_tar=0.0)
         tau = vmc.compute_tau(qpos_s, qvel_s, wheel_xyz_s, wheel_vel_s,
                               cmd_s, terr_s, DT)
@@ -466,27 +365,17 @@ def main():
         mujoco.mj_step(m, d)
         t += DT
 
-    # v219f: 地形感知来源。ray=上帝视角实时 raycast（调试，零噪声）；
-    # lidar=lidar_site 扇形射线局部栅格（传感器视角，10Hz 更新，部署同款）
-        _lupd = -1.0
-        def terrain_at(x, y):
-            nonlocal _lupd
-            if t - _lupd >= 0.1:
-                lterr.update()
-                _lupd = t
-            _h = lterr.height(x, y)
-            # v275: 高架伪影抑制——lidar 在起步坡看到上方高架盒底面
-            # （2.16m 读数，实测抬轮误触发/腿阻抗过激侧翻）；读数高于
-            # 机体+1.0m 视为伪影，用运动学地面（机高-0.55）兜底
-            if _h > body_pos[2] + 1.0:
-                return float(body_pos[2] - 0.55)
-            return _h
-    else:
-        def terrain_at(x, y):
-            g = np.array([-1], dtype=np.int32); dist = np.zeros(1); nrm = np.zeros(3)
-            hit = mujoco.mj_ray(m, d, [x, y, 8.0], [0, 0, -1],
-                                None, True, -1, g, nrm)
-            return (8.0 - hit) if hit > 0 else 0.0
+    # 2026-08-18: 全局 lidar 地形源（TK1/TK2/RL 共用）；禁止 god-view ray。
+    def terrain_at(x, y):
+        _update_lidar()
+        _h = lterr.height(x, y)
+        # lidar 无有效数据时的运动学兜底（不使用上帝视角）
+        if not lterr.has(x, y):
+            return float(body_pos[2] - 0.55)
+        # 高架伪影抑制：读数高于机体+1.0m 视为上方结构底面
+        if _h > body_pos[2] + 1.0:
+            return float(body_pos[2] - 0.55)
+        return _h
 
     next_idx = START_WP if 'START_WP' in dir() else 0
     # v822: 布尔几何相位状态（用户方案：位置基全身控制，硬切换非 sin²）
@@ -556,94 +445,40 @@ def main():
             pos2 = body_pos[:2]
             # v462: 双模式判定（此前从未调用——STAIR 技能从不激活，wp6→7
             # 楼梯全程用巡航参数）
+            # 2026-08-18: 提前算机体系速度与四轮高度，供 update_mode 的
+            # TK1 交付门控（速度<2.0）与 RL 退出（四轮越顶）使用。
+            _Rbm = np.asarray(d.xmat[1], dtype=np.float64).reshape(3, 3)
+            _body_vel = _Rbm.T @ np.asarray(d.cvel[1][3:6], dtype=np.float64)
+            _wz4 = np.asarray([float(d.xpos[WHEEL_BODY[i]][2]) for i in range(4)],
+                              dtype=np.float64)
             try:
                 _lm = _build_elev_tile() if _elev_enabled else None
-                fol.update_mode(pos2, next_idx, yaw=yaw, local_map=_lm)
+                fol.update_mode(pos2, next_idx, yaw=yaw, local_map=_lm,
+                                body_vx=float(_body_vel[0]), wheel_z=_wz4)
             except Exception:
                 pass
-            # TAKEOVER MODE 2 (USER goal 2): enter on STAIR->CRUISE handback
-            # (rear legs above the last step -> update_mode already flipped back to CRUISE).
-            # PERCEPTION-DRIVEN: record the handback arc-length so the post-stair slow zone
-            # and the body-lower use travel distance, not y/waypoint coordinates.
+            # TK2：四轮全部站上最后一级台阶、update_mode 切回 CRUISE 时立即置位；
+            # 只做一次“对准下一航点”的低速转向，对齐后马上交回 SMppi/TMppi。
             if fol.mode != 'STAIR' and _tk2_was_stair:
-                _post_stair_s = float(getattr(fol, '_s_cur', 0.0))
-                _post_stair_xy = np.array([float(body_pos[0]), float(body_pos[1])])
+                _post_stair_xy = np.array([float(body_pos[0]),
+                                           float(body_pos[1])])
                 if os.environ.get('S10_TK2', '0') == '1':
                     _tk2 = True
             _tk2_was_stair = (fol.mode == 'STAIR')
-            # PLATFORM-SPECIFIC CarVMC tuning (USER 2026-08-16): on the weak-grip top
-            # platform (wp7+), the default yaw gain oscillates and low-speed turn authority
-            # is too weak -> east drift + slip at the wp7->8 90-degree turn. Enable low-speed
-            # differential boost and lower the yaw feedback gain ONLY for the platform.
-            if next_idx >= 8:
-                os.environ['S10_CAR_LOWSPD_TURN'] = os.environ.get('S10_PLAT_LOWSPD_TURN', '0.0')
-                os.environ['S10_CAR_YAW_K_SM'] = os.environ.get('S10_PLAT_YAW_K_SM', '12.0')
-                os.environ['S10_CAR_HIPX_YAW'] = os.environ.get('S10_PLAT_HIPX_YAW', '0.0')
-                vmc_car.wheel_k = float(os.environ.get('S10_PLAT_WHEEL_K', '4.0'))
-                vmc_car.yaw_ff = float(os.environ.get('S10_PLAT_YAW_FF', '1.0'))
-                vmc_car.yaw_wheel_scale = float(os.environ.get('S10_PLAT_YAW_WHEEL_SCALE', '1.0'))
-                vmc_car.kp_roll = _orig_kp_roll
-                vmc_car.kd_roll = _orig_kd_roll
-            else:
-                os.environ['S10_CAR_LOWSPD_TURN'] = _orig_lowspd
-                os.environ['S10_CAR_YAW_K_SM'] = _orig_ysm
-                os.environ['S10_CAR_HIPX_YAW'] = _orig_hipx_yaw
-                vmc_car.wheel_k = _orig_wheel_k
-                vmc_car.yaw_ff = 1.0
-                vmc_car.yaw_wheel_scale = 1.0
-                vmc_car.kp_roll = _orig_kp_roll
-                vmc_car.kd_roll = _orig_kd_roll
-            _Rbm = np.asarray(d.xmat[1], dtype=np.float64).reshape(3, 3)
-            _body_vel = _Rbm.T @ np.asarray(d.cvel[1][3:6], dtype=np.float64)
+            # 2026-08-18: RL terrain_ctx 全部来自 lidar 在线 riser 检测。
+            if _elev_enabled and _vmode == 'rlstair':
+                _rxy, _rtops = _lidar_riser_table()
+                if _rxy is not None and len(_rxy) >= 2:
+                    _h = None
+                    if fol.mode == 'STAIR':
+                        _h = getattr(fol, '_stair_first_heading', None)
+                    if _h is None:
+                        _h = _lidar_stair_heading()
+                    vmc_rl.set_risers(_rxy, _rtops, heading=_h)
             vx, vyaw = fol.compute_cmd(
                 pos2, yaw, next_idx,
                 robot_z=float(body_pos[2]), yaw_rate=float(qvel[5]),
                 body_vx=float(_body_vel[0]), body_vy=float(_body_vel[1]))
-            # STEP HOMING (USER-DIRECTED 2026-08-16, part of the takeover): when a known
-            # step/ridge is ahead within S10_STEP_HOMING_D along the path, steer the robot
-            # toward the step's path-crossing point (align before climbing) instead of the
-            # geometric cte, which is CONFUSED after sharp turns (verified wp4->5: nav
-            # vyaw saturated -2.0 yet the robot drifted 1.4m off-path). Blend in over the
-            # last D/2 metres so normal path-following is unaffected far from a step.
-            if os.environ.get('S10_STEP_HOMING', '0') == '1' and ridge_world and _post_stair_s is None:
-                _sc = float(getattr(fol, '_s_cur', 0.0))
-                _hd = float(os.environ.get('S10_STEP_HOMING_D', '3.0'))
-                _home = None
-                for (_rp, _tng, _sr, _dh) in ridge_world:
-                    _dd = _sr - _sc
-                    if 0.0 < _dd < _hd and (_home is None or _dd < _home[0]):
-                        _home = (_dd, _rp)
-                if _home is not None:
-                    _e = float(np.arctan2(_home[1][1] - float(body_pos[1]),
-                                          _home[1][0] - float(body_pos[0])))
-                    _e -= body_quat_to_yaw()
-                    _e = float(np.arctan2(np.sin(_e), np.cos(_e)))
-                    _kh = float(os.environ.get('S10_STEP_HOMING_K', '2.0'))
-                    _hom = float(np.clip(_kh * _e, -2.0, 2.0))
-                    _w = float(np.clip((_hd - _home[0]) / max(_hd * 0.5, 1e-3), 0.0, 1.0))
-                    vyaw = (1.0 - _w) * vyaw + _w * _hom
-            # W45 LATERAL PULL-BACK (USER 2026-08-16): after crossing the wp4->5 step
-            # (y>18.4), the hairpin momentum drifts the robot ~2m EAST so wp5 never
-            # registers. Steer toward the PATH CENTERLINE (signed lateral error) to pull
-            # x back to the corridor. Gate: S10_W45_PULL=1, segment wp4->5, past the step.
-            if (os.environ.get('S10_W45_PULL', '0') == '1'
-                    and next_idx == 5
-                    and os.environ.get('S10_CRUISE_TK', '1') != '1'
-                    and float(body_pos[1]) > float(os.environ.get('S10_W45_PULL_Y', '19.0'))):
-                # AFTER the wp4->5 step: heading-aware aim at wp5 to KILL the east drift
-                # (the step homing leaves the robot heading ~east; aim at wp5 = north-west
-                # pulls it back to the corridor). The arc-length registration
-                # (S10_WP_ADVANCE_BY_S) then registers wp5 once past its arc.
-                _px = float(body_pos[0]); _py = float(body_pos[1])
-                _wx = float(fol.wp[next_idx, 0]); _wy = float(fol.wp[next_idx, 1])
-                _tyaw = float(np.arctan2(_wy - _py, _wx - _px))
-                _err = float(np.arctan2(np.sin(_tyaw - yaw), np.cos(_tyaw - yaw)))
-                _kpull = float(os.environ.get('S10_W45_PULL_K', '2.0'))
-                vyaw = float(np.clip(_kpull * _err, -1.5, 1.5))
-                _pvx = float(os.environ.get('S10_W45_PULL_VX', '2.0'))
-                vx = min(vx, _pvx)
-                if os.environ.get('S10_W45_PULL_DEBUG', '0') == '1':
-                    print('[W45-PULL] pos=(%.2f,%.2f) yaw=%.2f target=%.2f err=%.3f vyaw=%.3f' % (_px, _py, yaw, _tyaw, _err, vyaw), flush=True)
             # TAKEOVER MODE 1 (USER goal 1.1, PERCEPTION-DRIVEN - no waypoint hardcode):
             # whenever CRUISE AND the lidar elevation map detects a stair/step AHEAD,
             # enter takeover: pause nav yaw tracking, decel to the stair-acceptable speed,
@@ -691,55 +526,16 @@ def main():
                               flush=True)
                 else:
                     _tk2 = False
-            # BUGFIX 2026-08-16 (wp7->wp8 slide-back): after the RL hands back, the nav
-            # vlim jumps ~0.5->3.5 m/s and the hard acceleration + the wp8 turn slide the
-            # robot on the platform (vx -0.5..-1.0 backward, drifts off). Keep a slow zone
-            # y in (last_riser+0.35, S10_STAIR_EXIT_SLOW_Y) at S10_STAIR_EXIT_VX (1.5)
-            # so the robot clears the turn stably, then release speed.
-            # BUGFIX 2026-08-16 (east-run release tip): the y-based slow zone (to y=48)
-            # ended at the east run (y~48.5) -> full speed + lean released -> the robot
-            # tipped at the wp10 micro-rise. Keep the post-stair slow zone until wp10 is
-            # REGISTERED (next_idx <= 10), i.e. through the whole east run.
-            if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
-                    and _post_stair_s is not None
-                    and _post_stair_xy is not None
-                    and float(np.hypot(body_pos[0] - _post_stair_xy[0],
-                                       body_pos[1] - _post_stair_xy[1]))
-                        < float(os.environ.get('S10_STAIR_EXIT_SLOW_LEN', '8.0'))):
-                # 2026-08-16 (verified): post-stair exit speed 1.5 through the platform -
-                # the robot is stable at ~1-1.5 m/s on the real mesh; 2.0/2.5 tip on the
-                # east run (weak real-mesh grip + differential saturation, verified).
-                _esv = float(os.environ.get('S10_STAIR_EXIT_VX', '1.5'))
-                vx = min(vx, _esv)
-                _post_stair_slow_v = _esv
-                # BUGFIX 2026-08-16 (wp8 turn oscillation): after the RL hands back the
-                # nav err is large (robot 0.8m east of the path) -> vyaw saturates at
-                # 2-2.7 rad/s -> the robot overshoots and oscillates on the platform.
-                # Cap the turn command in the slow zone (gentle, no global yaw-gain cut).
-                _exit_vyaw = float(os.environ.get('S10_STAIR_EXIT_VYAW', '1.0'))
-                # PERCEPTION-DRIVEN (was wp9 hardcode): allow a higher turn cap later in
-                # the post-stair exit travel (the east-run ~90deg turn needs it).
-                _dsexit = float(getattr(fol, '_s_cur', 0.0)) - _post_stair_s
-                if _dsexit > float(os.environ.get('S10_STAIR_EXIT_VYAW_RAMP_S', '3.0')):
-                    _exit_vyaw = float(os.environ.get('S10_STAIR_EXIT_VYAW_EAST', '2.5'))
-                vyaw = float(np.clip(vyaw, -_exit_vyaw, _exit_vyaw))
-            else:
-                _post_stair_slow_v = None
-            # USER acceptance: decelerate when a stair/ridge is detected AHEAD on the
-            # elevation map (AutoNavFollower.decel_request, ramped by proximity).
-            v_ref = fol._last_vlim
-            if _post_stair_slow_v is not None:
-                v_ref = min(v_ref, _post_stair_slow_v)
+            # 2026-08-18 (doc §2/§9): SMppi 速度目标 = 导航 vx（含航点停车与
+            # TK1/TK2 限速），而不是裸 vlim。原实现 MPPI 看不到 AutoNav 的
+            # 航点停车 vx=0，进点不减速、TMppi 触发条件(v<0.2)难以满足。
+            v_ref = min(fol._last_vlim, vx)
             if fol.decel_request > 0.0:
-                # USER-DIRECTED 2026-08-16: don't slow too much - perception decel
-                # target 2.5 m/s (was 1.2), only triggered by a rise ON the path.
-                _dv = float(os.environ.get('S10_ELEV_DECEL_VX', '2.5'))
+                # doc §9: S10_ELEV_DECEL_VX=2.0（楼梯前减速目标）
+                _dv = float(os.environ.get('S10_ELEV_DECEL_VX', '2.0'))
                 vx = vx * (1.0 - fol.decel_request) + _dv * fol.decel_request
-                # BUGFIX 2026-08-16 (GOAL #3): the MPPI speed target must also follow
-                # the perception decel, otherwise it keeps planning at the raw vlim and
-                # the decel never reaches the wheels. Adjust the vlim TARGET (v_ref),
-                # NOT the slew-limited vx (that would prevent acceleration at start).
-                v_ref = v_ref * (1.0 - fol.decel_request) + _dv * fol.decel_request
+                # 减速后的 vx 同时作为 MPPI 速度目标（v_ref 不再单独插值）。
+                v_ref = min(v_ref, vx)
             # 路径参考轨迹（弧长采样：当前位置起 8m，步长 0.5m）
             _ref = []
             _s0 = float(fol._s_cur)
@@ -764,7 +560,7 @@ def main():
                 _ref.append([_x, _y, _hd])
             _ref = np.array(_ref) if len(_ref) else np.array([[pos2[0], pos2[1], yaw]])
             st = np.array([pos2[0], pos2[1], yaw,
-                           float(d.cvel[1][3]), float(d.cvel[1][4]), float(qvel[5])])
+                           float(_body_vel[0]), float(_body_vel[1]), float(qvel[5])])
             _rp_dt = time.perf_counter() - _rp_t0
             _rp_cnt += 1
             _rp_tot += _rp_dt
@@ -778,224 +574,55 @@ def main():
                          getattr(fol, '_last_tgt', [0, 0, 0])[1],
                          getattr(fol, '_s_cur', 0.0), vyaw,
                          getattr(fol, '_last_cte', 0.0)), flush=True)
-            if (os.environ.get('S10_MPPI_OBSTACLE', '0') == '1'
-                    and fol.mode == 'CRUISE' and _elev_enabled):
-                mppi.set_costmap(_build_costmap())
-            else:
-                mppi.set_costmap(None)
-            # USER 2026-08-18: Line-Turn direct controller. Straight segments + point
-            # turns do not need MPPI sampling; use nav vx/vyaw directly.
-            _line_turn = os.environ.get('S10_LINE_TURN', '0') == '1'
-            # CONFIG SWITCH (USER 2026-08-16, wp0->33): v890 MPPI cruise for the early
-            # track, then switch to direct-nav + lower vx after S10_SWITCH_WP so the RL
-            # stair section (wp5->9) gets the verified handoff config (USE_NAV=1 + VMAX
-            # 3.5) without restarting the process.
-            _switch_wp = int(os.environ.get('S10_SWITCH_WP', '5'))
-            _switch_back_wp = int(os.environ.get('S10_SWITCH_BACK_WP', '8'))
-            # direct-nav only for the RL stair approach (wp5->7); revert to MPPI for the
-            # platform (wp8+) where the corner handling is better than raw pursuit.
-            _use_nav_eff = (_line_turn
-                            or os.environ.get('S10_VMC_USE_NAV', '0') == '1'
-                            or (_switch_wp < next_idx < _switch_back_wp))
-            if _use_nav_eff:
-                vx_c, om_c = vx, vyaw   # 直接导航指令（无 MPPI 随机性）
-                _switch_vx = float(os.environ.get('S10_SWITCH_VX', '3.5'))
-                vx_c = min(vx_c, _switch_vx)
-                if _line_turn and next_idx + 1 < len(wp):
-                    _a = np.asarray(wp[next_idx, :2], dtype=np.float64)
-                    _b = np.asarray(wp[next_idx + 1, :2], dtype=np.float64)
-                    _line = _b - _a
-                    _L = float(np.linalg.norm(_line))
-                    _u = _line / max(_L, 1e-6)
-                    _n = np.array([-_u[1], _u[0]])
-                    _rel = np.asarray(body_pos[:2], dtype=np.float64) - _a
-                    _cte = float(np.dot(_rel, _n))
-                    _line_yaw = float(np.arctan2(_line[1], _line[0]))
-                    _head_err = float(np.arctan2(np.sin(_line_yaw - yaw),
-                                                 np.cos(_line_yaw - yaw)))
-                    _cte_k = float(os.environ.get('S10_LINE_CTE_K', '2.0'))
-                    _head_k = float(os.environ.get('S10_LINE_HEAD_K', '3.0'))
-                    _lt_max = float(os.environ.get('S10_LINE_TURN_OM_MAX', '3.0'))
-                    om_c = float(np.clip(_head_k * _head_err - _cte_k * _cte,
-                                         -_lt_max, _lt_max))
-                    _arr_r = float(os.environ.get('S10_WP_ARRIVE_R', '0.2'))
-                    if float(np.linalg.norm(_rel)) < _arr_r:
-                        vx_c = 0.0
-                # POST-SWITCH RECOVERY (USER 2026-08-16): after the wp4->5 step the
-                # robot is east-drifted and heading ~east. If the heading error to the
-                # next waypoint is large, SLOW + STEER toward it (stop-and-turn) so it
-                # does not fly off east at 3.5m/s before the nav can correct.
-                if (os.environ.get('S10_SWITCH_RECOVER', '1') == '1'
-                        and next_idx < len(wp)):
-                    _wx = float(wp[next_idx, 0]); _wy = float(wp[next_idx, 1])
-                    _tyaw = float(np.arctan2(_wy - float(body_pos[1]),
-                                             _wx - float(body_pos[0])))
-                    _err = float(np.arctan2(np.sin(_tyaw - yaw), np.cos(_tyaw - yaw)))
-                    _rth = float(os.environ.get('S10_SWITCH_RECOVER_ERR', '0.4'))
-                    if abs(_err) > _rth:
-                        _rv = float(os.environ.get('S10_SWITCH_RECOVER_VX', '1.5'))
-                        vx_c = min(vx_c, _rv)
-                        _rk = float(os.environ.get('S10_SWITCH_RECOVER_K', '2.0'))
-                        om_c = float(np.clip(_rk * _err, -1.5, 1.5))
-                        # TURN-IN-PLACE for LARGE heading error (USER 2026-08-16,
-                        # wp9->10 east turn): on the weak-grip platform, turning while
-                        # moving causes wheel slip + oscillation. If the heading error
-                        # is large, STOP and turn in place first.
-                        _rbig = float(os.environ.get('S10_SWITCH_RECOVER_BIG', '1.0'))
-                        _rbig_wp = int(os.environ.get('S10_SWITCH_RECOVER_BIG_WP', '10'))
-                        if abs(_err) > _rbig and next_idx >= _rbig_wp:
-                            _rv0 = float(os.environ.get('S10_SWITCH_RECOVER_VX0', '0.3'))
-                            vx_c = min(vx_c, _rv0)
-                            _rk0 = float(os.environ.get('S10_SWITCH_RECOVER_K0', '1.5'))
-                            om_c = float(np.clip(_rk0 * _err, -1.5, 1.5))
-            else:
-                # SMppi / TMppi split (USER 2026-08-18).
-                # TMppi: when heading error to the next segment is large, stop and turn.
-                # SMppi: otherwise BodyMPPI tracks the straight line.
-                _turn_split = os.environ.get('S10_TURN_SPLIT', '0') == '1'
-                _turn_used = False
-                if _turn_split and next_idx + 1 < len(wp):
-                    _d_wp = float(np.linalg.norm(
-                        np.asarray(body_pos[:2]) - wp[next_idx, :2]))
-                    _near_wp = float(os.environ.get('S10_WP_ARRIVE_R', '0.2'))
-                    _v_act = float(np.linalg.norm(d.cvel[track_body][3:6]))
-                    _v_max_turn = float(os.environ.get('S10_TURN_V_MAX', '0.2'))
-                    if _d_wp < _near_wp and _v_act < _v_max_turn:
-                        _nx = float(wp[next_idx + 1, 0] - wp[next_idx, 0])
-                        _ny = float(wp[next_idx + 1, 1] - wp[next_idx, 1])
-                        _next_head = float(np.arctan2(_ny, _nx))
-                        _turn_err = float(np.arctan2(np.sin(_next_head - yaw),
-                                                     np.cos(_next_head - yaw)))
-                        _turn_k = float(os.environ.get('S10_TURN_K', '3.0'))
-                        _turn_max = float(os.environ.get('S10_TURN_OM_MAX', '2.0'))
+            # 2026-08-18: 巡航只允许 SMppi / TMppi，不允许 direct-nav / CRUISE_TK /
+            # POST-STAIR AIM 等额外控制器。
+            vx_c = float(vx)
+            om_c = float(vyaw)
+            _turn_split = os.environ.get('S10_TURN_SPLIT', '1') == '1'
+            _turn_used = False
+            if _turn_split and next_idx + 1 < len(wp):
+                _d_wp = float(np.linalg.norm(
+                    np.asarray(body_pos[:2]) - wp[next_idx, :2]))
+                _near_wp = float(os.environ.get('S10_WP_ARRIVE_R', '0.2'))
+                _v_act = float(np.linalg.norm(d.cvel[1][3:6]))
+                _v_max_turn = float(os.environ.get('S10_TURN_V_MAX', '0.2'))
+                if _d_wp < _near_wp and _v_act < _v_max_turn:
+                    _nx = float(wp[next_idx + 1, 0] - wp[next_idx, 0])
+                    _ny = float(wp[next_idx + 1, 1] - wp[next_idx, 1])
+                    _next_head = float(np.arctan2(_ny, _nx))
+                    _turn_err = float(np.arctan2(np.sin(_next_head - yaw),
+                                                 np.cos(_next_head - yaw)))
+                    _turn_k = float(os.environ.get('S10_TURN_K', '3.0'))
+                    _turn_max = float(os.environ.get('S10_TURN_OM_MAX', '2.0'))
+                    _turn_err_deg = float(os.environ.get('S10_TURN_ERR_DEG', '10'))
+                    if abs(_turn_err) > np.radians(_turn_err_deg):
                         vx_c = min(vx_c, float(os.environ.get('S10_WP_TURN_VX', '0.2')))
-                        om_c = float(np.clip(_turn_k * _turn_err, -_turn_max, _turn_max))
+                        om_c = float(np.clip(_turn_k * _turn_err,
+                                             -_turn_max, _turn_max))
                         _turn_used = True
-                if _turn_used:
-                    pass
-                else:
-                    # v270: MPPI 采样中心加曲率前馈 κ·v_ref（导航放开、MPPI
-                    # 约束兜底；样本围绕正确转向率，约束仍在摩擦锥内）
-                    # v315: MPPI 采样中心 = 导航完整转向指令（err + 曲率FF + cte）
-                    # ——纯路径跟踪会切内弯错过航点（wp1 最近 0.6m 实测）；导航的
-                    # 瞄航点逻辑保证 0.3m 判点，MPPI 负责平滑 + 摩擦锥约束兜底。
-                    _g_om = float(vyaw) if vyaw is not None else 0.0
-                    _mp_t0 = time.perf_counter()
-                    vx_c, om_c = mppi.plan(
-                        st, _ref, v_ref, prev_u, guide_om=_g_om)
-                    _mp_dt = time.perf_counter() - _mp_t0
-                    _mp_cnt += 1
-                    _mp_tot += _mp_dt
-                    _mp_max = max(_mp_max, _mp_dt)
-                    if (os.environ.get('S10_NAV_DEBUG', '0') == '1'
-                            and next_idx <= 6):
-                        print('[MPPI] g_om=%.2f out=(%.2f,%.2f) vref=%.2f'
-                              % (_g_om, vx_c, om_c, v_ref), flush=True)
-            # CRUISE-TK (USER 2026-08-16): for the wp4->5 hairpin + 0.125m step, track
-            # the path-planner reference heading + speed instead of the reactive step-homing.
-            # This avoids the +/-13 deg yaw limit cycle at the step (verified: yaw 87-113 deg,
-            # vx -0.74..0.48 oscillation -> stuck 17s).
-            if (os.environ.get('S10_CRUISE_TK', '1') == '1' and next_idx == 5):
-                _s_tk = float(getattr(fol, '_s_cur', 0.0)) + float(
-                    os.environ.get('S10_CRUISE_TK_LOOKAHEAD', '1.0'))
-                _ki = int(np.searchsorted(fol.path_cum, _s_tk, side='right')) - 1
-                _ki = max(0, min(_ki, len(fol.path_heading) - 1))
-                _ref_yaw = float(fol.path_heading[_ki])
-                _err_tk = float(np.arctan2(np.sin(_ref_yaw - yaw), np.cos(_ref_yaw - yaw)))
-                _k_tk = float(os.environ.get('S10_CRUISE_TK_K', '2.0'))
-                om_c = float(np.clip(_k_tk * _err_tk, -1.5, 1.5))
-                vx_c = min(vx_c, float(os.environ.get('S10_CRUISE_TK_VX', '1.8')))
-            # POST-STAIR DETERMINISTIC AIM (USER 2026-08-16): after the RL hands back,
-            # the body has eastward drift and the nav yaw wraps around +/-pi on the
-            # platform. Override om with a direct aim-at-next-waypoint and stop-and-turn
-            # while misaligned; this corrects the east drift AND makes the 90-degree turn.
-            if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
-                    and _post_stair_s is not None and next_idx < len(wp)):
-                # TRANSITION PAUSE: when entering the platform 90-degree turn (next_idx 7->8),
-                # briefly stop so the CarVMC yaw filters settle and the body stops before the
-                # turn. The instant body-spin at the wp7->8 boundary (body omega -0.97 while
-                # cmd om +0.22) was the fall root cause.
-                if next_idx >= 8 and _last_next_idx < 8:
-                    _trans_pause_until = t + float(os.environ.get('S10_TRANS_PAUSE', '0.5'))
-                _last_next_idx = next_idx
-                if t < _trans_pause_until:
-                    om_c = 0.0
-                    vx_c = 0.0
-                _wx = float(wp[next_idx, 0]); _wy = float(wp[next_idx, 1])
-                _tyaw = float(np.arctan2(_wy - float(body_pos[1]),
-                                         _wx - float(body_pos[0])))
-                _err = float(np.arctan2(np.sin(_tyaw - yaw), np.cos(_tyaw - yaw)))
-                _ak = float(os.environ.get('S10_LOWV_ALIGN_K', '1.2'))
-                om_c = float(np.clip(_ak * _err, -1.2, 1.2))
-                if abs(_err) > float(os.environ.get('S10_LOWV_ALIGN_ERR', '0.30')):
-                    # STEP-TURN (USER option 1): alternate a short fixed-rate turn burst and a
-                    # dwell pause so the weak-grip platform wheels regain grip between bursts
-                    # (continuous differential slips and rolls the body at wp7->8). Turn at
-                    # S10_STEP_TURN_OM for S10_STEP_TURN_DT, then pause the same duration.
-                    _stdt = float(os.environ.get('S10_STEP_TURN_DT', '0.5'))
-                    _stom = float(os.environ.get('S10_STEP_TURN_OM', '0.6'))
-                    if next_idx >= 8:
-                        _phase = int(t / _stdt) % 2   # 0=turn, 1=pause
-                        if _phase == 0:
-                            vx_c = 0.0
-                            om_c = _stom * (1.0 if _err >= 0.0 else -1.0)
-                        else:
-                            vx_c = 0.0
-                            om_c = 0.0
-                    else:
-                        # drift correction (next_idx 7): gentler continuous turn
-                        vx_c = min(vx_c, float(os.environ.get('S10_LOWV_ALIGN_VX', '0.4')))
-                        om_c = float(np.clip(_ak * _err, -0.6, 0.6))
-                else:
-                    vx_c = min(vx_c, 1.0)
-                # SLIP RECOVERY: on the weak-grip platform the differential torque can make
-                # the body spin OPPOSITE to the commanded yaw (wp7->8: cmd om +0.22 but body
-                # omega -0.97 -> roll -0.62 -> fall). Stop turning/driving so the wheels regain grip.
-                _body_om = float(qvel[5])
-                if next_idx >= 8 and abs(_body_om) > 0.5 and om_c * _body_om < 0.0:
-                    om_c = 0.0
-                    vx_c = 0.0
-                if os.environ.get('S10_AIM_DEBUG', '0') == '1':
-                    print('[AIM] next=%d err=%.2f vx_c=%.2f om_c=%.2f' % (next_idx, _err, vx_c, om_c), flush=True)
+            if not _turn_used:
+                _g_om = float(vyaw) if vyaw is not None else 0.0
+                _mp_t0 = time.perf_counter()
+                vx_c, om_c = mppi.plan(st, _ref, v_ref, prev_u,
+                                       guide_om=_g_om)
+                _mp_dt = time.perf_counter() - _mp_t0
+                _mp_cnt += 1
+                _mp_tot += _mp_dt
+                _mp_max = max(_mp_max, _mp_dt)
+                if (os.environ.get('S10_NAV_DEBUG', '0') == '1'
+                        and next_idx <= 6):
+                    print('[MPPI] g_om=%.2f out=(%.2f,%.2f) vref=%.2f'
+                          % (_g_om, vx_c, om_c, v_ref), flush=True)
             # v218p: omega 上限匹配 VMC yaw 能力（防指令远超执行导致振荡）
             # v245: speed-dependent cap - lateral accel envelope a_lat=w*v
             # （实测 YAW_TMAX 滑移权威下 ω 可达 3.6+，v=1.9 时 a_lat 7m/s2 翻车）
-            _omcap = float(os.environ.get("S10_VMC_OM_CAP", "0.5"))
+            # 2026-08-18 (doc §5/§6/§9/§11): 最终 omega 上限 = 2.0 rad/s，
+            # 与 BodyMPPI/TMppi/TK1/TK2 转向上限一致。原默认 0.5 把所有转向
+            # 指令锁死，是 wp1->wp2 卡住的主要嫌疑（用户确认修改）。
+            _omcap = float(os.environ.get("S10_VMC_OM_CAP", "2.0"))
             _latmax = float(os.environ.get("S10_AUTO_LAT_MAX", "5.0"))
             _omcap = min(_omcap, _latmax / max(abs(vx_c), 0.5))
             om_c = float(np.clip(om_c, -_omcap, _omcap))
-            # STEP HOMING override (USER 2026-08-16, part of the takeover): directly steer
-            # the robot toward the next known step's path-crossing point in the last D m,
-            # OVERRIDING the MPPI/nav output (a nav-target-only homing is diluted by the
-            # MPPI, verified). S10_STEP_HOMING_SIGN handles the wp4->5 turn-direction flip
-            # (CarVMC om>0 = left; nav vyaw=-2.0 right/east was executed as WEST -> flip).
-            if os.environ.get('S10_STEP_HOMING', '0') == '1' and ridge_world and _post_stair_s is None:
-                _sc = float(getattr(fol, '_s_cur', 0.0))
-                _hd = float(os.environ.get('S10_STEP_HOMING_D', '3.0'))
-                _home = None
-                for (_rp, _tng, _sr, _dh) in ridge_world:
-                    _dd = _sr - _sc
-                    if 0.0 < _dd < _hd and (_home is None or _dd < _home[0]):
-                        _home = (_dd, _rp)
-                if _home is not None:
-                    _e = float(np.arctan2(_home[1][1] - float(body_pos[1]),
-                                          _home[1][0] - float(body_pos[0])))
-                    _e -= body_quat_to_yaw()
-                    _e = float(np.arctan2(np.sin(_e), np.cos(_e)))
-                    _kh = float(os.environ.get('S10_STEP_HOMING_K', '2.0'))
-                    _hom = float(np.clip(_kh * _e, -2.0, 2.0))
-                    _w = float(np.clip((_hd - _home[0]) / max(_hd * 0.5, 1e-3), 0.0, 1.0))
-                    _hs = float(os.environ.get('S10_STEP_HOMING_SIGN', '1.0'))
-                    if _hs < 0.0:
-                        _hom = -_hom
-                    om_c = (1.0 - _w) * om_c + _w * _hom
-                    vx_c = min(vx_c, float(os.environ.get('S10_STEP_HOMING_VX', '1.5')))
-            # v599: 楼梯区导航 omega 置零——楼梯是直道且横向走廊宽，导航
-            # 的 yaw 振荡只会让后轮左右对转空耗推力（tauW ±13.5 对转实测）；
-            # 航向保持交给 WBC 反馈（om_f=0 时差速≈0，四轮统一向前推）。
-            if (next_idx >= 2 and next_idx - 1 < len(fol.stair_zone)
-                    and bool(fol.stair_zone[next_idx - 1])):
-                om_c *= 0.5
             # v263: 回退 v261/v262 脊前对准（起步被扰动 + wp4→5 仍不稳，
             # 脆）。过脊靠地形前瞻（ERR_GATE 提高后转弯中保持生效）+ 慢速。
             # 近脊仅保留速度相关 omcap（v245）。
@@ -1096,7 +723,7 @@ def main():
         s_cur = float(getattr(fol, '_s_cur', 0.0))
         # v292: 台阶窗 vx 连续插值到 STAIR_WIN_VX（默认 1.8，不归零）——
         # 窗内只换腿控制（几何相位）与轮力矩模式，vx 参考保持连续
-        if stair_risers and _post_stair_s is None:
+        if stair_risers:
             _sw0 = float(stair_risers[0][0]) - 1.0
             _sw1 = float(stair_risers[-1][0]) + 2.0
             _sramp = float(os.environ.get('S10_STAIR_VX_RAMP', '1.0'))
@@ -1440,15 +1067,6 @@ def main():
         _ramp = float(os.environ.get("S10_CAR_ROLL_AMP", "0.06"))
         _lean_k = float(os.environ.get("S10_CAR_ROLL_K", "0.06"))
         roll_tar = float(np.clip(-_lean_k * om_c * abs(vx_c), -_ramp, _ramp))
-        # BUGFIX 2026-08-16 (wp8 turn tip-over): in the post-stair slow zone, disable the
-        # lean-in - the tall post-RL stance tips over with the CarVMC lean (roll -0.89).
-        if (_vmode == 'rlstair' and fol.mode == 'CRUISE'
-                and _post_stair_s is not None
-                and _post_stair_xy is not None
-                and float(np.hypot(body_pos[0] - _post_stair_xy[0],
-                                   body_pos[1] - _post_stair_xy[1]))
-                    < float(os.environ.get('S10_STAIR_EXIT_SLOW_LEN', '8.0'))):
-            roll_tar = 0.0
         # v854: 删除 ROLL_VGATE/ROLL_ERR_GATE 门控（用户：无离散门控）——
         # 压弯 roll_tar 直接随 vx·ω 生成
         pitch_tar = 0.0
@@ -1818,13 +1436,22 @@ def main():
                                 -0.05, 1.16, -2.30, 0.05, 1.16, -2.30])
             _ta = np.array([-0.05, -0.60, 1.20, 0.05, -0.60, 1.20,
                             -0.05, 0.60, -1.20, 0.05, 0.60, -1.20])
-            _y0 = float(os.environ.get('S10_PRETRANS_Y0', '31.0'))
-            _y1 = float(os.environ.get('S10_PRETRANS_Y1', '33.0'))
-            _tpr = float(np.clip((float(body_pos[1]) - _y0) / max(_y1 - _y0, 1e-3), 0.0, 1.0))
-            _ey0 = float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.4'))
-            _elen = float(os.environ.get('S10_PRETRANS_EXIT_LEN', '4.0'))
-            if float(body_pos[1]) > _ey0:
-                _tpr = float(np.clip(1.0 - (float(body_pos[1]) - _ey0) / max(_elen, 1e-3), 0.0, 1.0))
+            if _post_stair_xy is not None:
+                # 楼梯后：按 handback 点起的物理前进距离退出 RL 高站姿
+                _elen = float(os.environ.get('S10_PRETRANS_EXIT_LEN', '2.0'))
+                _dex = float(np.hypot(body_pos[0] - _post_stair_xy[0],
+                                      body_pos[1] - _post_stair_xy[1]))
+                _tpr = float(np.clip(1.0 - _dex / max(_elen, 1e-3), 0.0, 1.0))
+            else:
+                # 楼梯前：按 lidar 检测的首级 riser 距离进入 RL 高站姿
+                _enter = float(os.environ.get('S10_PRETRANS_ENTER_DIST', '2.0'))
+                _blend = float(os.environ.get('S10_PRETRANS_BLEND_LEN', '1.0'))
+                _ad = fol.stair_ahead_dist
+                if _ad is None:
+                    _tpr = 0.0
+                else:
+                    _tpr = float(np.clip(
+                        (_enter + _blend - _ad) / max(_blend, 1e-3), 0.0, 1.0))
             vmc_car.pose_target = (1.0 - _tpr) * _sq + _tpr * _ta
         if (os.environ.get('S10_VMC_MODE', 'wbc') == 'dual'):
             vmc = vmc_wbc if fol.mode == 'STAIR' else vmc_car
@@ -1835,6 +1462,10 @@ def main():
             # yaw, vx, pos) to verify the handoff delivers the accepted-state distribution.
             if fol.mode == 'STAIR' and not _rl_diag_done.get('STAIR', False):
                 _rl_diag_done['STAIR'] = True
+                # 2026-08-18 (坐标系转换): RL 航向目标 = TK1 检测到的楼梯爬升方向
+                # （默认 pi/2），不再硬编码。
+                if getattr(fol, '_stair_first_heading', None) is not None:
+                    vmc_rl.set_heading(float(fol._stair_first_heading))
                 _dq = qpos[vmc_rl.idx['act2jnt']] - vmc_rl.default_dof
                 _yaw0 = body_quat_to_yaw()
                 _vx0 = float(d.qvel[0]*np.cos(_yaw0) + d.qvel[1]*np.sin(_yaw0))
@@ -1867,28 +1498,33 @@ def main():
                 os.environ.get('S10_LIFT_SLIP_GAIN_LIFT', '0.2'))
         tau = vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT)
         # USER-DIRECTED 2026-08-16 (carvmc+PD body-raise transition): during the RL-stair
-        # approach (CRUISE, y >= S10_PRETRANS_Y0), override the LEG torques with a direct
+        # approach (CRUISE, 距首级 riser <= S10_PRETRANS_HOLD_DIST), override the LEG torques with a direct
         # stand PD to default_dof so the legs SETTLE at the RL tall stance before the
         # handoff. carvmc pose_target alone leaves legs mid-rise at takeover
         # (max_leg_err 0.41-0.51 rad, handoff25/26 -> RL spins). Wheels keep carvmc
         # speed/yaw control (approach keeps speed+angle, NO brake-to-0).
         if (_vmode == 'rlstair' and fol.mode != 'STAIR'
-                and os.environ.get('S10_PRETRANS', '1') == '1'
-                and float(body_pos[1]) >= float(os.environ.get('S10_PRETRANS_Y0', '32.0'))):
-            _li = vmc_rl.idx['leg_idx']
-            _lj = vmc_rl.idx['act2jnt'][_li]
-            _lv = vmc_rl.idx['act2vel'][_li]
-            _lt = np.clip(60.0 * (vmc_rl.default_dof[_li] - qpos[_lj])
-                          - 4.0 * qvel[_lv], -48.0, 48.0)
-            _ey0 = float(os.environ.get('S10_PRETRANS_EXIT_Y0', '40.4'))
-            _elen = float(os.environ.get('S10_PRETRANS_EXIT_LEN', '2.0'))
-            if float(body_pos[1]) < _ey0:
-                # entry + hold: lock legs at default_dof (stand PD)
-                tau[_li] = _lt
-            else:
-                # EXIT blend: gradually hand the legs from stand PD back to CarVMC.
-                _b = float(np.clip((float(body_pos[1]) - _ey0) / max(_elen, 1e-3), 0.0, 1.0))
-                tau[_li] = (1.0 - _b) * _lt + _b * tau[_li]
+                and os.environ.get('S10_PRETRANS', '1') == '1'):
+            _hold = float(os.environ.get('S10_PRETRANS_HOLD_DIST', '2.0'))
+            _approach_hold = (_post_stair_xy is None
+                              and fol.stair_ahead_dist is not None
+                              and fol.stair_ahead_dist <= _hold)
+            if _approach_hold or _post_stair_xy is not None:
+                _li = vmc_rl.idx['leg_idx']
+                _lj = vmc_rl.idx['act2jnt'][_li]
+                _lv = vmc_rl.idx['act2vel'][_li]
+                _lt = np.clip(60.0 * (vmc_rl.default_dof[_li] - qpos[_lj])
+                              - 4.0 * qvel[_lv], -48.0, 48.0)
+                if _post_stair_xy is None:
+                    # 进入楼梯：锁定 RL 高站姿，准备交付
+                    tau[_li] = _lt
+                else:
+                    # 离开楼梯：按 handback 点起的前进距离平滑交还 CarVMC
+                    _elen = float(os.environ.get('S10_PRETRANS_EXIT_LEN', '2.0'))
+                    _dex = float(np.hypot(body_pos[0] - _post_stair_xy[0],
+                                          body_pos[1] - _post_stair_xy[1]))
+                    _b = float(np.clip(_dex / max(_elen, 1e-3), 0.0, 1.0))
+                    tau[_li] = (1.0 - _b) * _lt + _b * tau[_li]
         _tleg = float(np.abs(tau[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]]).max())
         _twh = float(np.abs(tau[[3, 7, 11, 15]]).max())
         _max_tau_leg = max(_max_tau_leg, _tleg)
@@ -1932,31 +1568,10 @@ def main():
         if next_idx < len(wp):
             rp = d.xpos[1][:2]
             _wpa = wp[next_idx][:2].copy()
-            # BUGFIX 2026-08-16 (wp7 registration): the robot follows the SHIFTED stair
-            # corridor (S10_STAIR_CORRIDOR_X=+0.6m x for y in the stair zone), so the raw
-            # wp7 (x=-14.93) is ~0.6m west of the robot's nominal path (x~-14.33) - the
-            # 0.3m advance circle was unreachable. Check the stair-end waypoint against
-            # its corridor-shifted position (the same nav parameter, not hidden info).
-            if (next_idx >= 7 and float(wp[next_idx][1]) > 40.0
-                    and float(os.environ.get('S10_STAIR_CORRIDOR_X', '0.6')) > 0.0):
-                _wpa[0] += float(os.environ.get('S10_STAIR_CORRIDOR_X', '0.6'))
             dist = float(np.linalg.norm(rp - _wpa))
             # v294: 判据=质心投影 xy 进入航点 0.3m（机器狗任意一点经过的等效简化）
-            _adv = float(os.environ.get('S10_WP_ADVANCE_DIST', '0.3'))
+            _adv = float(os.environ.get('S10_WP_ADVANCE_DIST', '0.2'))  # doc §7: 距 wp<0.2m 推进
             reached = dist <= _adv
-            # ARC-LENGTH registration (USER 2026-08-16, wp4->5): after crossing the step
-            # the robot drifts ~2m laterally and never enters the 0.3m circle, so wp5 is
-            # never registered. If the arc-length cursor has passed the waypoint arc by
-            # S10_WP_ADVANCE_S_MARGIN, register it (the nav will pull x back on the next
-            # segment). Gated off by default.
-            if (not reached and os.environ.get('S10_WP_ADVANCE_BY_S', '0') == '1'
-                    and next_idx < len(fol.path_wp_s)
-                    and next_idx == int(os.environ.get('S10_WP_ADVANCE_BY_S_WP', '5'))
-                    and fol.mode == 'CRUISE'):
-                _sm = float(os.environ.get('S10_WP_ADVANCE_S_MARGIN', '1.0'))
-                _s_cur = float(getattr(fol, '_s_cur', 0.0))
-                if _s_cur > float(fol.path_wp_s[next_idx]) + _sm:
-                    reached = True
             if reached:
                 if next_idx == 0 and t_start is None:
                     t_start = t

@@ -382,3 +382,28 @@ S10_ELEV_HZ=4
 - `src/S10_sdk_deploy/s10_mpc/stair_*.py`（历史楼梯控制器）
 
 以上仅为历史遗留，主链路不依赖，可归档/删除。
+
+---
+
+## 附：新文件夹模块清单
+
+| 文件 | 作用 |
+|---|---|
+| `run_smppi_tmppi_cruise_rlstair_tk12.sh` | 新启动脚本，所有参数显式写出 |
+| `cruise_main.py` | 新主循环：nav → TK1/TK2 → TMppi/SMppi → CarVMC/RL |
+| `nav_waypoint.py` | 导航模块：只输出原始航点直线段 |
+| `stair_mode.py` | CRUISE/STAIR 判定模块（独立于 nav） |
+| `smppi.py` | SMppi：BodyMPPI 封装，无避障 |
+| `tmppi.py` | TMppi：近点低速转向，独立实现 |
+| `carvmc.py` | CarVMC：半蹲站姿执行封装 |
+| `perception_lidar.py` | 感知：全局 lidar 高程图 + stair heading + riser 表 |
+| `rlstair_ctrl.py` | RL-Stair 部署控制器（policy→腿 PD/轮速） |
+| `rlstair_obs.py` | 55 维观测编码（含 lidar 世界坐标投影） |
+| `policy.pt` | RL 策略权重 |
+
+运行方式（等确认后再运行）：
+
+```bash
+cd /home/wfx/DR_competition/0810new/deeprobot_competition/SMppi_TMppi_Cruise_RL-Stair_TK1_TK2
+bash run_smppi_tmppi_cruise_rlstair_tk12.sh
+```

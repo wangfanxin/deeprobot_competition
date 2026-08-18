@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_POLICY = os.path.join(_HERE, "policy.pt")
+_DEFAULT_POLICY = os.path.join(_HERE, "policy.pt")  # 本文件夹自带 policy
 # A/B eval: override the policy path per-run (default deploy/policy.pt).
 # 2026-08-16: used to evaluate training checkpoints through the INTEGRATED flow
 # (the only valid real-mesh test - standalone RL falls through the thin mesh shell).
@@ -34,7 +34,7 @@ DECIMATION = 4
 
 class RLStairCtrl:
     def __init__(self, m, policy_path=_DEFAULT_POLICY, vx=1.5):
-        from rl_stair.deploy.obs_np import build_indices
+        from rlstair_obs import build_indices
         self.idx = build_indices(m)
         self._names = [m.joint(m.actuator(j).trnid[0]).name for j in range(m.nu)]
         self.leg_idx = np.array([j for j, nm in enumerate(self._names) if "wheel" not in nm])
@@ -91,7 +91,7 @@ class RLStairCtrl:
         self.target_heading = float(heading)
 
     def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, DT):
-        from rl_stair.deploy.obs_np import compute_obs_np
+        from rlstair_obs import compute_obs_np
         qpos = np.asarray(qpos, dtype=np.float64)
         qvel = np.asarray(qvel, dtype=np.float64)
         # USER-DIRECTED 2026-08-16: stair section does NOT track the nav ref_v;
