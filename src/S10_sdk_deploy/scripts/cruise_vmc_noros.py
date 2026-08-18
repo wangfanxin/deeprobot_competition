@@ -675,10 +675,9 @@ def main():
             # back to the cruise half-squat by PRETRANS EXIT. Once aligned -> release.
             if (os.environ.get('S10_TK2', '0') == '1' and _tk2
                     and fol.mode == 'CRUISE'):
-                _s2 = float(getattr(fol, '_s_cur', 0.0))
-                _ki2 = int(np.searchsorted(fol.path_cum, _s2, side='right')) - 1
-                _ki2 = max(0, min(_ki2, len(fol.path_heading) - 1))
-                _th2 = float(fol.path_heading[_ki2])
+                # USER 2026-08-18: TK2 aligns to the next waypoint, not path heading.
+                _th2 = float(np.arctan2(float(wp[next_idx, 1] - body_pos[1]),
+                                        float(wp[next_idx, 0] - body_pos[0])))
                 _ey2 = float(np.arctan2(np.sin(_th2 - yaw), np.cos(_th2 - yaw)))
                 _db2 = float(os.environ.get('S10_TK2_YAW_DB', '0.15'))
                 if abs(_ey2) > _db2:
