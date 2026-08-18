@@ -84,6 +84,7 @@ def main():
     _tk2 = False
     _tk2_was_stair = False
     _post_stair_xy = None
+    _post_stair_t = None
     _rl_diag_done = False
     _max_tau_leg = 0.0
     _max_tau_wh = 0.0
@@ -97,6 +98,7 @@ def main():
     _planner = ''
     _prev_line_head = None
     _last_lift = np.zeros(4)
+    _last_lift_t = -1e9
 
     while t < float(os.environ.get('S10_TEST_MAX_SIM', '600')):
         qpos = np.asarray(d.qpos, dtype=np.float64)
@@ -121,6 +123,7 @@ def main():
 
             if stair.mode != 'STAIR' and _tk2_was_stair:
                 _post_stair_xy = np.asarray(pos2, dtype=np.float64)
+                _post_stair_t = t
                 if os.environ.get('S10_TK2', '0') == '1':
                     _tk2 = True
             _tk2_was_stair = (stair.mode == 'STAIR')
@@ -220,6 +223,13 @@ def main():
                 else:
                     _tk2 = False
 
+            # 刚离开楼梯时先保持短时间直线慢行，避免平台边缘 yaw 过冲侧翻
+            if (_post_stair_t is not None
+                    and t - _post_stair_t < float(os.environ.get(
+                        'S10_POST_STAIR_HOLD_T', '0.6'))):
+                vx = min(vx, 0.5)
+                vyaw = 0.0
+
             v_ref = vx
             if stair.decel_request > 0.0:
                 dv = float(os.environ.get('S10_ELEV_DECEL_VX', '2.0'))
@@ -257,6 +267,26 @@ def main():
             omcap = float(os.environ.get('S10_VMC_OM_CAP', '2.0'))
             latmax = float(os.environ.get('S10_AUTO_LAT_MAX', '5.0'))
             omcap = min(omcap, latmax / max(abs(vx_c), 0.5))
+            # 侧倾过大时停止转向并减速，防止 roll 正反馈翻车
+            _body_roll = float(np.arctan2(
+                2.0 * (d.xquat[1][0] * d.xquat[1][1]
+                       + d.xquat[1][2] * d.xquat[1][3]),
+                1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
+            if abs(_body_roll) > 0.35:
+                om_c = 0.0
+                vx_c = min(float(vx_c), 0.5)
+            # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
+            # 楼梯后：低倍率直接瞄当前目标 wp，直到距其足够近才放开
+            if (_post_stair_xy is not None and next_idx < len(wp)
+                    and float(np.linalg.norm(
+                        body_pos[:2] - wp[next_idx, :2]))
+                    > float(os.environ.get('S10_POSTSTAIR_HOLD_DIST', '0.7'))):
+                vx_c = min(float(vx_c), 0.6)
+                _ph = float(np.arctan2(wp[next_idx, 1] - body_pos[1],
+                                       wp[next_idx, 0] - body_pos[0]))
+                _pe = float(np.arctan2(np.sin(_ph - yaw),
+                                       np.cos(_ph - yaw)))
+                om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
             # 高台弱抓地：进一步限制速度与转向率
             if float(body_pos[2]) > 1.0:
                 vx_c = min(float(vx_c), 0.8)
@@ -290,8 +320,8 @@ def main():
                 # 后轴只有在前轴已经骑上台面后才允许抬，防止四轮同时抬离地
                 if _li >= 2 and not _front_on_step:
                     continue
-                _lx = float(wheel_xyz[_li, 0] + _fwd_lift[0] * 0.30)
-                _ly = float(wheel_xyz[_li, 1] + _fwd_lift[1] * 0.30)
+                _lx = float(wheel_xyz[_li, 0] + _fwd_lift[0] * 0.60)
+                _ly = float(wheel_xyz[_li, 1] + _fwd_lift[1] * 0.60)
                 _ha = perc.height(_lx, _ly, t, float(body_pos[2]),
                                         fallback_h=float(np.max(terr)))
                 _rise = float(_ha - terr[_li])
@@ -300,8 +330,17 @@ def main():
                         (_rise - 0.05) / 0.08, 0.0, 1.0))
         _max_lift = float(np.max(_step_lift))
         _last_lift = _step_lift.copy()
-        cmd = dict(vx=(1.0 if _max_lift > 0.05 else vx_c),
-                   omega=(0.0 if _max_lift > 0.05 else om_c),
+        if _max_lift > 0.05:
+            _last_lift_t = t
+        _lift_hold = (t - _last_lift_t
+                      < float(os.environ.get('S10_LIFT_HOLD_T', '1.0')))
+        if _max_lift > 0.05 or _lift_hold:
+            os.environ['S10_CAR_WHEEL_GF'] = '0.5'
+        else:
+            os.environ['S10_CAR_WHEEL_GF'] = '1.0'
+        cmd = dict(vx=(1.0 if (_max_lift > 0.05 or _lift_hold) else vx_c),
+                   omega=(0.0 if _max_lift > 0.05 else
+                          (0.3 if _lift_hold else om_c)),
                    roll_tar=roll_tar, pitch_tar=0.0,
                    step_lift=_step_lift,
                    lift_swing=1.2,
