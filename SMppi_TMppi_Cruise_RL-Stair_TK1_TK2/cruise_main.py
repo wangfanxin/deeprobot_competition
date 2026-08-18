@@ -257,6 +257,10 @@ def main():
             omcap = float(os.environ.get('S10_VMC_OM_CAP', '2.0'))
             latmax = float(os.environ.get('S10_AUTO_LAT_MAX', '5.0'))
             omcap = min(omcap, latmax / max(abs(vx_c), 0.5))
+            # 高台弱抓地：进一步限制速度与转向率
+            if float(body_pos[2]) > 1.0:
+                vx_c = min(float(vx_c), 1.0)
+                omcap = min(omcap, 0.6)
             om_c = float(np.clip(om_c, -omcap, omcap))
             prev_u = np.asarray([vx_c, om_c])
         else:
@@ -279,7 +283,7 @@ def main():
         # lidar 前方小台阶连续抬轮（只给 CarVMC 做前馈；不是独立技能）
         _fwd_lift = np.array([np.cos(yaw), np.sin(yaw)])
         _step_lift = np.zeros(4, dtype=np.float64)
-        if stair.mode == 'CRUISE':
+        if stair.mode == 'CRUISE' and _post_stair_xy is None:
             _front_on_step = (float(np.max(terr[0:2]))
                               > float(np.max(terr[2:4])) + 0.05)
             for _li in range(4):
