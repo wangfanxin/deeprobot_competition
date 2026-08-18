@@ -851,23 +851,44 @@ def main():
                             _rk0 = float(os.environ.get('S10_SWITCH_RECOVER_K0', '1.5'))
                             om_c = float(np.clip(_rk0 * _err, -1.5, 1.5))
             else:
-                # v270: MPPI 采样中心加曲率前馈 κ·v_ref（导航放开、MPPI
-                # 约束兜底；样本围绕正确转向率，约束仍在摩擦锥内）
-                # v315: MPPI 采样中心 = 导航完整转向指令（err + 曲率FF + cte）
-                # ——纯路径跟踪会切内弯错过航点（wp1 最近 0.6m 实测）；导航的
-                # 瞄航点逻辑保证 0.3m 判点，MPPI 负责平滑 + 摩擦锥约束兜底。
-                _g_om = float(vyaw) if vyaw is not None else 0.0
-                _mp_t0 = time.perf_counter()
-                vx_c, om_c = mppi.plan(
-                    st, _ref, v_ref, prev_u, guide_om=_g_om)
-                _mp_dt = time.perf_counter() - _mp_t0
-                _mp_cnt += 1
-                _mp_tot += _mp_dt
-                _mp_max = max(_mp_max, _mp_dt)
-                if (os.environ.get('S10_NAV_DEBUG', '0') == '1'
-                        and next_idx <= 6):
-                    print('[MPPI] g_om=%.2f out=(%.2f,%.2f) vref=%.2f'
-                          % (_g_om, vx_c, om_c, v_ref), flush=True)
+                # SMppi / TMppi split (USER 2026-08-18).
+                # TMppi: when heading error to the next segment is large, stop and turn.
+                # SMppi: otherwise BodyMPPI tracks the straight line.
+                _turn_split = os.environ.get('S10_TURN_SPLIT', '0') == '1'
+                _turn_used = False
+                if _turn_split and next_idx + 1 < len(wp):
+                    _nx = float(wp[next_idx + 1, 0] - wp[next_idx, 0])
+                    _ny = float(wp[next_idx + 1, 1] - wp[next_idx, 1])
+                    _next_head = float(np.arctan2(_ny, _nx))
+                    _turn_err = float(np.arctan2(np.sin(_next_head - yaw),
+                                                 np.cos(_next_head - yaw)))
+                    _turn_db = float(np.radians(float(os.environ.get('S10_TURN_ERR_DEG', '10'))))
+                    if abs(_turn_err) > _turn_db:
+                        _turn_k = float(os.environ.get('S10_TURN_K', '3.0'))
+                        _turn_max = float(os.environ.get('S10_TURN_OM_MAX', '2.0'))
+                        vx_c = 0.0
+                        om_c = float(np.clip(_turn_k * _turn_err, -_turn_max, _turn_max))
+                        _turn_used = True
+                if _turn_used:
+                    pass
+                else:
+                    # v270: MPPI 采样中心加曲率前馈 κ·v_ref（导航放开、MPPI
+                    # 约束兜底；样本围绕正确转向率，约束仍在摩擦锥内）
+                    # v315: MPPI 采样中心 = 导航完整转向指令（err + 曲率FF + cte）
+                    # ——纯路径跟踪会切内弯错过航点（wp1 最近 0.6m 实测）；导航的
+                    # 瞄航点逻辑保证 0.3m 判点，MPPI 负责平滑 + 摩擦锥约束兜底。
+                    _g_om = float(vyaw) if vyaw is not None else 0.0
+                    _mp_t0 = time.perf_counter()
+                    vx_c, om_c = mppi.plan(
+                        st, _ref, v_ref, prev_u, guide_om=_g_om)
+                    _mp_dt = time.perf_counter() - _mp_t0
+                    _mp_cnt += 1
+                    _mp_tot += _mp_dt
+                    _mp_max = max(_mp_max, _mp_dt)
+                    if (os.environ.get('S10_NAV_DEBUG', '0') == '1'
+                            and next_idx <= 6):
+                        print('[MPPI] g_om=%.2f out=(%.2f,%.2f) vref=%.2f'
+                              % (_g_om, vx_c, om_c, v_ref), flush=True)
             # CRUISE-TK (USER 2026-08-16): for the wp4->5 hairpin + 0.125m step, track
             # the path-planner reference heading + speed instead of the reactive step-homing.
             # This avoids the +/-13 deg yaw limit cycle at the step (verified: yaw 87-113 deg,
