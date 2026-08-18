@@ -860,7 +860,9 @@ def main():
                     _d_wp = float(np.linalg.norm(
                         np.asarray(body_pos[:2]) - wp[next_idx, :2]))
                     _near_wp = float(os.environ.get('S10_WP_ARRIVE_R', '0.2'))
-                    if _d_wp < _near_wp:
+                    _v_act = float(np.linalg.norm(d.cvel[track_body][3:6]))
+                    _v_max_turn = float(os.environ.get('S10_TURN_V_MAX', '0.2'))
+                    if _d_wp < _near_wp and _v_act < _v_max_turn:
                         _nx = float(wp[next_idx + 1, 0] - wp[next_idx, 0])
                         _ny = float(wp[next_idx + 1, 1] - wp[next_idx, 1])
                         _next_head = float(np.arctan2(_ny, _nx))
