@@ -73,5 +73,19 @@ class WaypointLineNav:
         if radius is None:
             import os
             radius = float(os.environ.get('S10_WP_ADVANCE_DIST', '0.2'))
-        return float(np.linalg.norm(
-            np.asarray(robot_xy) - self.wp[next_idx, :2])) <= radius
+        pos = np.asarray(robot_xy, dtype=np.float64)
+        if float(np.linalg.norm(pos - self.wp[next_idx, :2])) <= radius:
+            return True
+        # 过点兜底：沿上一航点->当前航点方向已越过当前点，且横向偏差不大，
+        # 视为已通过。避免复杂地形上高速冲过 0.2m 判点圆后倒车找点。
+        if next_idx > 0:
+            seg = self.wp[next_idx, :2] - self.wp[next_idx - 1, :2]
+            length = float(np.linalg.norm(seg))
+            if length > 1e-9:
+                u = seg / length
+                proj = float(np.dot(pos - self.wp[next_idx - 1, :2], u))
+                lat = float(np.linalg.norm(
+                    pos - (self.wp[next_idx - 1, :2] + u * proj)))
+                if proj > length - 0.5 and lat < 0.8:
+                    return True
+        return False

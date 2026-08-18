@@ -273,6 +273,9 @@ def main():
             * abs(vx_c),
             -float(os.environ.get('S10_CAR_ROLL_AMP', '0.06')),
             float(os.environ.get('S10_CAR_ROLL_AMP', '0.06'))))
+        # 高台/弱抓地地形关闭压弯，优先防侧翻
+        if float(body_pos[2]) > 1.0:
+            roll_tar = 0.0
         # lidar 前方小台阶连续抬轮（只给 CarVMC 做前馈；不是独立技能）
         _fwd_lift = np.array([np.cos(yaw), np.sin(yaw)])
         _step_lift = np.zeros(4, dtype=np.float64)
