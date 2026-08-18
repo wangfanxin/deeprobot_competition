@@ -259,8 +259,8 @@ def main():
             omcap = min(omcap, latmax / max(abs(vx_c), 0.5))
             # 高台弱抓地：进一步限制速度与转向率
             if float(body_pos[2]) > 1.0:
-                vx_c = min(float(vx_c), 1.0)
-                omcap = min(omcap, 0.6)
+                vx_c = min(float(vx_c), 0.8)
+                omcap = min(omcap, 0.3)
             om_c = float(np.clip(om_c, -omcap, omcap))
             prev_u = np.asarray([vx_c, om_c])
         else:
