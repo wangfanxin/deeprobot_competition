@@ -164,7 +164,7 @@ def main():
                           1e-3), 0.0, 1.0))
                 vx = float(os.environ.get('S10_LINE_VMAX', '3.0')) * brake
                 # 下一航段是锐角时，提前在当前段内减速，不能带 3m/s 冲入弯
-                if next_idx + 1 < len(wp) and dist_wp < 3.0:
+                if next_idx + 1 < len(wp) and dist_wp < 6.0:
                     _next_vec = wp[next_idx + 1, :2] - wp[next_idx, :2]
                     _next_head = float(np.arctan2(_next_vec[1], _next_vec[0]))
                     _delta_next = abs(float(np.arctan2(
@@ -277,7 +277,12 @@ def main():
         _fwd_lift = np.array([np.cos(yaw), np.sin(yaw)])
         _step_lift = np.zeros(4, dtype=np.float64)
         if stair.mode == 'CRUISE':
+            _front_on_step = (float(np.max(terr[0:2]))
+                              > float(np.max(terr[2:4])) + 0.05)
             for _li in range(4):
+                # 后轴只有在前轴已经骑上台面后才允许抬，防止四轮同时抬离地
+                if _li >= 2 and not _front_on_step:
+                    continue
                 _lx = float(wheel_xyz[_li, 0] + _fwd_lift[0] * 0.30)
                 _ly = float(wheel_xyz[_li, 1] + _fwd_lift[1] * 0.30)
                 _ha = perc.height(_lx, _ly, t, float(body_pos[2]),
@@ -288,7 +293,9 @@ def main():
                         (_rise - 0.05) / 0.08, 0.0, 1.0))
         _max_lift = float(np.max(_step_lift))
         _last_lift = _step_lift.copy()
-        cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar, pitch_tar=0.0,
+        cmd = dict(vx=(1.0 if _max_lift > 0.05 else vx_c),
+                   omega=(0.0 if _max_lift > 0.05 else om_c),
+                   roll_tar=roll_tar, pitch_tar=0.0,
                    step_lift=_step_lift,
                    lift_swing=1.2,
                    yaw_scale=1.0 - 0.6 * _max_lift,
@@ -397,6 +404,7 @@ def main():
                      yaw, spd, roll, vx_c, om_c, stair.mode,
                      (_correction or 'NONE'), _planner,
                      float(np.max(_last_lift)), np.round(terr, 2)), flush=True)
+            print('[LIFT]', np.round(_last_lift, 2), flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[T] *** 侧翻/摔倒 ***', flush=True)
                 break
