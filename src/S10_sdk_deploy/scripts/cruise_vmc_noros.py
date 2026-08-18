@@ -1957,15 +1957,6 @@ def main():
                 _s_cur = float(getattr(fol, '_s_cur', 0.0))
                 if _s_cur > float(fol.path_wp_s[next_idx]) + _sm:
                     reached = True
-            if reached and next_idx + 1 < len(wp):
-                _nx = float(wp[next_idx + 1, 0] - wp[next_idx, 0])
-                _ny = float(wp[next_idx + 1, 1] - wp[next_idx, 1])
-                _next_head = float(np.arctan2(_ny, _nx))
-                _turn_err = float(np.arctan2(np.sin(_next_head - yaw),
-                                             np.cos(_next_head - yaw)))
-                _turn_db = float(os.environ.get("S10_WP_TURN_YAW_DB", "0.10"))
-                if abs(_turn_err) > _turn_db:
-                    reached = False
             if reached:
                 if next_idx == 0 and t_start is None:
                     t_start = t
