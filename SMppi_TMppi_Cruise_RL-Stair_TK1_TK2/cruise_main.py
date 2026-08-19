@@ -479,6 +479,19 @@ def main():
                              - 0.3)
                 vx = vx * (1.0 - stair.decel_request) + dv * stair.decel_request
                 v_ref = min(v_ref, vx)
+            # 中窗口缓行（仅高台 z>1.0 的下行）：0.5-1.5m 的六级下行前
+            # 限 1.0——round267 实测 dA 0.7-1.2 时 0.5 窗不触发、
+            # 1.8-2.75m/s 冲阶侧翻；低台（平台爬升 z<1.0）不触发
+            # （round268-270 平台爬升侧翻回退——平台区 drops 检测同样
+            # 多级，但 z 0.77 与高台下行的 z 1.4+ 可区分）
+            if (stair.drop_ahead_dist is not None
+                    and _drop_s_ok
+                    and float(body_pos[2]) > 1.3
+                    and stair.drop_ahead_dist < 1.5
+                    and not _drop_straddle):
+                vx = min(vx, 1.0)
+                v_ref = min(v_ref, vx)
+                _correction += 'DROPW'
             # 下行落差保护：前方检测到 >=0.08m 跌落沿时强制低速直行，
             # 避免高速下台栽头（下行不交 RL，先慢速爬行兜底）。
             # 轮下兜底：s 投影越过跌落后扫描变空（round93 台沿前

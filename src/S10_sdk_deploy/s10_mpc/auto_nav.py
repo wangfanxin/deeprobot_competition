@@ -1140,6 +1140,7 @@ class AutoNavFollower:
         drop_th = float(os.environ.get("S10_ELEV_DROP_TH", "0.08"))
         steps = []
         drops = []
+        drop_ds = []
         prev_h = prof[0][1]
         for (ds, h) in prof[1:]:
             _dh = h - prev_h
@@ -1166,10 +1167,12 @@ class AutoNavFollower:
                              if 0.2 < ds2 - ds <= 0.6)
                 if _sustd:
                     drops.append(ds)
+                    drop_ds.append((ds, float(-_dh)))
             prev_h = max(prev_h, h)
         self._elev_last_steps = [(float(d), float(j)) for d, j, _ in steps]
         self._elev_rises_tops = [float(h) for _, _, h in steps]
         self._elev_drops = [float(x) for x in drops]
+        self._elev_drop_ds = [(float(d), float(dh)) for d, dh in drop_ds]
         self.drop_ahead_dist = float(min(drops)) if drops else None
         _single = (len(steps) == 1 and steps[0][1] < 0.35)
         if len(steps) < int(os.environ.get("S10_ELEV_MIN_STEPS", "2"))                 and not _single:
