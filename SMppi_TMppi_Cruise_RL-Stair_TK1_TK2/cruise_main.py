@@ -244,6 +244,20 @@ def main():
                 if dist_wp < 0.5:
                     _des = float(np.arctan2(line['end'][1] - pos2[1],
                                             line['end'][0] - pos2[0]))
+                # over-point swing: past wp by 0.2m, dist<1.5m -> aim at next wp
+                # so the nose turns before the advance. Gated on no-stair-ahead:
+                # with the wp-clip the platform stair is invisible pre-advance,
+                # so this fires at wp2/wp3 and aligns the next leg; once the stair
+                # is visible (post-advance) TK1 owns the approach.
+                if (stair.mode == 'CRUISE'
+                        and stair.stair_ahead_dist is None
+                        and next_idx + 1 < len(wp)
+                        and _proj_cur > _segl + 0.2
+                        and dist_wp < 1.5):
+                    _des = float(np.arctan2(wp[next_idx + 1, 1] - pos2[1],
+                                            wp[next_idx + 1, 0] - pos2[0]))
+                    vx = min(vx, float(os.environ.get('S10_WP_SWING_VX',
+                                                     '1.2')))
                 line_head = _des
                 head_err = float(np.arctan2(np.sin(line_head - yaw),
                                             np.cos(line_head - yaw)))
