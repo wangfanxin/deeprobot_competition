@@ -236,6 +236,7 @@ def main():
                 # 瞄起点先横移回台阶顶再下行
                 if ((_proj_cur < -1.0
                      or (0.0 <= _proj_cur < 1.0 and abs(_cte) > 0.8))
+                        and float(body_pos[2]) > 1.2
                         and float(np.linalg.norm(
                             pos2 - np.asarray(line['start'])[:2])) > 2.0):
                     _des = float(np.arctan2(line['start'][1] - pos2[1],
@@ -290,6 +291,7 @@ def main():
                     and _post_stair_xy is None
                     and dist_wp <= float(os.environ.get(
                         'S10_TK1_WP_MAX', '2.5'))
+                    and float(body_pos[2]) <= 1.1
                     and abs(_cte) <= float(os.environ.get(
                         'S10_TK1_CTE_MAX', '0.8'))):
                 # 用户流：SMppi 快到 wp -> TMppi 转向 -> 前进一点点后
@@ -453,7 +455,7 @@ def main():
                     _lip_rel_t = t
                     _edge_lift[0:2] = 0.0
                     _lip_grind_since = None
-            if stair.decel_request > 0.0:
+            if stair.decel_request > 0.0 and float(body_pos[2]) <= 1.1:
                 if _tk1_t0 is None:
                     _tk1_t0 = t
                 dv = float(os.environ.get('S10_ELEV_DECEL_VX', '2.0'))
@@ -565,6 +567,7 @@ def main():
             _rf = float(os.environ.get('S10_EDGE_LOOKAHEAD', '1.2'))
             if (_rf > 0.0 and stair.mode == 'CRUISE'
                     and _edge_route_ok
+                    and float(body_pos[2]) <= 1.1
                     and abs(_cte) <= float(os.environ.get(
                         'S10_EDGE_CTE_MAX', '0.8'))):
                 # 探针沿路径航向（机器人实际航向偏移时也能看到前方台阶）
@@ -780,7 +783,7 @@ def main():
             # <1m 时，cmd 级直瞄段起点 wp（guide 级被 MPPI 终点代价
             # 压过——round242 瞄 wp12 的终点代价仍拉机器人西行撞
             # x=-4.79 柱侧翻实测）；0.6 慢转 + 1.0 限速防侧倾
-            if (line is not None
+            if (float(body_pos[2]) > 1.2 and line is not None
                     and stair.mode == 'CRUISE'
                     and not _roll_gate and next_idx > 0):
                 _seg3 = (np.asarray(line['end'])
@@ -840,21 +843,27 @@ def main():
             # 垂直回航线再沿线走；阈值放宽 0.8（round244 wp9→10 南漂
             # 0.9m 卡进障碍口袋实测）
             if (line is not None
-                    and abs(_cte) > 1.0
+                    and abs(_cte) > (0.8 if float(body_pos[2]) > 1.2
+                                    else 1.2)
                     and stair.mode == 'CRUISE'
                     and not _roll_gate
                     ):
-                _segc = (np.asarray(line['end'])
-                         - np.asarray(line['start']))
-                _seglc = max(float(np.linalg.norm(_segc)), 1e-9)
-                _uc = _segc / _seglc
-                _relc = pos2 - np.asarray(line['start'])
-                _projc = float(np.clip(float(np.dot(_relc, _uc)),
-                                       0.0, _seglc))
-                _ptc = (np.asarray(line['start'])
-                        + _uc * _projc)
-                _thc = float(np.arctan2(_ptc[1] - body_pos[1],
-                                        _ptc[0] - body_pos[0]))
+                if float(body_pos[2]) > 1.2:
+                    _segc = (np.asarray(line['end'])
+                             - np.asarray(line['start']))
+                    _seglc = max(float(np.linalg.norm(_segc)), 1e-9)
+                    _uc = _segc / _seglc
+                    _relc = pos2 - np.asarray(line['start'])
+                    _projc = float(np.clip(float(np.dot(_relc, _uc)),
+                                           0.0, _seglc))
+                    _ptc = (np.asarray(line['start'])
+                            + _uc * _projc)
+                    _thc = float(np.arctan2(_ptc[1] - body_pos[1],
+                                            _ptc[0] - body_pos[0]))
+                else:
+                    _thc = float(np.arctan2(
+                        wp[next_idx, 1] - body_pos[1],
+                        wp[next_idx, 0] - body_pos[0]))
                 _ecc = float(np.arctan2(np.sin(_thc - yaw),
                                          np.cos(_thc - yaw)))
                 om_c = float(np.clip(2.0 * _ecc, -1.2, 1.2))
