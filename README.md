@@ -14,7 +14,7 @@
 | 技能 | 职责 | 关键点 |
 | --- | --- | --- |
 | **SMppi** | 直线段走线保持（BodyMPPI 采样规划） | 只做航向保持 / 快加速 / 到点减速，**不过弯**；40Hz、N=1024、H=40（2s 视界）、终点代价 |
-| **TMppi** | 航点原地转向（四轮差速） | dist<0.5m 且 speed<0.3 且 \|yaw_err\|>10° 触发；转完交回 SMppi |
+| **TMppi** | 航点原地转向（四轮差速） | dist<0.5m 且 speed<0.8 且 无楼梯 ahead， \|yaw_err\|>10° 触发；转完交回 SMppi |
 | **CarVMC** | 巡航执行器（200Hz，16 维力矩） | 轮速 PID + 差速 yaw + 半蹲腿；防打滑仅实际 vx>0.5 启用 |
 | **RL-Stair** | 接管一切 riser（多级楼梯 + ≥8cm 单级台阶） | policy.pt 55 维观测→16 动作；腿 PD 50Hz + 轮速 200Hz；riser 表全部来自 lidar 在线检测 |
 | **TK1** | 楼梯前交接 | 减速由 SMppi 终点代价负责，TK1 只做对准（<1s，总预算 <2s）；交付 vx≤1.5 m/s |
@@ -116,7 +116,7 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 ~/DR_competition/.venv/bin/python \
 | `S10_MPPI_CTRL_DT` | `0.025` | 输出 slew 与 rollout dt 解耦（1/40s） |
 | `S10_MPPI_A_MAX / OMAX` | `3.5 / 2.5` | 加速度 / 转向上限 |
 | `S10_SMppi_STOP_DX / W_TPOS / W_TV` | `4.0 / 10.0 / 10.0` | 终点代价（到点速度自动归零） |
-| `S10_TURN_ARRIVE_R / ERR_DEG / K` | `0.5 / 10 / 3.0` | TMppi 触发半径 / 释放误差 / 增益 |
+| `S10_TURN_ARRIVE_R / V_MAX / ERR_DEG / K` | `0.5 / 0.8 / 10 / 3.0` | TMppi 触发半径 / 释放误差 / 增益 |
 | `S10_LINE_VMAX / BRAKE_DIST` | `4.0 / 3.5` | 直线速度上限 / 到点线性刹车距离 |
 | `S10_VMC_OM_CAP` | `1.0` | SMppi 最终 omega 上限（TMppi 独立于它） |
 | `S10_VMC_WHEEL_K / D` | `12.0 / 0.02` | 轮速 PID |
