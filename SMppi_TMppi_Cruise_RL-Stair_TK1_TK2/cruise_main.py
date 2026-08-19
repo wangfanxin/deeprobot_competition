@@ -295,8 +295,12 @@ def main():
                     _lip_g0 = float(np.min(terr))
                     _lip_xy = np.asarray(pos2, dtype=np.float64).copy()
                 _lip_hold = True
+            _past_wp = (stair.wp_s(next_idx - 1) is not None
+                        and stair.s_cur
+                        > stair.wp_s(next_idx - 1) + 0.3)
             if (os.environ.get('S10_LIP_LATCH', '1') == '1'
                     and next_idx >= 4
+                    and _past_wp
                     and stair.decel_request > 0.5
                     and stair.stair_ahead_dist is not None
                     and stair.stair_ahead_dist <= 1.2):
@@ -410,6 +414,7 @@ def main():
                     # 边界误锁 + om 强制正对 = 坡顶自旋侧翻（round46）
                     if (os.environ.get('S10_LIP_LATCH', '1') == '1'
                             and next_idx >= 4
+                            and _past_wp
                             and _rise_edge >= 0.10):
                         if not _lip_hold:
                             _lip_g0 = float(np.min(terr))

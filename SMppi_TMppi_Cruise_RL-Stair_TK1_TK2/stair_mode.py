@@ -34,9 +34,10 @@ class StairGate:
             s_proj = float(self.fol.path_cum[k])
             self.fol._s_cur = max(float(getattr(self.fol, '_s_cur', 0.0)),
                                   s_proj)
+        _ch = self._climb_heading()
         self.fol.update_mode(pos2, next_idx, yaw=yaw, local_map=local_map,
                              body_vx=body_vx, wheel_z=wheel_z,
-                             heading=heading)
+                             heading=_ch)
 
     @property
     def mode(self):
@@ -57,6 +58,39 @@ class StairGate:
     @property
     def stair_first_heading(self):
         return self.fol._stair_first_heading
+
+    def _climb_heading(self):
+        rs = getattr(self.fol, 'stair_rises_s', None)
+        if not rs:
+            return None
+        k = int(np.searchsorted(self.fol.path_cum, rs[0],
+                                side='right') - 1)
+        k = min(max(k, 0), len(self.fol.path_pts) - 1)
+        rxy0 = np.asarray(self.fol.path_pts[k][:2])
+        # 台阶立面法向 = riser -> 远沿方向（比路径航向准：路径斜穿
+        # 台沿时爬升轴会被带偏，RL 沿 2.91 爬台西漂 3m 实测）
+        dd = getattr(self.fol, 'drop_ahead_dist', None)
+        if dd is not None:
+            s2 = float(getattr(self.fol, '_s_cur', 0.0)) + float(dd)
+            k2 = int(np.searchsorted(self.fol.path_cum, s2,
+                                     side='right') - 1)
+            k2 = min(max(k2, 0), len(self.fol.path_pts) - 1)
+            xy2 = np.asarray(self.fol.path_pts[k2][:2])
+            dv = xy2 - rxy0
+            if np.linalg.norm(dv) > 0.3:
+                return float(np.arctan2(dv[1], dv[0]))
+        return float(self.fol.path_heading[k])
+
+    def wp_s(self, idx):
+        if idx < 0 or idx >= len(self.fol.wp):
+            return None
+        k = int(np.argmin(np.sum(
+            (self.fol.path_pts[:, :2] - self.fol.wp[idx][:2]) ** 2, axis=1)))
+        return float(self.fol.path_cum[k])
+
+    @property
+    def climb_heading(self):
+        return self._climb_heading()
 
     @property
     def first_riser_path_heading(self):
