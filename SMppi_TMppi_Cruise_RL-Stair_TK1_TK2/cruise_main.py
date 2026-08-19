@@ -132,7 +132,7 @@ def main():
                 local_map = perc.local_tile(pos2, t)
                 _ph = perc.stair_heading(stair)
             stair.update(pos2, next_idx, yaw, local_map,
-                         float(body_vel[0]), wheel_z, heading=_ph)
+                         float(body_vel[0]), wheel_z)
             if os.environ.get('S10_LIP_DEBUG', '0') == '1' and next_idx == 5:
                 print('[LIPDBG] t=%.2f pos=(%.2f,%.2f) rises=%s ahead=%s '
                       'decel=%.2f'
@@ -220,7 +220,7 @@ def main():
                     and stair.mode == 'CRUISE'
                     and abs(_cte) <= float(os.environ.get(
                         'S10_TK1_CTE_MAX', '0.8'))):
-                th = _ph
+                th = stair.first_riser_path_heading
                 if th is not None:
                     if _tk1_t0 is None:
                         _tk1_t0 = t
@@ -264,7 +264,9 @@ def main():
             if (_post_stair_t is not None
                     and t - _post_stair_t < float(os.environ.get(
                         'S10_POST_STAIR_HOLD_T', '0.6'))):
-                vx = min(vx, 0.5)
+                # RL 退出带 2.3m/s 动量且航向随机（实测西漂），
+                # 交接先近停再对准，不给动量续命
+                vx = min(vx, 0.2)
                 vyaw = 0.0
             # 楼梯后慢速瞄准超时清除：一直追不上下一 wp 时
             # 恢复全速（此前永不清除，wp5 实测 0.6m/s 永久爬行）

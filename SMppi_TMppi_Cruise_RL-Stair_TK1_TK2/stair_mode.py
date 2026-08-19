@@ -59,6 +59,16 @@ class StairGate:
         return self.fol._stair_first_heading
 
     @property
+    def first_riser_path_heading(self):
+        rs = getattr(self.fol, 'stair_rises_s', None)
+        if not rs:
+            return None
+        k = int(np.searchsorted(self.fol.path_cum, rs[0],
+                                side='right') - 1)
+        k = min(max(k, 0), len(self.fol.path_heading) - 1)
+        return float(self.fol.path_heading[k])
+
+    @property
     def s_cur(self):
         return self.fol._s_cur
 
