@@ -700,7 +700,7 @@ def main():
             # 大偏航纠偏：偏离航线 >1.5m 时 cmd 级直指当前 wp
             # （爬升后沿台壁西滑 90s 死锁实测——MPPI 弱 guide
             # 压不过平台边腿阻抗扭振）
-            if (line is not None and abs(_cte) > 1.5
+            if (line is not None and abs(_cte) > 1.2
                     and stair.mode == 'CRUISE'
                     and not _roll_gate):
                 _thc = float(np.arctan2(wp[next_idx, 1] - body_pos[1],
