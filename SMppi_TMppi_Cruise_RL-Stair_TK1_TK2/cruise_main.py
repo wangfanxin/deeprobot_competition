@@ -305,8 +305,15 @@ def main():
                 if (_wsc is not None and stair.s_cur > _wsc + 0.2):
                     _ahead = next_idx + 1
             # TK2：STAIR→CRUISE 后立即对准下一航点；对齐后交回 TMppi/SMppi
+            # 平顶（z>1）出口延迟 2s 让高站姿下蹲过渡先完成：
+            # 台顶原地转+下蹲激起 roll 2.5rad/s 冲量卡死侧翻
+            # （round210 实测）；低台出口（wp4/5 平台、两级台阶）
+            # 立即对准不受影响（round211 全延迟破坏 wp5→6 实测）
             if (os.environ.get('S10_TK2', '0') == '1' and _tk2
-                    and stair.mode == 'CRUISE'):
+                    and stair.mode == 'CRUISE'
+                    and (_post_stair_t is None
+                         or t - _post_stair_t > 2.0
+                         or float(body_pos[2]) <= 1.0)):
                 _correction += 'TK2'
                 th2 = float(np.arctan2(wp[_ahead, 1] - body_pos[1],
                                        wp[_ahead, 0] - body_pos[0]))
@@ -616,8 +623,15 @@ def main():
                 2.0 * (d.xquat[1][0] * d.xquat[1][1]
                        + d.xquat[1][2] * d.xquat[1][3]),
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
+            # 平顶门控提前：roll>0.5 后腿力 counter-roll 耦合趋零
+            # （round205/209 实测 0.66 卡 5-18s 扶不正），0.22 提前
+            # 介入时腿力扶正仍有效；低台保留 0.34（正常弯道 roll
+            # 摆动 0.2-0.3 不误触）
             _rg_hi = float(os.environ.get('S10_ROLL_GATE_HI', '0.34'))
             _rg_lo = float(os.environ.get('S10_ROLL_GATE_LO', '0.28'))
+            if float(body_pos[2]) > 1.0:
+                _rg_hi = min(_rg_hi, 0.22)
+                _rg_lo = min(_rg_lo, 0.18)
             if abs(_body_roll) > _rg_hi:
                 if not _roll_gate:
                     _roll_gate_since = t
@@ -680,7 +694,11 @@ def main():
                                        wp[_ahead, 0] - body_pos[0]))
                 _pe = float(np.arctan2(np.sin(_ph - yaw),
                                        np.cos(_ph - yaw)))
-                om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
+                # roll 门控期让位：hold 的 om 覆盖在门控之后，
+                # 门控 om=0 被顶掉持续喂转向（round207 台顶
+                # 交还 roll 0.76 卡 8.5s 实测根因）
+                if not _roll_gate:
+                    om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
             # 高台分档：1.166 平顶限 1.8m/s+om0.6（round190 平顶
             # 2.4-4.0m/s roll 累积 -0.95 侧翻实测）；2.0+ 的高台
             # 保持旧弱抓地限速
@@ -698,7 +716,12 @@ def main():
                 om_c = float(np.clip(om_c, -0.5, 0.5))
             # 台沿锁存期：cmd 级强制正对路径航向（经 MPPI 的弱 guide
             # 被其它代价压过，wp5 实测贴沿航向漂 0.3rad 侧滑）
-            if _lip_hold and not _roll_gate:
+            # 平顶出口后 2s 内锁存转向也让位（round212 台顶锁存
+            # om0.8 转向激起 roll-1.12 侧翻实测）；低台锁存照旧
+            if (_lip_hold and not _roll_gate
+                    and (_post_stair_t is None
+                         or t - _post_stair_t > 2.0
+                         or float(body_pos[2]) <= 1.0)):
                 # 锁存期瞄当前 wp（不是航线航向）：爬升中若漂离航线，
                 # 朝 wp 的方向自然把机器人拉回线上（round51 西漂 3.6m
                 # 掉西沿实测）
@@ -711,7 +734,10 @@ def main():
             # 锁存释放后 1s 航向保持：上台面瞬间 MPPI 会立刻拉偏
             # 航向（台面顶自旋侧翻实测），先稳 1s 再交还
             if (_lip_rel_t is not None and not _roll_gate
-                    and t - _lip_rel_t < 1.0):
+                    and t - _lip_rel_t < 1.0
+                    and (_post_stair_t is None
+                         or t - _post_stair_t > 2.0
+                         or float(body_pos[2]) <= 1.0)):
                 _thr = float(np.arctan2(wp[next_idx, 1] - body_pos[1],
                                           wp[next_idx, 0] - body_pos[0]))
                 _err = float(np.arctan2(np.sin(_thr - yaw),
@@ -747,7 +773,7 @@ def main():
                 # om1.5 原地快转激起 roll 0.65 卡死 4.7s 溜下台沿
                 # 侧翻实测；0.6 慢转在 vx1.0 下侧向 0.6m/s^2 安全
                 if float(body_pos[2]) > 1.2:
-                    _om_tk = min(_om_tk, 0.6)
+                    _om_tk = min(_om_tk, 0.4)
                 om_c = float(np.clip(vyaw, -_om_tk, _om_tk))
                 vx_c = min(float(vx_c), float(os.environ.get(
                     'S10_TK_VX', '1.5')))
