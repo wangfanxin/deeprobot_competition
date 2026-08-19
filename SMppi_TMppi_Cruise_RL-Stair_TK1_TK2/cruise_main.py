@@ -247,6 +247,7 @@ def main():
                     and os.environ.get('S10_RL_ELEV', '0') == '1'
                     and stair.mode == 'CRUISE'
                     and _post_stair_xy is None
+                    and float(body_pos[2]) <= 1.1
                     and dist_wp <= float(os.environ.get(
                         'S10_TK1_WP_MAX', '2.5'))
                     and abs(_cte) <= float(os.environ.get(
@@ -408,7 +409,7 @@ def main():
                     _lip_rel_t = t
                     _edge_lift[0:2] = 0.0
                     _lip_grind_since = None
-            if stair.decel_request > 0.0:
+            if stair.decel_request > 0.0 and float(body_pos[2]) <= 1.1:
                 if _tk1_t0 is None:
                     _tk1_t0 = t
                 dv = float(os.environ.get('S10_ELEV_DECEL_VX', '2.0'))
