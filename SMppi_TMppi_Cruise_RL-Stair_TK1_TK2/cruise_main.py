@@ -136,11 +136,15 @@ def main():
                 local_map = perc.local_tile(pos2, t)
                 _ph = perc.stair_heading(stair)
             _bp = float(np.arctan2(
-                2.0 * (d.xquat[1][0] * d.xquat[1][3]
-                       - d.xquat[1][1] * d.xquat[1][2]),
-                1.0 - 2.0 * (d.xquat[1][2] ** 2 + d.xquat[1][3] ** 2)))
+                2.0 * (d.xquat[1][0] * d.xquat[1][2]
+                       - d.xquat[1][3] * d.xquat[1][1]),
+                1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
+            _br = float(np.arctan2(
+                2.0 * (d.xquat[1][0] * d.xquat[1][1]
+                       + d.xquat[1][2] * d.xquat[1][3]),
+                1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
             stair.update(pos2, next_idx, yaw, local_map,
-                         float(body_vel[0]), wheel_z, pitch=_bp)
+                         float(body_vel[0]), wheel_z, pitch=_bp, roll=_br)
             if os.environ.get('S10_LIP_DEBUG', '0') == '1' and next_idx in (4, 5):
                 print('[LIPDBG] t=%.2f pos=(%.2f,%.2f) rises=%s ahead=%s '
                       'drops=%s dropahead=%s ch=%.2f sc=%.2f'
@@ -429,15 +433,27 @@ def main():
             # 轮下兜底：s 投影越过跌落后扫描变空（round93 台沿前
             # drops=[] 失保、0.6m/s 下台栽头实测）——后轮上台前轮
             # 已下的跨骑状态也强制低速直行
+            # 下沿双窗口：om 锁止用大窗口（0.8m，防转弯动量带进
+            # 沿口，round142 顶沿 om0.98 侧翻实测），vx 爬行用小窗口
+            # （0.5m，1.2m 大窗口在平台角提前爬行致入口劣化 round144）
+            _drop_om_w = float(os.environ.get(
+                'S10_DROP_OM_LOOKAHEAD', '0.8'))
+            _drop_active = False
             if ((stair.drop_ahead_dist is not None
-                    and stair.drop_ahead_dist < float(os.environ.get(
-                        'S10_DROP_LOOKAHEAD', '2.0')))
+                    and stair.drop_ahead_dist < _drop_om_w)
                     or float(np.max(terr[2:4])) - float(np.min(terr))
                     >= 0.08):
-                vx = min(vx, float(os.environ.get('S10_DROP_VX', '0.3')))
-                vyaw = float(np.clip(vyaw, -0.5, 0.5))
-                v_ref = min(v_ref, vx)
-                _correction += 'DROP'
+                _drop_active = True
+                if ((stair.drop_ahead_dist is not None
+                        and stair.drop_ahead_dist < float(os.environ.get(
+                            'S10_DROP_LOOKAHEAD', '2.0')))
+                        or float(np.max(terr[2:4]))
+                        - float(np.min(terr)) >= 0.08):
+                    vx = min(vx, float(os.environ.get(
+                        'S10_DROP_VX', '0.3')))
+                    vyaw = float(np.clip(vyaw, -0.5, 0.5))
+                    v_ref = min(v_ref, vx)
+                    _correction += 'DROP'
             # 机器人相对 riser 检测（路径扫描盲区：偏离路径时前方台阶）
             # 前方 0.3~1.2m 升高 0.08~0.25m => 正对直行低速骑上（不交 RL）
             _rf = float(os.environ.get('S10_EDGE_LOOKAHEAD', '1.2'))
@@ -585,7 +601,10 @@ def main():
                 # 拉上台面恢复水平。
                 if (_roll_gate_since is not None
                         and t - _roll_gate_since > 2.0
-                        and not _lip_hold):
+                        and not _lip_hold
+                        and float(body_pos[2]) <= 1.0):
+                    # 高台（平顶 z>1.0）不倒车：倒车在台沿反复
+                    # 打滑把稳态侧倾推成侧翻（round137 平顶实测）
                     vx_c = -0.4
                     om_c = 0.0
             # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
@@ -615,6 +634,11 @@ def main():
                 vx_c = min(float(vx_c), 0.8)
                 omcap = min(omcap, 0.3)
             om_c = float(np.clip(om_c, -omcap, omcap))
+            # 下沿/跨骑期 MPPI 的航向代价仍会给大 om（round142 两级
+            # 台阶顶沿 om0.98 转向 roll-1.12 侧翻实测）：DROP 期
+            # cmd 级限 ±0.5
+            if _drop_active:
+                om_c = float(np.clip(om_c, -0.5, 0.5))
             # 台沿锁存期：cmd 级强制正对路径航向（经 MPPI 的弱 guide
             # 被其它代价压过，wp5 实测贴沿航向漂 0.3rad 侧滑）
             if _lip_hold and not _roll_gate:
@@ -812,6 +836,12 @@ def main():
             _rl_diag_done = True
             if stair.stair_first_heading is not None:
                 rl.set_heading(float(stair.stair_first_heading))
+            # 六级楼梯给 RL 1.2m/s 速度目标：策略自由跑 2.85 时
+            # 越顶退出 vx 门永远不满足、兜底交还 roll 动量带翻
+            # （round139/148 平顶实测）；短台阶保持默认
+            _nr0 = len(getattr(stair.fol, 'stair_rises_s', []) or [])
+            if _nr0 >= 3:
+                rl.set_cmd(1.2)
             # RL 速度目标保持策略默认（set_cmd 改写观测后两级台阶
             # 入口处策略南转 roll 1.30 侧翻 round134；round128 的
             # 两级台阶 wheel-clear 交还 vx 1.02 干净）

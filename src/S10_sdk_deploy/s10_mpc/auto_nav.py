@@ -833,7 +833,8 @@ class AutoNavFollower:
         return False
 
     def update_mode(self, robot_xy, next_idx, yaw=None, local_map=None,
-                    body_vx=0.0, wheel_z=None, heading=None, pitch=None):
+                    body_vx=0.0, wheel_z=None, heading=None, pitch=None,
+                    roll=None):
         """PERCEPTION-DRIVEN stair takeover (USER 2026-08-16; 2026-08-18 doc §9/§10 对齐).
 
         - CRUISE -> STAIR (TK1)：前方 S10_TK1_LOOKAHEAD 内检测到路径上楼梯，且
@@ -878,15 +879,24 @@ class AutoNavFollower:
             if wheel_z is not None and len(self.stair_rises_tops) > 0:
                 _clear = float(os.environ.get("S10_STAIR_WHEEL_CLEAR", "0.05"))
                 _top_max = float(np.max(np.asarray(self.stair_rises_tops, dtype=np.float64)))
-                # 四轮越顶 + 速度收敛才交还：vx 放宽到 1.6 后 RL
-            # 爬升步态中后轮瞬时越顶（弹跳）+vx1.55 触发提前交还，
-            # 半爬姿态交 CarVMC 在平顶侧翻（round102 实测）；
-            # 恢复 1.0 保证交还时 RL 已稳定支撑
+                # 四轮越顶 + 速度/俯仰收敛交还（round137 版）：
+            # 两级台阶 RL 在顶面自然减速到 ~1.0 时交还最稳；
+            # 跨步弹跳的瞬时越顶由 pitch 门挡住（round102 实测）
+            # 越顶还须越过最后一级 riser 0.8m：六级楼梯入口扫描
+            # 只看到 5 级（第 6 级超出高程表），top_max=第 5 级顶，
+            # 轮心在第 5 级就误判越顶交还，wp7 推点+转向在楼梯沿上
+            # 侧翻（round147 实测）；s 过最后 riser 才放
+            _rs_last = (float(self.stair_rises_s[-1])
+                        if getattr(self, 'stair_rises_s', None) else -1.0)
+            _spast = (float(getattr(self, '_s_cur', 0.0))
+                      > _rs_last + 0.8)
             _exit_ok = (float(np.min(np.asarray(wheel_z, dtype=np.float64)))
                             >= _top_max - _clear
+                            and _spast
                             and body_vx <= float(os.environ.get(
-                                "S10_STAIR_EXIT_VX", "1.6"))
-                            and (pitch is None or abs(float(pitch)) <= 0.15))
+                                'S10_STAIR_EXIT_VX', '1.6'))
+                            and (pitch is None
+                                 or abs(float(pitch)) <= 0.15))
             if not _exit_ok and self._stair_first_riser_xy is not None:
                 _fwd = np.array([np.cos(self._stair_first_heading),
                                  np.sin(self._stair_first_heading)])
@@ -906,7 +916,15 @@ class AutoNavFollower:
                     _rs = list(getattr(self, 'stair_rises_s', []) or [])
                     if len(_rs) >= 2:
                         _min_climb = (float(_rs[-1]) - float(_rs[0])) + 2.0
-                _exit_ok = _prog > _min_climb
+                # 兜底退出姿态收敛：round138 的失败是 pitch 公式
+                # 错误（已修），round139/148 六级楼梯 2.85m/s 跨步
+                # roll0.55 交还、平顶 roll 门锁死后侧翻实测——
+                # 等 roll/pitch 同小的水平支撑时刻再交还
+                _exit_ok = (_prog > _min_climb
+                            and (roll is None
+                                 or abs(float(roll)) <= 0.3)
+                            and (pitch is None
+                                 or abs(float(pitch)) <= 0.3))
             if _exit_ok:
                 self.mode = "CRUISE"
                 self.decel_request = 0.0
