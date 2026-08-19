@@ -103,6 +103,9 @@ def main():
     _tk2_t0 = None
     _roll_gate = False
     _roll_gate_since = None
+    _stuck_chk_t = 0.0
+    _stuck_chk_xy = None
+    _stuck_escape_until = None
     _edge_lift = np.zeros(4)
     _vyaw_f = 0.0
     _lip_hold = False
@@ -872,6 +875,54 @@ def main():
         _last_lift = _step_lift.copy()
         if _max_lift > 0.05:
             _last_lift_t = t
+        # 卡死脱困（平顶）：5s 位置推进 <0.3m 且指令仍要求前进——
+        # 压墙/压障碍空转自持摇振（round222 wp10 后 2.2m 横墙实测：
+        # 轮速 ±25rad/s 交替、车身零位移）；先倒车 1.2s 离开墙面，
+        # 再朝航线投影点（东行绕过墙端 x>-4.75）0.8m/s 前插，
+        # 4s 后交还 MPPI
+        if _stuck_chk_xy is None:
+            _stuck_chk_xy = np.asarray(pos2, dtype=np.float64).copy()
+            _stuck_chk_t = t
+        if t - _stuck_chk_t >= 5.0:
+            _stuck_moved = float(np.linalg.norm(
+                pos2 - np.asarray(_stuck_chk_xy)))
+            if (_stuck_moved < 0.3 and float(vx_c) >= 0.8
+                    and float(body_pos[2]) > 1.2
+                    and stair.mode == 'CRUISE'
+                    and not _roll_gate):
+                _stuck_escape_until = t + 4.0
+                print('[STUCK] escape t=%.1f pos=(%.1f,%.1f) moved=%.2f'
+                      % (t, pos2[0], pos2[1], _stuck_moved), flush=True)
+            _stuck_chk_xy = np.asarray(pos2, dtype=np.float64).copy()
+            _stuck_chk_t = t
+        if _stuck_escape_until is not None:
+            if t < _stuck_escape_until:
+                if t < _stuck_escape_until - 2.8:
+                    vx_c = -0.5
+                    om_c = 0.0
+                else:
+                    vx_c = 0.8
+                    if line is not None:
+                        _seg2e = (np.asarray(line['end'])
+                                  - np.asarray(line['start']))
+                        _segl2e = max(float(np.linalg.norm(_seg2e)), 1e-9)
+                        _u2e = _seg2e / _segl2e
+                        _rel2e = pos2 - np.asarray(line['start'])
+                        _proj2e = float(np.clip(
+                            float(np.dot(_rel2e, _u2e)), 0.0, _segl2e))
+                        _pt2e = (np.asarray(line['start'])
+                                 + _u2e * _proj2e)
+                        _epe = float(np.arctan2(
+                            _pt2e[1] - body_pos[1],
+                            _pt2e[0] - body_pos[0]))
+                        _eee = float(np.arctan2(np.sin(_epe - yaw),
+                                                np.cos(_epe - yaw)))
+                        om_c = float(np.clip(2.0 * _eee, -0.6, 0.6))
+                prev_u = np.asarray([vx_c, om_c])
+                smppi.sync_applied(prev_u)
+            else:
+                _stuck_escape_until = None
+
         _lift_hold = (t - _last_lift_t
                       < float(os.environ.get('S10_LIFT_HOLD_T', '1.0')))
         if _max_lift > 0.05 or _lift_hold:
@@ -889,11 +940,7 @@ def main():
                    yaw_scale=1.0 - 0.6 * _max_lift,
                    ridge_dist=99.0,
                    lift_f_scale=(0.3 if _max_lift > 0.05 else 1.0),
-                   # 常驻 1.5cm 压轮：terr 轮下兜底（wheel_z-0.081）
-                   # 自指引用——高度控制永远判轮在目标高、轮实际悬空 2mm
-                   # 空转无牵引（round234 wp10 后卡死根因，探针实测 ncon=0）；
-                   # 1.5cm 下压保证贴地（增法向 ~4.5N/轮，无副作用）
-                   wheel_press=(0.1 if _max_lift > 0.05 else 0.015),
+                   wheel_press=(0.1 if _max_lift > 0.05 else 0.0),
                    # 摇振抑制/轮滑钳制只在 wp10 后开敞平顶启用（卡死区）；
                    # 窄脊段(wp7-8)与 wp8-9 段保持基线（round227/229 实测
                    # 全域启用改变平顶动力学、窄脊骑偏掉台沿）
