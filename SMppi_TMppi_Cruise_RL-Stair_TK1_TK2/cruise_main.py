@@ -857,6 +857,11 @@ def main():
                                roll=bs['roll'], pitch=bs['pitch'])
             print('[RL-DIAG] RL->CRUISE at pos=(%.2f,%.2f,%.2f) yaw=%.3f vx=%.2f'
                   % (body_pos[0], body_pos[1], body_pos[2], hy, hv), flush=True)
+        if stair.mode == 'STAIR' and stair.stair_first_heading is not None:
+            # 每次 STAIR 入口更新航向目标：此前只在首次入口设置，
+            # 两级台阶沿用平台的 1.65（差 0.13），策略爬完第一级
+            # 西转（round177 实测）
+            rl.set_heading(float(stair.stair_first_heading))
         if stair.mode == 'STAIR' and not _rl_diag_done:
             _lip_hold = False   # STAIR 接管，巡航抬轮锁存让位
             if _tk1_t0 is not None:
@@ -868,8 +873,6 @@ def main():
                 _tk1_t0 = None
                 _tk1_align_t0 = None
             _rl_diag_done = True
-            if stair.stair_first_heading is not None:
-                rl.set_heading(float(stair.stair_first_heading))
             # 六级楼梯给 RL 1.2m/s 速度目标：策略自由跑 2.85 时
             # 越顶退出 vx 门永远不满足、兜底交还 roll 动量带翻
             # （round139/148 平顶实测）；短台阶保持默认
