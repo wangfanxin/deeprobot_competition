@@ -595,6 +595,11 @@ def main():
             if used_turn:
                 omcap = min(float(os.environ.get('S10_TURN_OM_MAX', '3.0')),
                             latmax / max(abs(vx_c), 0.5))
+                # 平顶点转限速：om1.5 的原地转在 1.166 平顶激起
+                # roll 0.61+（round193 wp7 出点转向实测），
+                # 高台转用 0.6 慢转
+                if float(body_pos[2]) > 1.2:
+                    omcap = min(omcap, 0.6)
             else:
                 omcap = min(float(os.environ.get('S10_VMC_OM_CAP', '2.0')),
                             latmax / max(abs(vx_c), 0.5))
