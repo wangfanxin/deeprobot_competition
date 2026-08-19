@@ -220,6 +220,22 @@ def main():
                           % (_cte, pos2[0], pos2[1]), flush=True)
                 _cte_k = float(os.environ.get('S10_LINE_CTE_K', '1.0'))
                 _des = _seg_head - _cte_k * float(np.clip(_cte, -1.0, 1.0))
+                # 航段后方（投影 <0，如 wp11 推进后机器人仍在段起点北侧
+                # 3.9m）时直接瞄段起点 wp——此前只按段航向+cte 饱和
+                # 拉西，机器人斜切走廊撞上 x=-4.79 柱（round239 wp11→12
+                # 侧翻实测）；瞄起点先南下进入走廊再沿线西行
+                _proj_cur = float(np.dot(_rel, _seg)) / _segl
+                # 仅平顶启用：低台交还/弯道推进后的瞬时后方态瞄起点会
+                # 改变各段进近动力学（round240 实测 wp1-3 全面劣化+
+                # wp3→4 侧翻）。条件放宽到段首 1m 内且横向 >0.8：
+                # wp12 推进后机器人东偏 2.1m（proj=0.13），只按段航向
+                # +cte 饱和会斜切台角掉下南沿（round241 实测侧翻），
+                # 瞄起点先横移回台阶顶再下行
+                if ((_proj_cur < 0.0
+                     or (0.0 <= _proj_cur < 1.0 and abs(_cte) > 0.8))
+                        and float(body_pos[2]) > 1.2):
+                    _des = float(np.arctan2(line['start'][1] - pos2[1],
+                                            line['start'][0] - pos2[0]))
                 if dist_wp < 0.5:
                     _des = float(np.arctan2(line['end'][1] - pos2[1],
                                             line['end'][0] - pos2[0]))
@@ -720,6 +736,32 @@ def main():
             # cmd 级限 ±0.5
             if _drop_active:
                 om_c = float(np.clip(om_c, -0.5, 0.5))
+            # 平顶段首横向纠偏：推进后机器人东偏/西偏 >0.8m 且沿程
+            # <1m 时，cmd 级直瞄段起点 wp（guide 级被 MPPI 终点代价
+            # 压过——round242 瞄 wp12 的终点代价仍拉机器人西行撞
+            # x=-4.79 柱侧翻实测）；0.6 慢转 + 1.0 限速防侧倾
+            if (float(body_pos[2]) > 1.2 and line is not None
+                    and not _roll_gate and next_idx > 0
+                    and next_idx != 8):  # 窄脊段除外（round243 脊段
+                    # SEG0 介入改变骑行动力学侧翻）
+                _seg3 = (np.asarray(line['end'])
+                         - np.asarray(line['start']))
+                _segl3 = max(float(np.linalg.norm(_seg3)), 1e-9)
+                _u3 = _seg3 / _segl3
+                _rel3 = pos2 - np.asarray(line['start'])
+                _proj3 = float(np.dot(_rel3, _u3))
+                _cte3 = float(-_u3[1] * _rel3[0] + _u3[0] * _rel3[1])
+                if ((_proj3 < 0.0
+                     or (0.0 <= _proj3 < 1.0 and abs(_cte3) > 0.8))
+                        and abs(_cte3) > 0.4):
+                    _ths = float(np.arctan2(
+                        line['start'][1] - body_pos[1],
+                        line['start'][0] - body_pos[0]))
+                    _es = float(np.arctan2(np.sin(_ths - yaw),
+                                           np.cos(_ths - yaw)))
+                    om_c = float(np.clip(2.0 * _es, -0.6, 0.6))
+                    vx_c = min(float(vx_c), 1.0)
+                    _correction += 'SEG0'
             # 台沿锁存期：cmd 级强制正对路径航向（经 MPPI 的弱 guide
             # 被其它代价压过，wp5 实测贴沿航向漂 0.3rad 侧滑）
             # 平顶出口后 2s 内锁存转向也让位（round212 台顶锁存
@@ -754,12 +796,33 @@ def main():
                 _lip_rel_t = None
             # 大偏航纠偏：偏离航线 >1.5m 时 cmd 级直指当前 wp
             # （爬升后沿台壁西滑 90s 死锁实测——MPPI 弱 guide
-            # 压不过平台边腿阻抗扭振）
-            if (line is not None and abs(_cte) > 1.2
+            # 压不过平台边腿阻抗扭振）。平顶改瞄航线投影点：瞄 wp 本体
+            # 会直穿障碍墙（round222 wp10 弯道压墙实测），投影点=先
+            # 垂直回航线再沿线走；阈值放宽 0.8（round244 wp9→10 南漂
+            # 0.9m 卡进障碍口袋实测）
+            if (line is not None
+                    and abs(_cte) > (0.8 if float(body_pos[2]) > 1.2
+                                    else 1.2)
                     and stair.mode == 'CRUISE'
-                    and not _roll_gate):
-                _thc = float(np.arctan2(wp[next_idx, 1] - body_pos[1],
-                                          wp[next_idx, 0] - body_pos[0]))
+                    and not _roll_gate
+                    and (float(body_pos[2]) <= 1.2
+                         or next_idx != 8)):  # 窄脊段除外
+                if float(body_pos[2]) > 1.2:
+                    _segc = (np.asarray(line['end'])
+                             - np.asarray(line['start']))
+                    _seglc = max(float(np.linalg.norm(_segc)), 1e-9)
+                    _uc = _segc / _seglc
+                    _relc = pos2 - np.asarray(line['start'])
+                    _projc = float(np.clip(float(np.dot(_relc, _uc)),
+                                           0.0, _seglc))
+                    _ptc = (np.asarray(line['start'])
+                            + _uc * _projc)
+                    _thc = float(np.arctan2(_ptc[1] - body_pos[1],
+                                            _ptc[0] - body_pos[0]))
+                else:
+                    _thc = float(np.arctan2(
+                        wp[next_idx, 1] - body_pos[1],
+                        wp[next_idx, 0] - body_pos[0]))
                 _ecc = float(np.arctan2(np.sin(_thc - yaw),
                                          np.cos(_thc - yaw)))
                 om_c = float(np.clip(2.0 * _ecc, -1.2, 1.2))
