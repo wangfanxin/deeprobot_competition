@@ -106,6 +106,7 @@ def main():
     _stuck_chk_t = 0.0
     _stuck_chk_xy = None
     _stuck_escape_until = None
+    _terr_raw = np.zeros(4, dtype=np.float64)
     _edge_lift = np.zeros(4)
     _vyaw_f = 0.0
     _lip_hold = False
@@ -233,7 +234,9 @@ def main():
                 # 瞄起点先横移回台阶顶再下行
                 if ((_proj_cur < 0.0
                      or (0.0 <= _proj_cur < 1.0 and abs(_cte) > 0.8))
-                        and float(body_pos[2]) > 1.2):
+                        and float(body_pos[2]) > 1.2
+                        and float(np.linalg.norm(
+                            pos2 - np.asarray(line['start'])[:2])) > 2.0):
                     _des = float(np.arctan2(line['start'][1] - pos2[1],
                                             line['start'][0] - pos2[0]))
                 if dist_wp < 0.5:
@@ -645,15 +648,23 @@ def main():
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
             _rg_hi = float(os.environ.get('S10_ROLL_GATE_HI', '0.34'))
             _rg_lo = float(os.environ.get('S10_ROLL_GATE_LO', '0.28'))
+            # 1.235 窄脊地形（raw terr>1.2）提前门控 0.22/0.18：
+            # 脊沿磕碰激起 roll 冲量不可逆（round221 实测 -4.2rad/s），
+            # 0.34 晚触发卡死 0.7 侧翻（round246）；统一地形规则，
+            # 非航点特判——开敞平顶 raw≈1.165 不受影响
+            if float(np.median(_terr_raw)) > 1.2:
+                _rg_hi = min(_rg_hi, 0.22)
+                _rg_lo = min(_rg_lo, 0.18)
+                # 窄脊段限速 1.0：round249 脊末 4.1m/s 转弯激起
+                # roll -2.83 侧翻实测；1.0 慢骑磕碰幅度减半
+                vx_c = min(float(vx_c), 1.0)
             # wp7->8 是 1.235 窄脊骑行（脊宽~0.7m，两侧 1.166），
             # 轮沿磕碰激起 roll 冲量（round221 实测 -4.2rad/s 侧翻）；
             # 0.22 提前门控在冲量不可逆前爬行保位（round219 该段
             # 0.22 下 19.6s 通过）；开敞平顶巡航 roll 摆动 ±0.2 会
             # 误触 0.22 成 drive-crawl 极限环（round219 wp10 后 90s
             # 不进点），故只在窄脊段收紧
-            if float(body_pos[2]) > 1.0 and next_idx == 8:
-                _rg_hi = min(_rg_hi, 0.22)
-                _rg_lo = min(_rg_lo, 0.18)
+
             if abs(_body_roll) > _rg_hi:
                 if not _roll_gate:
                     _roll_gate_since = t
@@ -741,9 +752,8 @@ def main():
             # 压过——round242 瞄 wp12 的终点代价仍拉机器人西行撞
             # x=-4.79 柱侧翻实测）；0.6 慢转 + 1.0 限速防侧倾
             if (float(body_pos[2]) > 1.2 and line is not None
-                    and not _roll_gate and next_idx > 0
-                    and next_idx != 8):  # 窄脊段除外（round243 脊段
-                    # SEG0 介入改变骑行动力学侧翻）
+                    and stair.mode == 'CRUISE'
+                    and not _roll_gate and next_idx > 0):
                 _seg3 = (np.asarray(line['end'])
                          - np.asarray(line['start']))
                 _segl3 = max(float(np.linalg.norm(_seg3)), 1e-9)
@@ -753,7 +763,9 @@ def main():
                 _cte3 = float(-_u3[1] * _rel3[0] + _u3[0] * _rel3[1])
                 if ((_proj3 < 0.0
                      or (0.0 <= _proj3 < 1.0 and abs(_cte3) > 0.8))
-                        and abs(_cte3) > 0.4):
+                        and abs(_cte3) > 0.4
+                        and float(np.linalg.norm(
+                            pos2 - np.asarray(line['start'])[:2])) > 2.0):
                     _ths = float(np.arctan2(
                         line['start'][1] - body_pos[1],
                         line['start'][0] - body_pos[0]))
@@ -801,12 +813,11 @@ def main():
             # 垂直回航线再沿线走；阈值放宽 0.8（round244 wp9→10 南漂
             # 0.9m 卡进障碍口袋实测）
             if (line is not None
-                    and abs(_cte) > (0.8 if float(body_pos[2]) > 1.2
+                    and abs(_cte) > (0.6 if float(body_pos[2]) > 1.2
                                     else 1.2)
                     and stair.mode == 'CRUISE'
                     and not _roll_gate
-                    and (float(body_pos[2]) <= 1.2
-                         or next_idx != 8)):  # 窄脊段除外
+                    ):
                 if float(body_pos[2]) > 1.2:
                     _segc = (np.asarray(line['end'])
                              - np.asarray(line['start']))
@@ -826,7 +837,10 @@ def main():
                 _ecc = float(np.arctan2(np.sin(_thc - yaw),
                                          np.cos(_thc - yaw)))
                 om_c = float(np.clip(2.0 * _ecc, -1.2, 1.2))
-                vx_c = min(float(vx_c), 1.0)
+                # 限速只在大偏航（>1.2）时：0.8-1.2 的中等偏差只转向
+                # 不降速（round245 wp9→10 16.7s 实测——反复触 1.0 限速）
+                if abs(_cte) > 1.2:
+                    vx_c = min(float(vx_c), 1.0)
             # TK 阶段（TK1 对准 / TK2 转出）直接执行对准转向：
             # MPPI 的 om 上限被 VMC_OM_CAP=1.0 压住，<1s 预算不够；
             # 低 vx 时 car_omega_limit≈3.0，TK 专用上限 2.0 安全。
@@ -994,11 +1008,7 @@ def main():
                    ridge_dist=99.0,
                    lift_f_scale=(0.3 if _max_lift > 0.05 else 1.0),
                    wheel_press=(0.1 if _max_lift > 0.05 else 0.0),
-                   # 摇振抑制/轮滑钳制只在 wp10 后开敞平顶启用（卡死区）；
-                   # 窄脊段(wp7-8)与 wp8-9 段保持基线（round227/229 实测
-                   # 全域启用改变平顶动力学、窄脊骑偏掉台沿）
-                   rock_kill=(1.0 if (float(body_pos[2]) > 1.2
-                                       and next_idx >= 10) else 0.0))
+                   rock_kill=(1.0 if float(body_pos[2]) > 1.2 else 0.0))
 
         # PRETRANS：楼梯前按 riser 距离进入 RL 高站姿；楼梯后按 handback 距离退出
         if os.environ.get('S10_PRETRANS', '1') == '1' and stair.mode != 'STAIR':

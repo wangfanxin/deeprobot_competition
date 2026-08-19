@@ -1295,16 +1295,8 @@ class CarVMC:
             # torque, touchdown yaw impact flips (wp1 om -4.63 measured).
             _gf_w = float(getattr(self, "_ground_f", 1.0))
             _gf_w = float(os.environ.get("S10_CAR_WHEEL_GF", str(_gf_w)))
-            # 轮滑额外阻尼：空转轮与车身解耦后轮速环固有频率
-            # ~2.5Hz 欠阻尼（wheel_d=0.02），轮速 ±25rad/s 极限环
-            # 自持（round223/233 wp10 后平顶实测）；滑差 >0.8 时
-            # 临时加 0.3 阻尼抑制振荡，正常滚动不受影响
-            _wd_eff = self.wheel_d
-            if (_slip > 0.8
-                    and float(cmd.get("rock_kill", 0.0)) > 0.0):
-                _wd_eff = self.wheel_d + 0.30
             t_wheel = ((-(self.wheel_k * (v_ref - v_wheel))
-                        - _wd_eff * wq) * _gf_w + t_yaw)
+                        - self.wheel_d * wq) * _gf_w + t_yaw)
             # v743: 直线全力/弯道按 err 收敛（提速）——旧版全程 μN·r≈3.4Nm
             # 直线加速到 vref=4 需 16Nm 被压死（各段实际≈vref 一半，实测
             # wp5→6 vlim3.0 实际1.34）。err 小（直线）给满轮矩，err 大
@@ -1328,13 +1320,6 @@ class CarVMC:
             _wt = float(np.clip(
                 _w_f * _wt_straight + (1.0 - _w_f) * _wt_curve,
                 -13.5, 13.5))
-            # 平顶轮滑钳制：轮速超车身 0.8m/s 时把轮矩收到摩擦锥
-            # μN·r≈3.4Nm——空转轮 + 13.5Nm 饱和 = 轮速 bang-bang
-            # ±25rad/s 自持摇振、车身零位移（round223 wp10 后平顶
-            # 实测根因）；正常滚动滑差 <0.8 不受影响
-            if (_slip > 0.8
-                    and float(cmd.get("rock_kill", 0.0)) > 0.0):
-                _wt = min(_wt, _mu_w * _fz_load * self.fk.r)
             tau[WHEEL_Q_IDX[leg]] = float(np.clip(t_wheel, -_wt, _wt))
         tau[LEG_CTRL_IDX] = np.clip(tau[LEG_CTRL_IDX], -48, 48)
         return tau
