@@ -152,6 +152,18 @@ def main():
 
             if os.environ.get('S10_RL_ELEV', '0') == '1':
                 rxy, rtops = perc.riser_table(stair)
+                if (rxy is not None and len(rxy) == 1
+                        and stair.drop_ahead_dist is not None):
+                    # 单级台面：把远侧跌落沿补成第二级 riser——
+                    # RL 训练分布是连续台阶，单 riser 观测外分布
+                    # 起跳摔倒（T8 实测），补第二级后正常爬升
+                    _s2 = float(stair.s_cur) + float(stair.drop_ahead_dist)
+                    _k2 = int(np.searchsorted(stair.path_cum, _s2,
+                                                side='right') - 1)
+                    _k2 = min(max(_k2, 0), len(stair.path_pts) - 1)
+                    _xy2 = np.asarray(stair.path_pts[_k2][:2])
+                    rxy = np.vstack([rxy, _xy2])
+                    rtops = np.append(rtops, rtops[0])
                 if rxy is not None and len(rxy) >= 2:
                     h = stair.stair_first_heading if stair.mode == 'STAIR' else None
                     if h is None:
@@ -548,6 +560,12 @@ def main():
             if 0.05 <= _rise_ahead <= 0.25:
                 _w = float(os.environ.get('S10_VMC_TERRAIN_AHEAD_W', '0.6'))
                 terr = (1.0 - _w) * terr + _w * _ahead
+        # v595 后轮登台：前轴骑上台面后，把后轴轮下地形参考抬到
+        # 台面高——阻抗把后轮拉起越过立面（后轮对垂直面只推不升，
+        # 实测卡死；必须抬参考高度）
+        if (float(np.max(terr[0:2])) - float(np.max(terr[2:4])) > 0.05
+                and stair.mode == 'CRUISE'):
+            terr[2:4] = np.maximum(terr[2:4], float(np.max(terr[0:2])))
         roll_tar = float(np.clip(
             -float(os.environ.get('S10_CAR_ROLL_K', '0.06')) * om_c
             * abs(vx_c),
@@ -567,8 +585,9 @@ def main():
             _front_on_step = (float(np.max(terr[0:2]))
                               > float(np.max(terr[2:4])) + 0.05)
             for _li in range(4):
-                # 后轴只有在前轴骑上台面后才允许抬
-                if _li >= 2 and not _front_on_step:
+                # 后轴不抬轮：摆腿只推车身不上轮，
+                # 后轮登台交给 v595 地形参考抬升
+                if _li >= 2:
                     continue
                 if _terr_raw[_li] <= 0.01:
                     continue  # 无效地形（fallback 0）不抬轮
@@ -633,6 +652,7 @@ def main():
             print('[RL-DIAG] RL->CRUISE at pos=(%.2f,%.2f,%.2f) yaw=%.3f vx=%.2f'
                   % (body_pos[0], body_pos[1], body_pos[2], hy, hv), flush=True)
         if stair.mode == 'STAIR' and not _rl_diag_done:
+            _lip_hold = False   # STAIR 接管，巡航抬轮锁存让位
             if _tk1_t0 is not None:
                 print('[TK1] 减速+对准 %.2fs / 对准 %.2fs (预算 2.0/1.0s)'
                       % (t - _tk1_t0,
