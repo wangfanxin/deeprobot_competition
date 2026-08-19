@@ -107,6 +107,7 @@ def main():
     _lip_hold = False
     _lip_g0 = 0.0
     _lip_grind_since = None
+    _lip_xy = None
     _last_lift = np.zeros(4)
     _last_lift_t = -1e9
 
@@ -289,6 +290,7 @@ def main():
                     >= 0.08):
                 if not _lip_hold:
                     _lip_g0 = float(np.min(terr))
+                    _lip_xy = np.asarray(pos2, dtype=np.float64).copy()
                 _lip_hold = True
             if (os.environ.get('S10_LIP_LATCH', '1') == '1'
                     and next_idx >= 4
@@ -305,7 +307,9 @@ def main():
                 # 骑坎滞留是台沿扭振侧滑的根源：前轮一上台就给
                 # 1.2m/s 冲量把后轮拉过立面，骑坎时间压到 1-2s
                 _lv = float(os.environ.get('S10_STAIR_APPROACH_VX', '0.6'))
-                if (float(np.max(terr[0:2])) - float(np.min(terr)) >= 0.04):
+                if (float(np.max(terr[0:2])) - float(np.min(terr)) >= 0.04
+                        and (stair.drop_ahead_dist is None
+                             or stair.drop_ahead_dist > 1.0)):
                     _lv = float(os.environ.get('S10_LIP_BURST_VX', '1.2'))
                 vx = _lv
                 v_ref = min(v_ref, vx)   # MPPI 的上限是 v_ref，必须同步
@@ -327,11 +331,20 @@ def main():
                     # 抬轮与推力冲突（抬轮减轮压致打滑），锁存期不抬，
                     # 靠 1.2m/s 冲量 + 轮半径滚上 0.064 立面
                     _edge_lift[0:2] = 0.0
-                if float(np.min(terr)) >= _lip_g0 + 0.13:
+                # 距离制释放：锁存后前进 >= 台面宽(2.5m) 或已贴近 wp 才放
+                # （高度制被地形噪声 0.57 抖动提前释放，3.7m/s 冲对侧沿）
+                _rel_d = 1e9
+                if _lip_xy is not None:
+                    _rel_d = float(np.linalg.norm(
+                        np.asarray(pos2) - _lip_xy))
+                if (_rel_d >= float(os.environ.get(
+                        'S10_LIP_RELEASE_DIST', '2.5'))
+                        or dist_wp <= 1.0):
                     if os.environ.get('S10_LIP_DEBUG', '0') == '1':
-                        print('[LATCH] release t=%.2f pos=(%.2f,%.2f)'
-                              % (t, pos2[0], pos2[1]), flush=True)
+                        print('[LATCH] release t=%.2f pos=(%.2f,%.2f) d=%.2f'
+                              % (t, pos2[0], pos2[1], _rel_d), flush=True)
                     _lip_hold = False
+                    _lip_xy = None
                     _edge_lift[0:2] = 0.0
                     _lip_grind_since = None
             if stair.decel_request > 0.0:
@@ -397,6 +410,7 @@ def main():
                             and _rise_edge >= 0.10):
                         if not _lip_hold:
                             _lip_g0 = float(np.min(terr))
+                            _lip_xy = np.asarray(pos2, dtype=np.float64).copy()
                         _lip_hold = True
                     # 前轮抬轮前馈：仅 >=10cm 的台阶（小台阶
                     # 抬轮会失牵引，wp0-1 坡底实测 12s 卡死）
