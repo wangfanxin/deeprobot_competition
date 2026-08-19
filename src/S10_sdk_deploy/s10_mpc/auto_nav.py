@@ -1078,7 +1078,7 @@ class AutoNavFollower:
                 return True
         return False
 
-    def _elev_rises_on_path(self, robot_xy, yaw, local_map, lookahead=None, start=0.1):
+    def _elev_rises_on_path(self, robot_xy, yaw, local_map, lookahead=None, start=0.1, s_clip=None):
         """Perception-only: return the absolute arc-lengths (world s) of on-path
         staircase riser edges detected AHEAD of the robot by the lidar elevation map."""
         if local_map is None:
@@ -1103,6 +1103,11 @@ class AutoNavFollower:
         for ds in np.arange(start, lookahead + 1e-3, 0.1):
             sp = s_cur + ds
             if sp > self.path_total - 1e-3:
+                break
+            # 航点裁剪（用户指示）：扫描不超过当前目标航点，
+            # 航点之后的台阶/落差不参与当前段判断（wp2→3 段
+            # 平台台阶提前 4.8m 触发 TK1 干扰转向实测）
+            if s_clip is not None and sp > s_clip:
                 break
             k = int(np.searchsorted(self.path_cum, sp, side="right") - 1)
             k = min(max(k, 0), len(self.path_pts) - 2)

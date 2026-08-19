@@ -292,7 +292,8 @@ def main():
                     and dist_wp <= float(os.environ.get(
                         'S10_TK1_WP_MAX', '2.5'))
                     and abs(_cte) <= float(os.environ.get(
-                        'S10_TK1_CTE_MAX', '0.8'))):
+                        'S10_TK1_CTE_MAX', '0.8'))
+):
                 # 用户流：SMppi 快到 wp -> TMppi 转向 -> 前进一点点后
                 # TK1。所以 TK1 只在当前 wp 2.5m 内（转完向之后）
                 # 才对准，不再提前 4m 把直线段蛇形爬行。
@@ -479,12 +480,35 @@ def main():
                              - 0.3)
                 vx = vx * (1.0 - stair.decel_request) + dv * stair.decel_request
                 v_ref = min(v_ref, vx)
-            # 中窗口缓行（仅高台 z>1.0 的下行）：0.5-1.5m 的六级下行前
+            # 下沿保护卡死释放（round286 实测）：wp13→14 高程图幻影沿
+            # （0.42 假 drop）方向不随航向变化，DDE/DROP 提前爬行后
+            # 机器人在幻影沿上原地自旋 120s（s 投影不前进 → 幻影不消
+            # 失 → 保护永不释放）。保护连续 >4s 且 s 前进 <0.8m 时
+            # 强制放行 2s 冲过（真实下沿跨骑 ~2s 内 s 前进，不误放）。
+            _drop_rel = False
+            if '_dropact_t0' not in globals():
+                globals()['_dropact_t0'] = None
+                globals()['_dropact_s0'] = 0.0
+                globals()['_droprel_t0'] = -1e9
+            if stair.drop_ahead_dist is not None:
+                if globals()['_dropact_t0'] is None:
+                    globals()['_dropact_t0'] = t
+                    globals()['_dropact_s0'] = float(stair.s_cur)
+                if (t - globals()['_dropact_t0'] > 4.0
+                        and float(stair.s_cur)
+                        - globals()['_dropact_s0'] < 0.8):
+                    globals()['_droprel_t0'] = t
+            else:
+                globals()['_dropact_t0'] = None
+            if t - globals()['_droprel_t0'] < 2.0:
+                _drop_rel = True
+            # 中窗口缓行（仅高台 z>1.0 的下行）：0.5-1.5m 的六级下行前            # 中窗口缓行（仅高台 z>1.0 的下行）：0.5-1.5m 的六级下行前
             # 限 1.0——round267 实测 dA 0.7-1.2 时 0.5 窗不触发、
             # 1.8-2.75m/s 冲阶侧翻；低台（平台爬升 z<1.0）不触发
             # （round268-270 平台爬升侧翻回退——平台区 drops 检测同样
             # 多级，但 z 0.77 与高台下行的 z 1.4+ 可区分）
-            if (stair.drop_ahead_dist is not None
+            if (not _drop_rel
+                    and stair.drop_ahead_dist is not None
                     and _drop_s_ok
                     and float(body_pos[2]) > 1.3
                     and stair.drop_ahead_dist < 1.5
@@ -492,6 +516,43 @@ def main():
                 vx = min(vx, 1.0)
                 v_ref = min(v_ref, vx)
                 _correction += 'DROPW'
+            # 深沿提前缓行 DDE（低台 z≤1.3）：前方 1.5m 内出现 ≥0.25 深
+            # 跌落沿时提前限 0.6——wp14→15 缓坡底 0.38 深沿只在 0.4m 处
+            # 才进 0.5 爬行窗，1.0m/s 冲沿栽头侧翻（round275/285 实测）；
+            # 0.125 平台沿/六级台阶不触发（常规 DROP 处理）
+            if (not _drop_rel
+                    and stair.drop_ahead_dist is not None
+                    and _drop_s_ok
+                    and float(body_pos[2]) <= 1.3
+                    and stair.drop_ahead_dist < 1.5):
+                _dds3 = getattr(stair.fol, '_elev_drop_ds', None) or []
+                _dds3f = [(float(d), float(dh)) for d, dh in _dds3
+                          if float(d) <= stair.drop_ahead_dist + 0.5]
+                _dmax3 = max((dh for d, dh in _dds3f), default=0.0)
+                if _dmax3 >= 0.25:
+                    vx = min(vx, 0.6)
+                    v_ref = min(v_ref, vx)
+                    _correction += 'DDE'
+            # 低台大落差缓行：z≤1.3、drop 2m 内、累计落差 ≥0.3 时限 1.2——
+            # wp14→15 缓坡（落差 0.375）3.9m/s 冲底坡上点转侧翻
+            # （round275 实测，drop 检测 dA 1.8 时 0.5 窗不触发）；
+            # 单级平台沿（0.125）不触发
+            if (stair.drop_ahead_dist is not None
+                    and _drop_s_ok
+                    and float(body_pos[2]) <= 1.3
+                    and stair.drop_ahead_dist < 2.0
+                    and not _drop_straddle):
+                _dds2 = getattr(stair.fol, '_elev_drop_ds', None) or []
+                _dds2f = [(float(d), float(dh)) for d, dh in _dds2
+                          if float(d) <= stair.drop_ahead_dist + 0.5]
+                _dsum2 = sum(dh for d, dh in _dds2f)
+                _dmax2 = max((dh for d, dh in _dds2f), default=0.0)
+                # 缓坡特征：多个小落差（每级 ≤0.08）累计 ≥0.3；
+                # 平台沿的单级 0.12 排除（round279/280 平台误触侧翻）
+                if _dsum2 >= 0.3 and _dmax2 <= 0.08:
+                    vx = min(vx, 1.2)
+                    v_ref = min(v_ref, vx)
+                    _correction += 'DNW'
             # 下行落差保护：前方检测到 >=0.08m 跌落沿时强制低速直行，
             # 避免高速下台栽头（下行不交 RL，先慢速爬行兜底）。
             # 轮下兜底：s 投影越过跌落后扫描变空（round93 台沿前
@@ -513,10 +574,10 @@ def main():
             # 若回归再收紧
             _drop_s_ok = (float(body_pos[2]) <= 1.5)
             _drop_active = False
-            if ((stair.drop_ahead_dist is not None
+            if (not _drop_rel and ((stair.drop_ahead_dist is not None
                     and _drop_s_ok
                     and stair.drop_ahead_dist < _drop_om_w)
-                    or _drop_straddle):
+                    or _drop_straddle)):
                 _drop_active = True
                 if ((stair.drop_ahead_dist is not None
                         and _drop_s_ok
@@ -639,7 +700,7 @@ def main():
             used_turn, vx_c, om_c = tmppi.try_plan(
                 pos2, yaw, float(np.linalg.norm(d.cvel[1][0:3])),
                 wp[next_idx], wp_next)
-            if used_turn:
+            if used_turn and stair.stair_ahead_dist is None:
                 _planner = 'TMppi'
             else:
                 _planner = 'SMppi'
@@ -757,8 +818,10 @@ def main():
                 vx_c = min(float(vx_c), 0.8)
                 omcap = min(omcap, 0.3)
             elif float(body_pos[2]) > 1.2:
-                vx_c = min(float(vx_c), 1.8)
-                omcap = min(omcap, 0.6)
+                vx_c = min(float(vx_c), float(os.environ.get(
+                    'S10_PLAT_VX', '1.8')))
+                omcap = min(omcap, float(os.environ.get(
+                    'S10_PLAT_OM', '0.6')))
             om_c = float(np.clip(om_c, -omcap, omcap))
             # 下沿/跨骑期 MPPI 的航向代价仍会给大 om（round142 两级
             # 台阶顶沿 om0.98 转向 roll-1.12 侧翻实测）：DROP 期
@@ -1154,11 +1217,13 @@ def main():
                      None if stair.stair_ahead_dist is None
                      else round(stair.stair_ahead_dist, 2),
                      np.round(terr, 2)),
-                  ' dA=%s dS=%s'
+                  ' dA=%s dS=%s dD=%s'
                   % (None if stair.drop_ahead_dist is None
                      else round(stair.drop_ahead_dist, 2),
                      [round(float(x), 1) for x in
-                      getattr(stair.fol, '_elev_drops', [])][:3]),
+                      getattr(stair.fol, '_elev_drops', [])][:3],
+                     [round(float(dh), 2) for d, dh in
+                      (getattr(stair.fol, '_elev_drop_ds', None) or [])][:3]),
                   flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[T] *** 侧翻/摔倒 ***', flush=True)
