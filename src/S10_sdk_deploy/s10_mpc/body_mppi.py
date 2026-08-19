@@ -231,6 +231,12 @@ class BodyMPPI:
         # 限幅（vx 变化 ≤ a_max·dt）。起步指令确定性爬升，突破静摩擦
         # 正常起步；不会像 v826a 用实测速度那样死锁，也不会像无钳制
         # 那样 0→6 阶跃打滑自旋侧翻。
+        import os as _mdbg_os
+        if _mdbg_os.environ.get('S10_MPPI_DEBUG') and guide_vx - u_new[0] > 1.0:
+            print(f'[MPPIDBG] vx={s0[3]:.2f} vy={s0[4]:.2f} yaw={s0[2]:.2f} '
+                  f'guide={guide_vx:.2f} u_new={u_new[0]:.2f} '
+                  f'om={u_new[1]:.2f} cmin={cmin:.1f} cm={cm:.1f}',
+                  flush=True)
         _vx_out = float(np.clip(
             u_new[0],
             self._out_prev[0] - self.a_max * self.ctrl_dt,

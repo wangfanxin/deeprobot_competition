@@ -122,7 +122,10 @@ def main():
         wheel_xyz = np.asarray([d.xpos[WHEEL_BODY[i]] for i in range(4)])
         wheel_vel = np.asarray([d.cvel[WHEEL_BODY[i]][0:3] for i in range(4)])
         _Rbm = np.asarray(d.xmat[1], dtype=np.float64).reshape(3, 3)
-        body_vel = _Rbm.T @ np.asarray(d.cvel[1][3:6], dtype=np.float64)
+        # 线性速度（机体系）：cvel[3:6] 是角速度！此前把 roll 率
+        # 当车体速度喂给 TK1 门/M PPI 状态（round164 刹车点 vx=-0.4
+        # 实为角速度投影，MPPI 状态系统性错误）
+        body_vel = _Rbm.T @ np.asarray(d.cvel[1][0:3], dtype=np.float64)
 
         if int(t * 200) % _nav_period == 0:
             _n_nav += 1
@@ -556,18 +559,15 @@ def main():
             # 恒≈0，航向过 ±90° 时变负，规划器把前向速度看成
             # 0/负值，坡顶/凸包处计划莫名刹到 1.1（round157 实测
             # vref=4.0 但 cmd=1.12）
-            _cvs = float(np.cos(yaw))
-            _svs = float(np.sin(yaw))
-            _vx_f = float(body_vel[0] * _cvs + body_vel[1] * _svs)
-            _vy_f = float(-body_vel[0] * _svs + body_vel[1] * _cvs)
             state = np.asarray([pos2[0], pos2[1], yaw,
-                                _vx_f, _vy_f, qvel[5]])
+                                float(body_vel[0]), float(body_vel[1]),
+                                qvel[5]])
             # 巡航规划器二选一：
             # TMppi：已在当前 wp 0.2m 内、实际速度<0.2、且下一段方向误差>10°
             # SMppi：其余所有 CRUISE 时间
             wp_next = wp[next_idx + 1] if next_idx + 1 < len(wp) else None
             used_turn, vx_c, om_c = tmppi.try_plan(
-                pos2, yaw, float(np.linalg.norm(d.cvel[1][3:6])),
+                pos2, yaw, float(np.linalg.norm(d.cvel[1][0:3])),
                 wp[next_idx], wp_next)
             if used_turn:
                 _planner = 'TMppi'
@@ -912,7 +912,7 @@ def main():
                 2.0 * (d.xquat[1][0] * d.xquat[1][1]
                        + d.xquat[1][2] * d.xquat[1][3]),
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
-            spd = float(np.hypot(d.cvel[1][3], d.cvel[1][4]))
+            spd = float(np.hypot(d.cvel[1][0], d.cvel[1][1]))
             print('[T] t=%.0f wp=%d pos=(%.1f,%.1f,%.2f) yaw=%.2f '
                   'spd=%.2f roll=%.2f cmd=(%.2f,%.2f) mode=%s corr=%s plan=%s '
                   'vref=%.2f dec=%.2f ad=%s '
@@ -936,7 +936,7 @@ def main():
         if os.environ.get('S10_TRAJ_DENSE', '0') == '1':
             traj.append([t, body_pos[0], body_pos[1], body_pos[2], yaw,
                          float(next_idx),
-                         float(np.hypot(d.cvel[1][3], d.cvel[1][4])),
+                         float(np.hypot(d.cvel[1][0], d.cvel[1][1])),
                          1.0 if stair.mode == 'STAIR' else 0.0])
 
         # 航点推进：只按原始折线水平距离；到点判（未越过）要求
