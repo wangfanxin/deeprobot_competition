@@ -896,7 +896,9 @@ class AutoNavFollower:
                             and body_vx <= float(os.environ.get(
                                 'S10_STAIR_EXIT_VX', '1.6'))
                             and (pitch is None
-                                 or abs(float(pitch)) <= 0.15))
+                                 or abs(float(pitch)) <= 0.15)
+                            and (roll is None
+                                 or abs(float(roll)) <= 0.25))
             if not _exit_ok and self._stair_first_riser_xy is not None:
                 _fwd = np.array([np.cos(self._stair_first_heading),
                                  np.sin(self._stair_first_heading)])
@@ -913,9 +915,9 @@ class AutoNavFollower:
                     # 2m）——固定 2.5m 在六级楼梯上只到第 3-4 级，
                     # wheel-clear 因 vx>1.6 未触发时中途交还，
                     # 2.03m/s 跨步姿态侧翻（round124 实测）
-                    _rs = list(getattr(self, 'stair_rises_s', []) or [])
-                    if len(_rs) >= 2:
-                        _min_climb = (float(_rs[-1]) - float(_rs[0])) + 2.0
+                    _span = float(getattr(self, '_stair_riser_span', 0.0))
+                    if _span > 0.0:
+                        _min_climb = _span + 2.0
                 # 兜底退出姿态收敛：round138 的失败是 pitch 公式
                 # 错误（已修），round139/148 六级楼梯 2.85m/s 跨步
                 # roll0.55 交还、平顶 roll 门锁死后侧翻实测——
@@ -1026,6 +1028,8 @@ class AutoNavFollower:
                 self.mode = "STAIR"
                 self._stair_enter_s = float(getattr(self, "_s_cur", 0.0))
                 self._stair_nrisers = len(self.stair_rises_s)
+                self._stair_riser_span = (float(self.stair_rises_s[-1])
+                                           - float(self.stair_rises_s[0]))
                 self._stair_first_riser_xy = self._path_point_at(_first_s)[:2]
                 self._stair_first_heading = _first_head
                 self.stair_rises_tops = list(getattr(self,

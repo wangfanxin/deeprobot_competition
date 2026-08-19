@@ -45,6 +45,13 @@ class LidarPerception:
         h = self.lterr.height(x, y)
         if h > body_z + 1.0:
             return float(fallback_h)
+        # 贴身高架伪影：wp7 后 1.166m 平顶 lidar 读数 1.29（比
+        # 真实台面高 0.12，疑似楼梯壁面回波），腿高目标偏高导致
+        # yaw 响应弱、平顶西漂（round154 实测）；地形不可能贴到
+        # 机身 0.10 以内，用运动学接触兜底覆盖
+        if (h > body_z - 0.10 and fallback_h is not None
+                and float(fallback_h) < h):
+            return float(fallback_h)
         return h
 
     def local_tile(self, body_xy, t):

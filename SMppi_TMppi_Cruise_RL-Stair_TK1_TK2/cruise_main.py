@@ -551,8 +551,17 @@ def main():
             else:
                 ref_path = np.asarray([[pos2[0], pos2[1], yaw]])
 
+            # MPPI 状态用机体前向/侧向速度：此前直接喂世界系
+            # body_vel[0]（x 分量）——wp0-1 航向 1.57 时世界 x 速度
+            # 恒≈0，航向过 ±90° 时变负，规划器把前向速度看成
+            # 0/负值，坡顶/凸包处计划莫名刹到 1.1（round157 实测
+            # vref=4.0 但 cmd=1.12）
+            _cvs = float(np.cos(yaw))
+            _svs = float(np.sin(yaw))
+            _vx_f = float(body_vel[0] * _cvs + body_vel[1] * _svs)
+            _vy_f = float(-body_vel[0] * _svs + body_vel[1] * _cvs)
             state = np.asarray([pos2[0], pos2[1], yaw,
-                                body_vel[0], body_vel[1], qvel[5]])
+                                _vx_f, _vy_f, qvel[5]])
             # 巡航规划器二选一：
             # TMppi：已在当前 wp 0.2m 内、实际速度<0.2、且下一段方向误差>10°
             # SMppi：其余所有 CRUISE 时间
@@ -906,10 +915,14 @@ def main():
             spd = float(np.hypot(d.cvel[1][3], d.cvel[1][4]))
             print('[T] t=%.0f wp=%d pos=(%.1f,%.1f,%.2f) yaw=%.2f '
                   'spd=%.2f roll=%.2f cmd=(%.2f,%.2f) mode=%s corr=%s plan=%s '
+                  'vref=%.2f dec=%.2f ad=%s '
                   'terr=%s'
                   % (t, next_idx, body_pos[0], body_pos[1], body_pos[2],
                      yaw, spd, roll, vx_c, om_c, stair.mode,
                      (_correction or 'NONE'), _planner,
+                     v_ref, round(stair.decel_request, 2),
+                     None if stair.stair_ahead_dist is None
+                     else round(stair.stair_ahead_dist, 2),
                      np.round(terr, 2)), flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[T] *** 侧翻/摔倒 ***', flush=True)
