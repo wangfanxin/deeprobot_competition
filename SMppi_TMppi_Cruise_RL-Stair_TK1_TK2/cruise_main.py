@@ -217,10 +217,13 @@ def main():
             if (os.environ.get('S10_TK1', '0') == '1'
                     and os.environ.get('S10_RL_ELEV', '0') == '1'
                     and stair.mode == 'CRUISE'
+                    and dist_wp <= float(os.environ.get(
+                        'S10_TK1_WP_MAX', '2.5'))
                     and abs(_cte) <= float(os.environ.get(
                         'S10_TK1_CTE_MAX', '0.8'))):
-                # TK1 对准对单级台阶同样需要：无对准时 wp3-4 骑坎
-                # 磨不上去（round71 实测）；STAIR 已限多级，不冲突
+                # 用户流：SMppi 快到 wp -> TMppi 转向 -> 前进一点点后
+                # TK1。所以 TK1 只在当前 wp 2.5m 内（转完向之后）
+                # 才对准，不再提前 4m 把直线段蛇形爬行。
                 th = stair.climb_heading
                 if th is not None:
                     if _tk1_t0 is None:
@@ -296,7 +299,7 @@ def main():
                     and next_idx >= 4
                     and stair.decel_request > 0.5
                     and stair.stair_ahead_dist is not None
-                    and stair.stair_ahead_dist <= 1.5):
+                    and stair.stair_ahead_dist <= 1.2):
                 if not _lip_hold:
                     _lip_g0 = float(np.min(terr))
                     if os.environ.get('S10_LIP_DEBUG', '0') == '1':
@@ -398,7 +401,7 @@ def main():
                 # 台阶判别：1.5m 与 0.5m 探针高差 >=0.08（坡面 1m
                 # 升 0.07、坡顶 0.03 均排除，wp0-1 坡顶误触发实测）
                 _step_rise = float(_hff - _h05)
-                if (0.05 <= _rise_edge <= 0.25 and _flat_top
+                if (0.08 <= _rise_edge <= 0.25 and _flat_top
                         and _step_rise >= 0.08):
                     vx = min(vx, float(os.environ.get('S10_EDGE_VX', '0.6')))
                     v_ref = min(v_ref, vx)
