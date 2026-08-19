@@ -313,7 +313,7 @@ def main():
                     and stair.mode == 'CRUISE'
                     and (_post_stair_t is None
                          or t - _post_stair_t > 2.0
-                         or float(body_pos[2]) <= 1.0)):
+                         or float(body_pos[2]) <= 1.15)):
                 _correction += 'TK2'
                 th2 = float(np.arctan2(wp[_ahead, 1] - body_pos[1],
                                        wp[_ahead, 0] - body_pos[0]))
@@ -623,15 +623,12 @@ def main():
                 2.0 * (d.xquat[1][0] * d.xquat[1][1]
                        + d.xquat[1][2] * d.xquat[1][3]),
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
-            # 平顶门控提前：roll>0.5 后腿力 counter-roll 耦合趋零
-            # （round205/209 实测 0.66 卡 5-18s 扶不正），0.22 提前
-            # 介入时腿力扶正仍有效；低台保留 0.34（正常弯道 roll
-            # 摆动 0.2-0.3 不误触）
+            # 平顶门控 0.22 实验回退 0.34：交还期转向让位后（round219
+            # 交还 roll ±0.31 内、无卡死），平顶正常巡航 roll 摆动
+            # ±0.2 被 0.22 误触，wp10 后 drive-crawl 极限环 90s 不进
+            # 点（round219 实测）；统一 0.34/0.28
             _rg_hi = float(os.environ.get('S10_ROLL_GATE_HI', '0.34'))
             _rg_lo = float(os.environ.get('S10_ROLL_GATE_LO', '0.28'))
-            if float(body_pos[2]) > 1.0:
-                _rg_hi = min(_rg_hi, 0.22)
-                _rg_lo = min(_rg_lo, 0.18)
             if abs(_body_roll) > _rg_hi:
                 if not _roll_gate:
                     _roll_gate_since = t
@@ -721,7 +718,7 @@ def main():
             if (_lip_hold and not _roll_gate
                     and (_post_stair_t is None
                          or t - _post_stair_t > 2.0
-                         or float(body_pos[2]) <= 1.0)):
+                         or float(body_pos[2]) <= 1.15)):
                 # 锁存期瞄当前 wp（不是航线航向）：爬升中若漂离航线，
                 # 朝 wp 的方向自然把机器人拉回线上（round51 西漂 3.6m
                 # 掉西沿实测）
@@ -737,7 +734,7 @@ def main():
                     and t - _lip_rel_t < 1.0
                     and (_post_stair_t is None
                          or t - _post_stair_t > 2.0
-                         or float(body_pos[2]) <= 1.0)):
+                         or float(body_pos[2]) <= 1.15)):
                 _thr = float(np.arctan2(wp[next_idx, 1] - body_pos[1],
                                           wp[next_idx, 0] - body_pos[0]))
                 _err = float(np.arctan2(np.sin(_thr - yaw),
@@ -1043,15 +1040,13 @@ def main():
             # 平顶判点半径放大：1.166 平顶机器人东偏 1.2m 绕圈
             # 20s+（0.5m 判点圆够不着、s 投影差 1.9m，round197/198
             # 实测），z>1.2 用 1.5m 判点圆
-            _adv_r = 1.5 if float(body_pos[2]) > 1.2 else None
+            _adv_r = 2.5 if float(body_pos[2]) > 1.2 else None
             _arr = nav.reached(next_idx, d.xpos[1][:2], radius=_adv_r)
-            # 弧长兜底：RL 斜向爬台后沿路径投影已越过当前 wp，
-            # 但直线段投影不前进（exit 点投影 4.56<len+0.8），
-            # next_idx 卡在身后 wp → MPPI 沿旧段西拉侧翻（round96）
-            if not _arr and next_idx > 0:
-                _wsc = stair.wp_s(next_idx)
-                if _wsc is not None and stair.s_cur > _wsc + 0.3:
-                    _arr = True
+            # s 弧长兜底删除：路径跟随器 s_cur 会跑飞（round218 实测
+            # s_cur=96.6 而机器人真实路径位置 60——绕圈爬行期间 s 持续
+            # 积分），配合 4m 门仍把 wp8/wp9 在 4m 外推掉；现代代码
+            # 楼梯出口都在 wp 2.5m 内（六梯顶 wp7 出口 0.6m），
+            # 判点半径覆盖即可，不再需要弧长兜底
             _align_ok = True
             if _arr and next_idx > 0 and next_idx + 1 < len(wp):
                 _segv0 = wp[next_idx, :2] - wp[next_idx - 1, :2]
@@ -1074,12 +1069,26 @@ def main():
             # 先推点让机器人在平顶上边开边转
             if _post_stair_xy is not None:
                 _align_ok = True
+            # 平顶判点也跳对准门：1.5m 判点圆内 MPPI 终点代价
+            # 拉着绕圈（round215 wp9 圈 130s 不推点实测——到点
+            # 判点圆需对齐下一段航向，但 MPPI 目标仍是当前 wp，
+            # 无理由转向，极限环死锁）；平顶边开边转（同楼梯
+            # 顶 round111 逻辑）
+            if float(body_pos[2]) > 1.2:
+                _align_ok = True
             if _arr and _align_ok:
                 if next_idx == 0 and t_start is None:
                     t_start = t
                 wp_times[next_idx] = t
                 last_adv_t = t
                 print('[T] wp%d @ t=%.2f' % (next_idx, t), flush=True)
+                print('[ADV] wp%d dist=%.2f s_cur=%.2f wp_s=%s radius=%s'
+                      % (next_idx,
+                         float(np.linalg.norm(pos2 - wp[next_idx, :2])),
+                         float(stair.s_cur),
+                         (round(float(stair.wp_s(next_idx)), 2)
+                          if stair.wp_s(next_idx) is not None else None),
+                         _adv_r), flush=True)
                 next_idx += 1
                 if next_idx >= int(os.environ.get('S10_AUTO_MAX_WP', '33')):
                     print('[T] 到达最大航点，结束', flush=True)
