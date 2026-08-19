@@ -889,7 +889,16 @@ def main():
                    yaw_scale=1.0 - 0.6 * _max_lift,
                    ridge_dist=99.0,
                    lift_f_scale=(0.3 if _max_lift > 0.05 else 1.0),
-                   wheel_press=(0.1 if _max_lift > 0.05 else 0.0))
+                   # 常驻 1.5cm 压轮：terr 轮下兜底（wheel_z-0.081）
+                   # 自指引用——高度控制永远判轮在目标高、轮实际悬空 2mm
+                   # 空转无牵引（round234 wp10 后卡死根因，探针实测 ncon=0）；
+                   # 1.5cm 下压保证贴地（增法向 ~4.5N/轮，无副作用）
+                   wheel_press=(0.1 if _max_lift > 0.05 else 0.015),
+                   # 摇振抑制/轮滑钳制只在 wp10 后开敞平顶启用（卡死区）；
+                   # 窄脊段(wp7-8)与 wp8-9 段保持基线（round227/229 实测
+                   # 全域启用改变平顶动力学、窄脊骑偏掉台沿）
+                   rock_kill=(1.0 if (float(body_pos[2]) > 1.2
+                                       and next_idx >= 10) else 0.0))
 
         # PRETRANS：楼梯前按 riser 距离进入 RL 高站姿；楼梯后按 handback 距离退出
         if os.environ.get('S10_PRETRANS', '1') == '1' and stair.mode != 'STAIR':
@@ -1031,6 +1040,11 @@ def main():
                 2.0 * (d.xquat[1][0] * d.xquat[1][1]
                        + d.xquat[1][2] * d.xquat[1][3]),
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
+            _f2d = np.array([
+                1.0 - 2.0 * (d.xquat[1][2] ** 2 + d.xquat[1][3] ** 2),
+                2.0 * (d.xquat[1][1] * d.xquat[1][2]
+                       + d.xquat[1][0] * d.xquat[1][3]), 0.0])
+            _vx_b_debug = float(np.dot(d.qvel[0:3], _f2d))
             traj.append([t, body_pos[0], body_pos[1], body_pos[2], yaw,
                          float(next_idx),
                          float(np.hypot(d.cvel[1][0], d.cvel[1][1])),
@@ -1039,8 +1053,10 @@ def main():
                          float(np.median(terr)), _roll_tar_c,
                          float(wheel_xyz[0, 2]), float(wheel_xyz[1, 2]),
                          float(wheel_xyz[2, 2]), float(wheel_xyz[3, 2]),
-                         float(d.qvel[6 + WHEEL_QV_IDX[0]]),
-                         float(d.qvel[6 + WHEEL_QV_IDX[2]])])
+                         float(d.qvel[WHEEL_QV_IDX[0]]),
+                         float(d.qvel[WHEEL_QV_IDX[2]]),
+                         float(tau[3]), float(tau[7]),
+                         float(vx_c), float(_vx_b_debug)])
 
         # 航点推进：只按原始折线水平距离；到点判（未越过）要求
         # 对准下一段 + 角速度收敛才推点（防原地转完成前抢跑）；
