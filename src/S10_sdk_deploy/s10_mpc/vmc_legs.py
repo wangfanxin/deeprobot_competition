@@ -941,8 +941,9 @@ class CarVMC:
             # 固定偏差，腾空检测误报（平顶 _lift_amt≈+0.05 →
             # ground_f=0 → 差速+偏航反馈全灭，wp8 转弯转不动、
             # 直线漂移侧翻 round199-201 实测）——高台直接视作着地
-            if float(np.median(np.asarray(terrain_h))) > float(os.environ.get("S10_Z_HIGH", "1.0")):
-                _lift_amt = 0.0
+            # unified: no z-tier override; _lift_amt always measured
+            # (old plateau clamp caused the false-airborne bias that the
+            # override was compensating; clamp is deleted)
             # v870: ground_f more sensitive (0.01m onset, 0.04m zero) - MU=0.8
             # MPPI outputs bigger omega at startup; airborne 0.04m kept 60%
             # differential and spun (om -4.16 flip). Cruise lift<0.01 unaffected.
