@@ -614,11 +614,15 @@ def main():
                         and not _lip_hold
                         and float(body_pos[2]) <= 1.0
                         and float(np.max(terr)) - float(np.min(terr))
-                        < 0.08):
+                        < 0.08
+                        and stair.stair_ahead_dist is not None
+                        and stair.stair_ahead_dist <= 1.5):
                     # 高台（平顶 z>1.0）不倒车：倒车在台沿反复
                     # 打滑把稳态侧倾推成侧翻（round137 平顶实测）；
                     # 跨骑（轮下高差>=0.08，如平台角窄条）也不倒车
-                    # ——round167 角部倒车-回冲 50s 死循环实测
+                    # ——round167 角部倒车-回冲 50s 死循环实测；
+                    # 平直段转向侧倾不倒车（round171 wp3 后倒车 7s
+                    # 浪费——ad=2.4 无台阶可脱困）
                     vx_c = -0.4
                     om_c = 0.0
             # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
