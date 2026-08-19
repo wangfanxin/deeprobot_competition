@@ -989,7 +989,11 @@ def main():
         # 过点兜底：刚越过（<=len+0.8，仍可能原地转中）同样要求
         # 对准；只有明显越过后才跳过对准直接推点。
         if next_idx < len(wp):
-            _arr = nav.reached(next_idx, d.xpos[1][:2])
+            # 平顶判点半径放大：1.166 平顶机器人东偏 1.2m 绕圈
+            # 20s+（0.5m 判点圆够不着、s 投影差 1.9m，round197/198
+            # 实测），z>1.2 用 1.5m 判点圆
+            _adv_r = 1.5 if float(body_pos[2]) > 1.2 else None
+            _arr = nav.reached(next_idx, d.xpos[1][:2], radius=_adv_r)
             # 弧长兜底：RL 斜向爬台后沿路径投影已越过当前 wp，
             # 但直线段投影不前进（exit 点投影 4.56<len+0.8），
             # next_idx 卡在身后 wp → MPPI 沿旧段西拉侧翻（round96）
