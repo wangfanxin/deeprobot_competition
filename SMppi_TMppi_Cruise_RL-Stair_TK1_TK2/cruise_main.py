@@ -218,6 +218,8 @@ def main():
                     and stair.mode == 'CRUISE'
                     and abs(_cte) <= float(os.environ.get(
                         'S10_TK1_CTE_MAX', '0.8'))):
+                # TK1 对准对单级台阶同样需要：无对准时 wp3-4 骑坎
+                # 磨不上去（round71 实测）；STAIR 已限多级，不冲突
                 th = stair.climb_heading
                 if th is not None:
                     if _tk1_t0 is None:
@@ -300,7 +302,12 @@ def main():
                               % (t, pos2[0], pos2[1], _lip_g0), flush=True)
                 _lip_hold = True
             if _lip_hold:
-                vx = float(os.environ.get('S10_STAIR_APPROACH_VX', '0.6'))
+                # 骑坎滞留是台沿扭振侧滑的根源：前轮一上台就给
+                # 1.2m/s 冲量把后轮拉过立面，骑坎时间压到 1-2s
+                _lv = float(os.environ.get('S10_STAIR_APPROACH_VX', '0.6'))
+                if (float(np.max(terr[0:2])) - float(np.min(terr)) >= 0.04):
+                    _lv = float(os.environ.get('S10_LIP_BURST_VX', '1.2'))
+                vx = _lv
                 v_ref = min(v_ref, vx)   # MPPI 的上限是 v_ref，必须同步
                 # 锁存期间保持正对路径航向 + 前轮抬升：斜贴台沿会
                 # 单轮骑坎沿坎侧滑（wp5 实测东滑 3m 卡死）
@@ -320,7 +327,7 @@ def main():
                     # 抬轮与推力冲突（抬轮减轮压致打滑），锁存期不抬，
                     # 靠 1.2m/s 冲量 + 轮半径滚上 0.064 立面
                     _edge_lift[0:2] = 0.0
-                if float(np.min(terr)) >= _lip_g0 + 0.10:
+                if float(np.min(terr)) >= _lip_g0 + 0.13:
                     if os.environ.get('S10_LIP_DEBUG', '0') == '1':
                         print('[LATCH] release t=%.2f pos=(%.2f,%.2f)'
                               % (t, pos2[0], pos2[1]), flush=True)
@@ -572,12 +579,13 @@ def main():
             if 0.05 <= _rise_ahead <= 0.25:
                 _w = float(os.environ.get('S10_VMC_TERRAIN_AHEAD_W', '0.6'))
                 terr = (1.0 - _w) * terr + _w * _ahead
-        # v595 后轮登台：前轴骑上台面后，把后轴轮下地形参考抬到
-        # 台面高——阻抗把后轮拉起越过立面（后轮对垂直面只推不升，
-        # 实测卡死；必须抬参考高度）
-        if (float(np.max(terr[0:2])) - float(np.max(terr[2:4])) >= 0.04
+        # v595 骑坎找平：任意轮间地形差 >=0.04 时把所有低轮参考抬到
+        # 最高轮附近——消除骑坎对角扭振（平台沿逆指令左旋的根因），
+        # 同时把后轮拉过立面。
+        _tmax = float(np.max(terr))
+        if (_tmax - float(np.min(terr)) >= 0.04
                 and stair.mode == 'CRUISE'):
-            terr[2:4] = np.maximum(terr[2:4], float(np.max(terr[0:2])))
+            terr = np.maximum(terr, _tmax - 0.02)
         roll_tar = float(np.clip(
             -float(os.environ.get('S10_CAR_ROLL_K', '0.06')) * om_c
             * abs(vx_c),

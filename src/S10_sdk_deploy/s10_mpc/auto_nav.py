@@ -878,8 +878,9 @@ class AutoNavFollower:
             if wheel_z is not None and len(self.stair_rises_tops) > 0:
                 _clear = float(os.environ.get("S10_STAIR_WHEEL_CLEAR", "0.05"))
                 _top_max = float(np.max(np.asarray(self.stair_rises_tops, dtype=np.float64)))
-                _exit_ok = float(np.min(np.asarray(wheel_z, dtype=np.float64))) \
-                    >= _top_max - _clear
+                _exit_ok = (float(np.min(np.asarray(wheel_z, dtype=np.float64)))
+                            >= _top_max - _clear
+                            and body_vx <= 1.0)
             if not _exit_ok and self._stair_first_riser_xy is not None:
                 _fwd = np.array([np.cos(self._stair_first_heading),
                                  np.sin(self._stair_first_heading)])
@@ -900,8 +901,11 @@ class AutoNavFollower:
                           f"pos=({robot_xy[0]:.2f},{robot_xy[1]:.2f})", flush=True)
             return
 
-        # CRUISE -> STAIR (TK1 entry, doc §9)
-        if self.stair_ahead_dist is not None:
+        # CRUISE -> STAIR (TK1 entry, doc §9)。只对多级楼梯（>=2 riser）
+        # 交 RL：单级台面 RL 爬升西拖实测（round69/70），CRUISE
+        # 冲量+v595 骑坎 5s 内完成。
+        if (self.stair_ahead_dist is not None
+                and len(self.stair_rises_s) >= 2):
             _enter = float(os.environ.get("S10_STAIR_ENTER_DIST", "2.0"))
             # RE-ENTRY GUARD: after a STAIR->CRUISE handback, do not re-enter STAIR until the
             # robot has moved S10_STAIR_REENTRY_GUARD metres past the exit (prevents mode
@@ -919,6 +923,16 @@ class AutoNavFollower:
                 if _dx < _guard and not _past:
                     return
             if self.stair_ahead_dist <= _enter:
+                # 已骑上台阶（前轮已达台面）就不再交 RL：
+                # CRUISE 抬轮+v595 已完成爬升，迟到的 STAIR 会
+                # 让 RL 在台面上乱向（round69 西拖 2.5m 实测）
+                if (wheel_z is not None
+                        and len(self.stair_rises_tops) > 0):
+                    _top0 = float(np.max(np.asarray(
+                        self.stair_rises_tops, dtype=np.float64)))
+                    if float(np.min(np.asarray(
+                            wheel_z[:2], dtype=np.float64))) >= _top0 - 0.05:
+                        return
                 # doc §9 交付 RL 条件：距 riser<2m + yaw 对准 + 速度<2.0（S10_TK1=1 门控）
                 _first_s = float(self.stair_rises_s[0])
                 _k = int(np.searchsorted(self.path_cum, _first_s, side="right") - 1)
