@@ -966,7 +966,7 @@ class AutoNavFollower:
                 return True
         return False
 
-    def _elev_rises_on_path(self, robot_xy, yaw, local_map, lookahead=None, start=0.5):
+    def _elev_rises_on_path(self, robot_xy, yaw, local_map, lookahead=None, start=0.1):
         """Perception-only: return the absolute arc-lengths (world s) of on-path
         staircase riser edges detected AHEAD of the robot by the lidar elevation map."""
         if local_map is None:
@@ -1028,7 +1028,7 @@ class AutoNavFollower:
         prev_h = prof[0][1]
         for (ds, h) in prof[1:]:
             _dh = h - prev_h
-            if _dh > step_th and ds >= 0.5:
+            if _dh > step_th and ds >= 0.2:
                 _conf = any(h2 > prev_h + step_th
                             for (ds2, h2) in prof
                             if 0.0 < ds2 - ds <= 0.5)
@@ -1042,7 +1042,7 @@ class AutoNavFollower:
                                    if 0.2 < ds2 - ds <= 0.6)
                     if _sustain:
                         steps.append((ds, _dh, h))
-            elif _dh < -drop_th and ds >= 0.5:
+            elif _dh < -drop_th and ds >= 0.2:
                 drops.append(ds)
             prev_h = max(prev_h, h)
         self._elev_last_steps = [(float(d), float(j)) for d, j, _ in steps]

@@ -101,6 +101,9 @@ def main():
     _tk1_align_t0 = None
     _tk2_t0 = None
     _roll_gate = False
+    _roll_gate_since = None
+    _edge_lift = np.zeros(4)
+    _vyaw_f = 0.0
 
     while t < float(os.environ.get('S10_TEST_MAX_SIM', '600')):
         qpos = np.asarray(d.qpos, dtype=np.float64)
@@ -167,6 +170,11 @@ def main():
                     float(os.environ.get('S10_LINE_YAW_GAIN', '2.5')) * head_err,
                     -float(os.environ.get('S10_LINE_YAW_MAX', '2.0')),
                     float(os.environ.get('S10_LINE_YAW_MAX', '2.0'))))
+                # vyaw 一阶低通：CTE 纠偏符号翻转导致的蛇形过冲
+                # （wp5 台顶实测 1.56->2.5 rad 过冲后下台侧翻）
+                _vyaw_f += (vyaw - _vyaw_f) * float(os.environ.get(
+                    'S10_LINE_VYAW_LP', '0.4'))
+                vyaw = _vyaw_f
                 # 2026-08-19: 只保留“加速 + 到点刹车”两个能力；
                 # head-err 降速/锐角预刹/MIN_VX 地板全部删除（不过弯）。
                 # 终点速度由 SMppi 终点代价（dx=0/ref_v=0）二次兜底。
@@ -184,7 +192,9 @@ def main():
             # 交付圈（S10_STAIR_ENTER_DIST）后补 1.5m/s 交付速度上限。
             if (os.environ.get('S10_TK1', '0') == '1'
                     and os.environ.get('S10_RL_ELEV', '0') == '1'
-                    and stair.mode == 'CRUISE'):
+                    and stair.mode == 'CRUISE'
+                    and abs(_cte) <= float(os.environ.get(
+                        'S10_TK1_CTE_MAX', '0.8'))):
                 th = _ph
                 if th is not None:
                     if _tk1_t0 is None:
@@ -231,6 +241,13 @@ def main():
                         'S10_POST_STAIR_HOLD_T', '0.6'))):
                 vx = min(vx, 0.5)
                 vyaw = 0.0
+            # 楼梯后慢速瞄准超时清除：一直追不上下一 wp 时
+            # 恢复全速（此前永不清除，wp5 实测 0.6m/s 永久爬行）
+            if (_post_stair_t is not None
+                    and t - _post_stair_t > float(os.environ.get(
+                        'S10_POST_STAIR_MAX_T', '5.0'))):
+                _post_stair_xy = None
+                _post_stair_t = None
 
             v_ref = vx
             if stair.decel_request > 0.0:
@@ -248,6 +265,42 @@ def main():
                 vyaw = float(np.clip(vyaw, -0.5, 0.5))
                 v_ref = min(v_ref, vx)
                 _correction += 'DROP'
+            # 机器人相对 riser 检测（路径扫描盲区：偏离路径时前方台阶）
+            # 前方 0.3~1.2m 升高 0.08~0.25m => 正对直行低速骑上（不交 RL）
+            _rf = float(os.environ.get('S10_EDGE_LOOKAHEAD', '1.2'))
+            if _rf > 0.0 and stair.mode == 'CRUISE':
+                # 探针沿路径航向（机器人实际航向偏移时也能看到前方台阶）
+                _ehd = line_head if line is not None else yaw
+                _cf = np.array([np.cos(_ehd), np.sin(_ehd)])
+                _ch0e = float(body_pos[2]) - 0.55
+                _hfn = perc.height(body_pos[0] + _cf[0] * 0.3,
+                                    body_pos[1] + _cf[1] * 0.3, t,
+                                    float(body_pos[2]), _ch0e)
+                _hff = perc.height(body_pos[0] + _cf[0] * _rf,
+                                    body_pos[1] + _cf[1] * _rf, t,
+                                    float(body_pos[2]), _ch0e)
+                # 基准用 min(terr)（后轮未上台前保持地面高）：
+                # 前轮贴台阶时 max(terr) 已升高导致抬轮失效
+                _rise_edge = float(_hff - float(np.min(terr)))
+                # 平顶判别：2.6m 与 1.5m 探针高度差 <=0.04 才是台阶
+                # （缓坡 1.1m 内升 0.077 > 0.04 => 不触发）
+                _hff2 = perc.height(body_pos[0] + _cf[0] * 2.6,
+                                     body_pos[1] + _cf[1] * 2.6, t,
+                                     float(body_pos[2]), _ch0e)
+                _flat_top = (abs(float(_hff2 - _hff)) <= 0.04)
+                if 0.08 <= _rise_edge <= 0.25 and _flat_top:
+                    vx = min(vx, float(os.environ.get('S10_EDGE_VX', '0.6')))
+                    v_ref = min(v_ref, vx)
+                    _correction += 'EDGE'
+                    # 前轮抬轮前馈：仅 >=10cm 的台阶（小台阶
+                    # 抬轮会失牵引，wp0-1 坡底实测 12s 卡死）
+                    if _rise_edge >= 0.10:
+                        _edge_lift[0:2] = float(np.clip(
+                            (_rise_edge - 0.06) / 0.06, 0.0, 1.0))
+                    else:
+                        _edge_lift[0:2] = 0.0
+                else:
+                    _edge_lift[0:2] = 0.0
             # 终点刹车直入 v_ref（不依赖软代价）：STOP_DX 内目标
             # 速度按剩余距离线性归零——实测软终端代价刹不住，
             # wp3 以 3.2m/s 冲点过冲 1.6m。
@@ -258,38 +311,21 @@ def main():
                         'S10_AUTO_VMAX', '4.0')) * float(np.clip(
                         dist_wp / _stdx, 0.0, 1.0))
                     v_ref = min(v_ref, _vstop)
-            # 坡顶限速（纯感知，仅 CRUISE）：前方地形变平（rise_f≈0）
-            # 而后方仍在爬坡（rise_b>0.05）=> 接近坡顶，限速防横倾过渡侧翻
-            if stair.mode == 'CRUISE':
-                _chk = float(os.environ.get('S10_CREST_LOOKAHEAD', '1.5'))
-                if _chk > 0.0:
-                    _cf = np.array([np.cos(yaw), np.sin(yaw)])
-                    _ch0 = float(body_pos[2]) - 0.55
-                    _hf = perc.height(body_pos[0] + _cf[0] * _chk,
-                                       body_pos[1] + _cf[1] * _chk, t,
-                                       float(body_pos[2]), _ch0)
-                    _hb = perc.height(body_pos[0] - _cf[0] * 0.6,
-                                       body_pos[1] - _cf[1] * 0.6, t,
-                                       float(body_pos[2]), _ch0)
-                    _h0 = perc.height(body_pos[0], body_pos[1], t,
-                                       float(body_pos[2]), _ch0)
-                    _rise_f = float(_hf - _h0)
-                    _rise_b = float(_h0 - _hb)
-                    if _rise_b > 0.05 and _rise_f < 0.03:
-                        vx = min(vx, float(os.environ.get(
-                            'S10_CREST_VX', '1.2')))
-                        v_ref = min(v_ref, vx)
-                        _correction += 'CREST'
-
             ref_pts = []
             _wp_dx = None
             if line is not None:
                 u = np.asarray(line['end'] - line['start'], dtype=np.float64)
-                u = u / max(np.linalg.norm(u), 1e-9)
+                _len = float(np.linalg.norm(u))
+                u = u / max(_len, 1e-9)
                 _wp_dx = float(line['dist_to_wp'] or 0.0)
-                # 参考路径末端精确 = wp（不再越过）；1.0m 间距保证 40Hz 实时
+                # 参考路径锚定在真实航线上（机器人投影点 -> wp）：
+                # 从 pos2 出发会让横向偏移对距离成本不可见，
+                # wp0-1 实测整段平行漂移 +2m 失控侧翻。
+                _proj = float(np.dot(pos2 - np.asarray(line['start']), u))
+                _proj = float(np.clip(_proj, 0.0, _len))
+                _base = np.asarray(line['start']) + u * _proj
                 for ds in np.arange(0.0, min(_wp_dx, 12.0) + 1e-6, 1.0):
-                    pt = pos2 + u * ds
+                    pt = _base + u * ds
                     ref_pts.append([pt[0], pt[1], float(line['heading'])])
                 ref_pts.append([float(line['end'][0]), float(line['end'][1]),
                                 float(line['heading'])])
@@ -328,12 +364,22 @@ def main():
                        + d.xquat[1][2] * d.xquat[1][3]),
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
             if abs(_body_roll) > 0.30:
+                if not _roll_gate:
+                    _roll_gate_since = t
                 _roll_gate = True
-            elif abs(_body_roll) < 0.15:
+            elif abs(_body_roll) < 0.20:
                 _roll_gate = False
+                _roll_gate_since = None
             if _roll_gate:
-                om_c = 0.0
+                # 允许 +/-0.3 慢转向脱困：此前 om=0 让机器人在
+                # 台沿侧倾死锁（wp5 实测 30s 卡死）
+                om_c = float(np.clip(om_c, -0.3, 0.3))
                 vx_c = min(float(vx_c), 0.3)
+                # 死锁脱困：门控持续 >2s => 直线倒车离开台阶边缘
+                if (_roll_gate_since is not None
+                        and t - _roll_gate_since > 2.0):
+                    vx_c = -0.4
+                    om_c = 0.0
             # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
             # 楼梯后：低倍率直接瞄当前目标 wp，直到距其足够近才放开
             if (_post_stair_xy is not None and next_idx < len(wp)
@@ -408,7 +454,8 @@ def main():
             roll_tar = 0.0
         # 2026-08-19: 抬轮前馈已删除；cmd 只给速度/姿态目标，
         # 其余字段由 vmc_legs 的 cmd.get 默认值接管。
-        cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar, pitch_tar=0.0)
+        cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar, pitch_tar=0.0,
+                   step_lift=_edge_lift.copy(), lift_swing=1.2)
 
         # PRETRANS：楼梯前按 riser 距离进入 RL 高站姿；楼梯后按 handback 距离退出
         if os.environ.get('S10_PRETRANS', '1') == '1' and stair.mode != 'STAIR':
