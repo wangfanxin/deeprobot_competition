@@ -350,6 +350,7 @@ def main():
             if (os.environ.get('S10_LIP_LATCH', '1') == '1'
                     and next_idx >= 4
                     and _edge_route_ok
+                    and float(body_pos[2]) <= 1.1
                     and float(np.max(terr[0:2])) - float(np.min(terr))
                     >= 0.08):
                 if not _lip_hold:
@@ -364,6 +365,7 @@ def main():
             if (os.environ.get('S10_LIP_LATCH', '1') == '1'
                     and next_idx >= 4
                     and _edge_route_ok
+                    and float(body_pos[2]) <= 1.1
                     and _past_wp
                     and stair.decel_request > 0.5
                     and stair.stair_ahead_dist is not None

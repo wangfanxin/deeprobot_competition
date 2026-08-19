@@ -924,6 +924,8 @@ class AutoNavFollower:
                 # roll0.55 交还、平顶 roll 门锁死后侧翻实测——
                 # 等 roll/pitch 同小的水平支撑时刻再交还
                 _exit_ok = (_prog > _min_climb
+                            and body_vx <= float(os.environ.get(
+                                'S10_STAIR_EXIT_VX', '1.6'))
                             and (roll is None
                                  or abs(float(roll)) <= 0.3)
                             and (pitch is None
@@ -960,8 +962,14 @@ class AutoNavFollower:
             _lat = float(np.linalg.norm(
                 self.path_pts[_k0, :2] - np.asarray(robot_xy)[:2]))
         _lat_max = float(os.environ.get('S10_STAIR_ENTRY_LAT_MAX', '1.0'))
+        # 高度门：真楼梯都在低处（轮心<=1.2），平顶假 riser 在
+        # 1.247 以上（round184 平顶假入口 RL 接手 4.36m/s 侧翻）
+        _wz_lo = (wheel_z is None
+                  or float(np.min(np.asarray(wheel_z, dtype=np.float64)))
+                  <= 1.2)
         if (self.stair_ahead_dist is not None
                 and _lat <= _lat_max
+                and _wz_lo
                 and (len(self.stair_rises_s) >= 2
                      or (len(self.stair_rises_s) == 1
                          and self.drop_ahead_dist is not None))):
