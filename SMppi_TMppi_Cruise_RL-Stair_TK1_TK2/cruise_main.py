@@ -629,17 +629,20 @@ def main():
             # 楼梯后：低倍率直接瞄当前目标 wp，直到距其足够近才放开
             if (_post_stair_xy is not None and _ahead < len(wp)
                     and t - _post_stair_t < float(os.environ.get(
-                        'S10_POSTSTAIR_HOLD_T', '1.5'))
+                        'S10_POSTSTAIR_HOLD_T', '2.5'))
                     and float(np.linalg.norm(
                         body_pos[:2] - wp[_ahead, :2]))
                     > float(os.environ.get('S10_POSTSTAIR_HOLD_DIST', '0.7'))):
-                # 交接瞬态限速：RL 快走 1.87m/s 交还时 MPPI 平滑
-                # 刹车仅 ~1m/s2（round115 台面 1.1m 刹不住、下台
-                # 1.13m/s 栽头实测）；前 0.8s 硬刹 0.3 再过渡 0.6
+                # 交接瞬态限速：RL 快走交还时 MPPI 平滑刹车太弱
+                # （round175 台面 cmd0.2 实际 2.18->4.08m/s 加速），
+                # 前 1.0s 直接零指令硬停 + 禁止转向（台面 om-0.96
+                # 带角动量侧翻实测），之后 0.6 缓行过台面
                 _hv = float(os.environ.get('S10_POSTSTAIR_HOLD_VX', '0.6'))
-                if t - _post_stair_t < 0.8:
-                    _hv = 0.3
-                vx_c = min(float(vx_c), _hv)
+                if t - _post_stair_t < 1.0:
+                    vx_c = 0.0
+                    om_c = 0.0
+                else:
+                    vx_c = min(float(vx_c), _hv)
                 _ph = float(np.arctan2(wp[_ahead, 1] - body_pos[1],
                                        wp[_ahead, 0] - body_pos[0]))
                 _pe = float(np.arctan2(np.sin(_ph - yaw),
