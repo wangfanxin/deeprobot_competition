@@ -25,7 +25,7 @@ class StairGate:
         self.fol = AutoNavFollower(waypoints)
 
     def update(self, pos2, next_idx, yaw, local_map, body_vx, wheel_z,
-               heading=None, pitch=None, roll=None):
+               heading=None, pitch=None, roll=None, vy=None):
         self._next_idx = next_idx
         # 只推进弧长游标供感知使用，不做速度/转向控制
         if hasattr(self.fol, 'path_pts'):
@@ -38,7 +38,7 @@ class StairGate:
         _ch = self._climb_heading()
         self.fol.update_mode(pos2, next_idx, yaw=yaw, local_map=local_map,
                              body_vx=body_vx, wheel_z=wheel_z,
-                             heading=_ch, pitch=pitch, roll=roll)
+                             heading=_ch, pitch=pitch, roll=roll, vy=vy)
 
     @property
     def mode(self):

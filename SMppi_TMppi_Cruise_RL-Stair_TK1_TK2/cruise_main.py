@@ -147,7 +147,8 @@ def main():
                        + d.xquat[1][2] * d.xquat[1][3]),
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
             stair.update(pos2, next_idx, yaw, local_map,
-                         float(body_vel[0]), wheel_z, pitch=_bp, roll=_br)
+                         float(body_vel[0]), wheel_z, pitch=_bp, roll=_br,
+                         vy=float(body_vel[1]))
             if os.environ.get('S10_LIP_DEBUG', '0') == '1' and next_idx in (4, 5):
                 print('[LIPDBG] t=%.2f pos=(%.2f,%.2f) rises=%s ahead=%s '
                       'drops=%s dropahead=%s ch=%.2f sc=%.2f'

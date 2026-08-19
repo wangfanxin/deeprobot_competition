@@ -834,7 +834,7 @@ class AutoNavFollower:
 
     def update_mode(self, robot_xy, next_idx, yaw=None, local_map=None,
                     body_vx=0.0, wheel_z=None, heading=None, pitch=None,
-                    roll=None):
+                    roll=None, vy=None):
         """PERCEPTION-DRIVEN stair takeover (USER 2026-08-16; 2026-08-18 doc §9/§10 对齐).
 
         - CRUISE -> STAIR (TK1)：前方 S10_TK1_LOOKAHEAD 内检测到路径上楼梯，且
@@ -896,9 +896,10 @@ class AutoNavFollower:
                             and body_vx <= float(os.environ.get(
                                 'S10_STAIR_EXIT_VX', '1.6'))
                             and (pitch is None
-                                 or abs(float(pitch)) <= 0.15)
+                                 or abs(float(pitch)) <= 0.3)
                             and (roll is None
-                                 or abs(float(roll)) <= 0.25))
+                                 or abs(float(roll)) <= 0.25)
+                            and (vy is None or abs(float(vy)) <= 0.8))
             if not _exit_ok and self._stair_first_riser_xy is not None:
                 _fwd = np.array([np.cos(self._stair_first_heading),
                                  np.sin(self._stair_first_heading)])
@@ -917,7 +918,7 @@ class AutoNavFollower:
                     # 2.03m/s 跨步姿态侧翻（round124 实测）
                     _span = float(getattr(self, '_stair_riser_span', 0.0))
                     if _span > 0.0:
-                        _min_climb = _span + 2.0
+                        _min_climb = _span + 1.0
                 # 兜底退出姿态收敛：round138 的失败是 pitch 公式
                 # 错误（已修），round139/148 六级楼梯 2.85m/s 跨步
                 # roll0.55 交还、平顶 roll 门锁死后侧翻实测——
@@ -926,7 +927,8 @@ class AutoNavFollower:
                             and (roll is None
                                  or abs(float(roll)) <= 0.3)
                             and (pitch is None
-                                 or abs(float(pitch)) <= 0.3))
+                                 or abs(float(pitch)) <= 0.3)
+                            and (vy is None or abs(float(vy)) <= 0.8))
             if _exit_ok:
                 self.mode = "CRUISE"
                 self.decel_request = 0.0
