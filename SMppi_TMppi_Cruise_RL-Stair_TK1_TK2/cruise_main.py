@@ -901,23 +901,13 @@ def main():
                     vx_c = -0.5
                     om_c = 0.0
                 else:
+                    # 前插相位：固定朝正东（yaw=0）直行——障碍场的
+                    # 横墙/柱都有东端，东行绕过后再交还 MPPI 南转；
+                    # 投影点跟踪在轮滑状态下目标翻转、yaw 3rad 甩动
+                    # 侧翻（round238 第二障碍实测）
                     vx_c = 0.8
-                    if line is not None:
-                        _seg2e = (np.asarray(line['end'])
-                                  - np.asarray(line['start']))
-                        _segl2e = max(float(np.linalg.norm(_seg2e)), 1e-9)
-                        _u2e = _seg2e / _segl2e
-                        _rel2e = pos2 - np.asarray(line['start'])
-                        _proj2e = float(np.clip(
-                            float(np.dot(_rel2e, _u2e)), 0.0, _segl2e))
-                        _pt2e = (np.asarray(line['start'])
-                                 + _u2e * _proj2e)
-                        _epe = float(np.arctan2(
-                            _pt2e[1] - body_pos[1],
-                            _pt2e[0] - body_pos[0]))
-                        _eee = float(np.arctan2(np.sin(_epe - yaw),
-                                                np.cos(_epe - yaw)))
-                        om_c = float(np.clip(2.0 * _eee, -0.6, 0.6))
+                    _eee = float(np.arctan2(np.sin(-yaw), np.cos(-yaw)))
+                    om_c = float(np.clip(2.0 * _eee, -0.6, 0.6))
                 prev_u = np.asarray([vx_c, om_c])
                 smppi.sync_applied(prev_u)
             else:
