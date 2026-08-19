@@ -855,6 +855,12 @@ class AutoNavFollower:
         if next_idx < len(self.path_wp_s):
             _wclip = float(self.path_wp_s[next_idx]) + float(os.environ.get(
                 "S10_ELEV_WP_CLIP", "0.8"))
+            # 过点盲区兜底（round315 实测）：机器人越过航点后 s_cur>裁剪界
+            # → 扫描直接为空 → 平台墙（wp 后 0.5m）在 STAIR 交付窗内不可见，
+            # 3.77m/s 盲撞墙 roll-1.28。裁剪下限 = 前方 1.2m 保底
+            # （STAIR 交付窗），仍不向航点后远处看。
+            _wclip = max(_wclip, float(getattr(self, "_s_cur", 0.0))
+                          + float(os.environ.get("S10_ELEV_WP_CLIP_MIN", "1.2")))
         self.stair_rises_s = self._elev_rises_on_path(
             robot_xy, yaw, local_map, lookahead=_elook, s_clip=_wclip)
         if self.stair_rises_s:

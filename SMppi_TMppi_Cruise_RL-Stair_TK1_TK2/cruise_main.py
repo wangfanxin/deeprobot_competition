@@ -489,6 +489,14 @@ def main():
                              - 0.3)
                 vx = vx * (1.0 - stair.decel_request) + dv * stair.decel_request
                 v_ref = min(v_ref, vx)
+            # 楼梯逼近速度全局有界（统一化替代原高台分档）：前方 2m 内
+            # 有楼梯时交付速度 ≤1.5，STAIR 接管不超速（round314 窄脊入口
+            # cmd 3.94 → RL 冲 6.94m/s roll-2.98 侧翻实测）
+            if (stair.stair_ahead_dist is not None
+                    and stair.stair_ahead_dist <= 2.0):
+                vx = min(vx, float(os.environ.get(
+                    'S10_STAIR_APPROACH_VX', '1.5')))
+                v_ref = min(v_ref, vx)
             # 下沿保护卡死释放（round286 实测）：wp13→14 高程图幻影沿
             # （0.42 假 drop）方向不随航向变化，DDE/DROP 提前爬行后
             # 机器人在幻影沿上原地自旋 120s（s 投影不前进 → 幻影不消
@@ -748,11 +756,10 @@ def main():
                 # 拉上台面恢复水平。
                 if (_roll_gate_since is not None
                         and t - _roll_gate_since > 2.0
-                        and not _lip_hold
                         and float(np.max(terr)) - float(np.min(terr))
                         < 0.08
                         and stair.stair_ahead_dist is not None
-                        and stair.stair_ahead_dist <= 1.5):
+                        and stair.stair_ahead_dist <= 2.5):
                     # 高台（平顶 z>1.0）不倒车：倒车在台沿反复
                     # 打滑把稳态侧倾推成侧翻（round137 平顶实测）；
                     # 跨骑（轮下高差>=0.08，如平台角窄条）也不倒车
@@ -761,6 +768,9 @@ def main():
                     # 浪费——ad=2.4 无台阶可脱困）
                     vx_c = -0.4
                     om_c = 0.0
+                    _lip_hold = False
+                    _lip_xy = None
+                    _lip_t0 = None
             # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
             # 楼梯后：低倍率直接瞄当前目标 wp，直到距其足够近才放开
             if (_post_stair_xy is not None and _ahead < len(wp)
