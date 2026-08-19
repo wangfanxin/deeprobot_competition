@@ -165,9 +165,7 @@ def main():
                     rxy = np.vstack([rxy, _xy2])
                     rtops = np.append(rtops, rtops[0])
                 if rxy is not None and len(rxy) >= 2:
-                    h = stair.stair_first_heading if stair.mode == 'STAIR' else None
-                    if h is None:
-                        h = perc.stair_heading(stair)
+                    h = stair.climb_heading
                     rl.set_risers(rxy, rtops, heading=h)
 
             line = nav.line(next_idx, pos2)
@@ -220,7 +218,7 @@ def main():
                     and stair.mode == 'CRUISE'
                     and abs(_cte) <= float(os.environ.get(
                         'S10_TK1_CTE_MAX', '0.8'))):
-                th = stair.first_riser_path_heading
+                th = stair.climb_heading
                 if th is not None:
                     if _tk1_t0 is None:
                         _tk1_t0 = t
@@ -514,6 +512,18 @@ def main():
                                          np.cos(_thw - yaw)))
                 om_c = float(np.clip(2.0 * _ehl, -1.0, 1.0))
                 vx_c = min(float(vx_c), 0.6)
+            # 大偏航纠偏：偏离航线 >1.5m 时 cmd 级直指当前 wp
+            # （爬升后沿台壁西滑 90s 死锁实测——MPPI 弱 guide
+            # 压不过平台边腿阻抗扭振）
+            if (line is not None and abs(_cte) > 1.5
+                    and stair.mode == 'CRUISE'
+                    and not _roll_gate):
+                _thc = float(np.arctan2(wp[next_idx, 1] - body_pos[1],
+                                          wp[next_idx, 0] - body_pos[0]))
+                _ecc = float(np.arctan2(np.sin(_thc - yaw),
+                                         np.cos(_thc - yaw)))
+                om_c = float(np.clip(2.0 * _ecc, -1.2, 1.2))
+                vx_c = min(float(vx_c), 1.0)
             # TK 阶段（TK1 对准 / TK2 转出）直接执行对准转向：
             # MPPI 的 om 上限被 VMC_OM_CAP=1.0 压住，<1s 预算不够；
             # 低 vx 时 car_omega_limit≈3.0，TK 专用上限 2.0 安全。
