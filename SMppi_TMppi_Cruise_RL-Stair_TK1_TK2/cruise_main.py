@@ -1140,7 +1140,13 @@ def main():
                      v_ref, round(stair.decel_request, 2),
                      None if stair.stair_ahead_dist is None
                      else round(stair.stair_ahead_dist, 2),
-                     np.round(terr, 2)), flush=True)
+                     np.round(terr, 2)),
+                  ' dA=%s dS=%s'
+                  % (None if stair.drop_ahead_dist is None
+                     else round(stair.drop_ahead_dist, 2),
+                     [round(float(x), 1) for x in
+                      getattr(stair.fol, '_elev_drops', [])][:3]),
+                  flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[T] *** 侧翻/摔倒 ***', flush=True)
                 break
