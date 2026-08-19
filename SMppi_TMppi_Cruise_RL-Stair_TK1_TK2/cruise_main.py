@@ -1204,7 +1204,7 @@ def main():
                                  <= float(os.environ.get(
                                      'S10_WP_ALIGN_OM', '0.3')))
                 elif float(np.linalg.norm(
-                        pos2 - wp[next_idx, :2])) <= 1.0:
+                        pos2 - wp[next_idx, :2])) <= 0.8:
                     # 近点越过（wp 1m 内但投影超段末 0.8）：也要求
                     # 下一段航向对齐才推点——wp2 冲过判点圆 0.75m
                     # 时航向仍朝西、推点后带动量右转甩出 S 绕圈
