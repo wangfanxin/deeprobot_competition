@@ -490,10 +490,12 @@ def main():
                 vx = vx * (1.0 - stair.decel_request) + dv * stair.decel_request
                 v_ref = min(v_ref, vx)
             # 楼梯逼近速度全局有界（统一化替代原高台分档）：前方 2m 内
-            # 有楼梯时交付速度 ≤1.5，STAIR 接管不超速（round314 窄脊入口
-            # cmd 3.94 → RL 冲 6.94m/s roll-2.98 侧翻实测）
+            # 有楼梯且未跨骑时交付 ≤1.5，STAIR 接管不超速（round314 窄脊顶
+            # cmd 3.94 → RL 冲 6.94m/s 侧翻）；跨骑=正在登阶入口，保持
+            # 275 式动量（round322 入口 2.26m/s 时 RL yaw 突跳 2.43 侧翻）
             if (stair.stair_ahead_dist is not None
-                    and stair.stair_ahead_dist <= 2.0):
+                    and stair.stair_ahead_dist <= 2.0
+                    and not _drop_straddle):
                 vx = min(vx, float(os.environ.get(
                     'S10_STAIR_APPROACH_VX', '1.5')))
                 v_ref = min(v_ref, vx)
@@ -519,6 +521,22 @@ def main():
                 globals()['_dropact_t0'] = None
             if t - globals()['_droprel_t0'] < 2.0:
                 _drop_rel = True
+            # DROP 释放滞回（round318 实测）：台阶顶交还瞬间 dA 闪断为
+            # None，爬行立即释放 → 2.85m/s 冲出台沿 roll-2.19 侧翻。
+            # 保护消失后维持 0.5s 爬行（覆盖沿口跨骑时间）。
+            _drop_ghost = False
+            if '_drop_last_t' not in globals():
+                globals()['_drop_last_t'] = -1e9
+            if stair.drop_ahead_dist is not None:
+                globals()['_drop_last_t'] = t
+            elif t - globals()['_drop_last_t'] < float(os.environ.get(
+                    'S10_DROP_GHOST_T', '1.0')):
+                _drop_ghost = True
+            # 楼梯可见时 ghost 让位：STAIR 接管自有交付节奏
+            # （round321 窄脊入口 ghost 爬行改变 RL 入口状态 → yaw 突跳
+            # 2.43、roll 3.13 侧翻实测）
+            if stair.stair_ahead_dist is not None:
+                _drop_ghost = False
             # 深沿提前缓行 DDE（低台 z≤1.3）：前方 1.5m 内出现 ≥0.25 深
             # 跌落沿时提前限 0.6——wp14→15 缓坡底 0.38 深沿只在 0.4m 处
             # 才进 0.5 爬行窗，1.0m/s 冲沿栽头侧翻（round275/285 实测）；
@@ -541,9 +559,10 @@ def main():
             # （round268-270 平台爬升侧翻回退——平台区 drops 检测同样
             # 多级，但 z 0.77 与高台下行的 z 1.4+ 可区分）
             if (not _drop_rel
-                    and stair.drop_ahead_dist is not None
+                    and ((stair.drop_ahead_dist is not None
+                         and stair.drop_ahead_dist < 1.5)
+                        or _drop_ghost)
                     and _drop_s_ok
-                    and stair.drop_ahead_dist < 1.5
                     and not _drop_straddle):
                 vx = min(vx, 1.0)
                 v_ref = min(v_ref, vx)
@@ -569,19 +588,25 @@ def main():
             # 若回归再收紧
             _drop_s_ok = True
             _drop_active = False
-            if (not _drop_rel and ((stair.drop_ahead_dist is not None
-                    and _drop_s_ok
-                    and stair.drop_ahead_dist < _drop_om_w)
+            _drop_real = (stair.drop_ahead_dist is not None
+                          and _drop_s_ok
+                          and stair.drop_ahead_dist < _drop_om_w)
+            if (not _drop_rel and ((_drop_real or _drop_ghost)
                     or _drop_straddle)):
-                _drop_active = True
-                if ((stair.drop_ahead_dist is not None
+                # om 锁只对真实下沿/跨骑：ghost 期锁 om 会压死
+                # TK1 对准（round320 窄脊入口 yaw 2.42 vs 爬升 1.7
+                # 侧滚 3.13 实测）
+                _drop_active = bool(_drop_real or _drop_straddle)
+                if (((stair.drop_ahead_dist is not None
                         and _drop_s_ok
                         and stair.drop_ahead_dist < float(os.environ.get(
                             'S10_DROP_LOOKAHEAD', '2.0')))
+                        or _drop_ghost)
                         or _drop_straddle):
                     vx = min(vx, float(os.environ.get(
                         'S10_DROP_VX', '0.3')))
-                    vyaw = float(np.clip(vyaw, -0.5, 0.5))
+                    if _drop_real or _drop_straddle:
+                        vyaw = float(np.clip(vyaw, -0.5, 0.5))
                     v_ref = min(v_ref, vx)
                     _correction += 'DROP'
             # 机器人相对 riser 检测（路径扫描盲区：偏离路径时前方台阶）
