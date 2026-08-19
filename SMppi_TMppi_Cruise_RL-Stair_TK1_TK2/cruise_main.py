@@ -331,11 +331,12 @@ def main():
             # TK2：STAIR→CRUISE 后立即对准下一航点；对齐后交回 TMppi/SMppi
             # 平顶（z>1）出口延迟让高站姿下蹲过渡先完成：
             # 台顶原地转+下蹲激起 roll 2.5rad/s 冲量卡死侧翻
-            # （round210 实测）；低台出口立即对准。2.0->1.5 提速
+            # （round210 实测）；低台出口立即对准（1.5 提速实验
+            # 致窄脊骑偏掉脊 round263/265 实测，回 2.0）
             if (os.environ.get('S10_TK2', '0') == '1' and _tk2
                     and stair.mode == 'CRUISE'
                     and (_post_stair_t is None
-                         or t - _post_stair_t > 1.5
+                         or t - _post_stair_t > 2.0
                          or float(body_pos[2]) <= 1.15)):
                 _correction += 'TK2'
                 th2 = float(np.arctan2(wp[_ahead, 1] - body_pos[1],
