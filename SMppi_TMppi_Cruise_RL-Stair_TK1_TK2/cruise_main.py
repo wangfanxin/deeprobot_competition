@@ -665,12 +665,15 @@ def main():
                 _pe = float(np.arctan2(np.sin(_ph - yaw),
                                        np.cos(_ph - yaw)))
                 om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
-            # 高台弱抓地：进一步限制速度与转向率（旧平台顶弱抓地
-            # 时代遗留；wp7+ 的 1.166 平顶抓地正常，omcap 0.3 导致
-            # 顶上台转向过慢、绕大圈外漂 3.3m 卡死 round117 实测）
+            # 高台分档：1.166 平顶限 1.8m/s+om0.6（round190 平顶
+            # 2.4-4.0m/s roll 累积 -0.95 侧翻实测）；2.0+ 的高台
+            # 保持旧弱抓地限速
             if float(body_pos[2]) > 2.0:
                 vx_c = min(float(vx_c), 0.8)
                 omcap = min(omcap, 0.3)
+            elif float(body_pos[2]) > 1.2:
+                vx_c = min(float(vx_c), 1.8)
+                omcap = min(omcap, 0.6)
             om_c = float(np.clip(om_c, -omcap, omcap))
             # 下沿/跨骑期 MPPI 的航向代价仍会给大 om（round142 两级
             # 台阶顶沿 om0.98 转向 roll-1.12 侧翻实测）：DROP 期
@@ -748,6 +751,12 @@ def main():
             _terr_f = _tlp * terr + (1.0 - _tlp) * _terr_f
             globals()['_terr_f'] = _terr_f
             terr = _terr_f
+            # 机身高度钳制：地形不可能贴到机身 0.25 以内（全蹲也
+            # 有 0.19 间隙）——平顶 lidar 1.29 残影让腿高目标偏高
+            # 0.12，机器人踮脚 roll 不稳（round190/191 平顶
+            # 0.3m/s 爬行 roll -0.87 侧翻实测）
+            if float(body_pos[2]) > 1.0:
+                terr = np.minimum(terr, float(body_pos[2]) - 0.25)
         # 坡顶前瞻平滑（仅 CRUISE）：前方 0.05~0.25m 升高时把前轮
         # 地形参考预伸，防坡顶 pitch/roll 踢振。非抬轮前馈；
         # riser(>=8cm) 在 2m 外已交 STAIR，STAIR 模式内不生效。
