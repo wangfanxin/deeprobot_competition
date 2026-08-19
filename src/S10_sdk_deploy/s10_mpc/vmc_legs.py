@@ -937,6 +937,12 @@ class CarVMC:
         if wheel_xyz is not None and terrain_h is not None:
             _lift_amt = float(np.mean(
                 wheel_xyz[:, 2] - (np.asarray(terrain_h) + self.fk.r)))
+            # 高台（terr>1.0）无跳跃工况：terr 钳制与台面高度差有
+            # 固定偏差，腾空检测误报（平顶 _lift_amt≈+0.05 →
+            # ground_f=0 → 差速+偏航反馈全灭，wp8 转弯转不动、
+            # 直线漂移侧翻 round199-201 实测）——高台直接视作着地
+            if float(np.median(np.asarray(terrain_h))) > 1.0:
+                _lift_amt = 0.0
             # v870: ground_f more sensitive (0.01m onset, 0.04m zero) - MU=0.8
             # MPPI outputs bigger omega at startup; airborne 0.04m kept 60%
             # differential and spun (om -4.16 flip). Cruise lift<0.01 unaffected.
@@ -965,15 +971,18 @@ class CarVMC:
         P = _asc * (self.kp_pitch * (self._pitch_f - body["pitch"])
                     - _kd_p_eff * pitch_rate)
         _tmax = float(os.environ.get("S10_CAR_ATT_TMAX", "40.0"))
+        # roll 力矩钳可被 cmd 覆盖：巡航 roll 门控期提到 70N
+        # 扶正（40N 反力 19Nm < 0.7rad 侧倾重力矩 24Nm，卡死）
+        _rtmax = float(cmd.get("roll_tmax", _tmax))
         # v748: 大 lean-in 压弯时 roll 分配在减载方向钳到
         # S10_CAR_ROLL_MAX_DL×mg/4（默认 0 = 跳过 = v746 恒等 ±_tmax；
         # 开大压弯时设 0.5 防 μN 钳制崩推力；加载方向不限，弯内轮可多承）。
         _base_leg = self.m * self.g / 4.0
         _roll_dl = float(os.environ.get("S10_CAR_ROLL_MAX_DL", "0.0"))
         if _roll_dl > 0.0:
-            R = float(np.clip(R, -_base_leg * _roll_dl, _tmax))
+            R = float(np.clip(R, -_base_leg * _roll_dl, _rtmax))
         else:
-            R = float(np.clip(R, -_tmax, _tmax))
+            R = float(np.clip(R, -_rtmax, _rtmax))
         P = float(np.clip(P, -_tmax, _tmax))
 
         # 轮差速 yaw 反馈（自适应：转弯大、直行小）
@@ -1242,6 +1251,14 @@ class CarVMC:
                       - _kff * _ff_sign
                       + _kd_eff * _om_hf) * side
                      * _ysc * self._ground_f)
+            # roll 门控期关 yaw 反馈：roll 振荡时反馈与摇振耦合泵送
+            # （round202 台顶交还 roll +0.45→-0.86 摇振 7s 不衰减
+            # 实测）；巡航 roll 门控用 roll_tar 反向压弯（±0.25）
+            # 做标志，|roll_tar|>0.2 即门控期→反馈全关，差速前馈
+            # 保留（门控期 om 已限 ±0.3）；角度阈值版（round203）
+            # 0.25/0.40 误伤 wp0-1 正常弯道反馈（wp1 8.93→9.80）
+            if abs(float(cmd.get("roll_tar", 0.0))) > 0.2:
+                t_yaw = 0.0
             t_yaw *= float(getattr(self, 'yaw_wheel_scale', 1.0))
             # v246: yaw 力矩限速——滑移权威（YAW_TMAX）下首次过冲瞬态太快
             # （实测 ω 冲到 3.6 翻车）；限 t_yaw 变化率，平滑起转与刹车。

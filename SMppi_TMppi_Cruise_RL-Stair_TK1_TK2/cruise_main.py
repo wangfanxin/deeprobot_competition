@@ -458,17 +458,23 @@ def main():
             # （0.5m，1.2m 大窗口在平台角提前爬行致入口劣化 round144）
             _drop_om_w = float(os.environ.get(
                 'S10_DROP_OM_LOOKAHEAD', '0.8'))
+            _drop_straddle = (float(np.max(terr[2:4]))
+                             - float(np.min(terr)) >= 0.08)
+            # 平顶（z>1.2）s 投影假 drop 连续触发 18s（round199 实测
+            # 平顶爬行 0.3 + roll 累积侧翻）——只保留轮下跨骑兜底，
+            # 真下行台阶的跨骑保护不受影响
+            _drop_s_ok = (float(body_pos[2]) <= 1.2)
             _drop_active = False
             if ((stair.drop_ahead_dist is not None
+                    and _drop_s_ok
                     and stair.drop_ahead_dist < _drop_om_w)
-                    or float(np.max(terr[2:4])) - float(np.min(terr))
-                    >= 0.08):
+                    or _drop_straddle):
                 _drop_active = True
                 if ((stair.drop_ahead_dist is not None
+                        and _drop_s_ok
                         and stair.drop_ahead_dist < float(os.environ.get(
                             'S10_DROP_LOOKAHEAD', '2.0')))
-                        or float(np.max(terr[2:4]))
-                        - float(np.min(terr)) >= 0.08):
+                        or _drop_straddle):
                     vx = min(vx, float(os.environ.get(
                         'S10_DROP_VX', '0.3')))
                     vyaw = float(np.clip(vyaw, -0.5, 0.5))
@@ -626,6 +632,11 @@ def main():
                 # om=0 时原地自旋 roll 2.23 侧翻实测）
                 om_c = float(np.clip(om_c, -0.3, 0.3))
                 vx_c = min(float(vx_c), 0.3)
+                # 高台门控期不转向：慢转持续喂侧倾（round204 门控
+                # 期 om-0.3 右转 yaw 漂 0.5rad、roll 卡 0.7 九秒不
+                # 恢复、溜下台沿侧翻实测）；低台脱困转向保留
+                if float(body_pos[2]) > 1.0:
+                    om_c = 0.0
                 # 死锁脱困：门控持续 >2s => 直线倒车离开台阶边缘。
                 # 台沿锁存期不倒车：跨骑台阶时 roll 恒定超阈值，
                 # 倒车轮子打滑卡死（wp5 实测）；交给抬轮把后轮
@@ -732,6 +743,11 @@ def main():
                 # TK 转向也守侧向加速度上限：2m/s 时 om1.5=3.0>1.8
                 # 打滑致 roll 正反馈（round100 下台后 TK1 转侧翻）
                 _om_tk = min(_om_tk, latmax / max(abs(vx_c), 0.5))
+                # 平顶 TK 转向也守 0.6：round206 台顶交还 TK2
+                # om1.5 原地快转激起 roll 0.65 卡死 4.7s 溜下台沿
+                # 侧翻实测；0.6 慢转在 vx1.0 下侧向 0.6m/s^2 安全
+                if float(body_pos[2]) > 1.2:
+                    _om_tk = min(_om_tk, 0.6)
                 om_c = float(np.clip(vyaw, -_om_tk, _om_tk))
                 vx_c = min(float(vx_c), float(os.environ.get(
                     'S10_TK_VX', '1.5')))
@@ -756,10 +772,10 @@ def main():
             _terr_f = _tlp * terr + (1.0 - _tlp) * _terr_f
             globals()['_terr_f'] = _terr_f
             terr = _terr_f
-            # 机身高度钳制：地形不可能贴到机身 0.25 以内（全蹲也
-            # 有 0.19 间隙）——平顶 lidar 1.29 残影让腿高目标偏高
-            # 0.12，机器人踮脚 roll 不稳（round190/191 平顶
-            # 0.3m/s 爬行 roll -0.87 侧翻实测）
+            # 机身高度钳制：保持 0.25（平顶 terr 统一 1.11，站高稳定；
+            # round202 试 0.15：terr 1.15~1.24 跳动+台顶交还 roll 摇振
+            # 不衰减侧翻）。ground_f 腾空误判已在 vmc_legs 高台分支修掉，
+            # 这里不需要放大地形误差。
             if float(body_pos[2]) > 1.0:
                 terr = np.minimum(terr, float(body_pos[2]) - 0.25)
         # 坡顶前瞻平滑（仅 CRUISE）：前方 0.05~0.25m 升高时把前轮
@@ -785,19 +801,19 @@ def main():
         if (_tmax - float(np.min(terr)) >= 0.04
                 and stair.mode == 'CRUISE'):
             terr = np.maximum(terr, _tmax - 0.02)
-        roll_tar = float(np.clip(
+        _roll_tar_c = float(np.clip(
             -float(os.environ.get('S10_CAR_ROLL_K', '0.06')) * om_c
             * abs(vx_c),
             -float(os.environ.get('S10_CAR_ROLL_AMP', '0.06')),
             float(os.environ.get('S10_CAR_ROLL_AMP', '0.06'))))
         # 高台/弱抓地地形关闭压弯，优先防侧翻
         if float(body_pos[2]) > 1.0:
-            roll_tar = 0.0
+            _roll_tar_c = 0.0
         # roll 门控期主动反向压弯：门控只限 om/vx，roll 动量仍会
         # 把机器人推过侧翻点（round116 平顶转向 roll -0.86 实测）；
         # 目标反向偏置把 CarVMC 内部 roll 环推向扶正方向
         if _roll_gate:
-            roll_tar = float(np.clip(-2.0 * _body_roll, -0.25, 0.25))
+            _roll_tar_c = float(np.clip(-2.0 * _body_roll, -0.25, 0.25))
         # 逐轮抬轮前馈（tune4 版恢复）：台阶/台沿由 CarVMC 巡航爬升。
         # RL 单级 12.5cm 未训练（T8 实测 policy 直接摔倒），
         # STAIR 只接管 6 级楼梯。
@@ -836,7 +852,10 @@ def main():
         cmd = dict(vx=(0.6 if (_max_lift > 0.05 or _lift_hold) else vx_c),
                    omega=(0.0 if _max_lift > 0.05 else
                           (0.3 if _lift_hold else om_c)),
-                   roll_tar=roll_tar, pitch_tar=0.0,
+                   roll_tar=_roll_tar_c, pitch_tar=0.0,
+                   # round205 实测 70N 反力反而卡死：卸载侧轮被抬起
+                   # 离地后 roll 力矩绕接触线失效（roll 0.66 悬停 4.7s），
+                   # 回 40N（round201 同值可恢复）
                    step_lift=_step_lift, lift_swing=1.2,
                    yaw_scale=1.0 - 0.6 * _max_lift,
                    ridge_dist=99.0,
@@ -979,10 +998,16 @@ def main():
                 break
 
         if os.environ.get('S10_TRAJ_DENSE', '0') == '1':
+            _dbg_roll = float(np.arctan2(
+                2.0 * (d.xquat[1][0] * d.xquat[1][1]
+                       + d.xquat[1][2] * d.xquat[1][3]),
+                1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
             traj.append([t, body_pos[0], body_pos[1], body_pos[2], yaw,
                          float(next_idx),
                          float(np.hypot(d.cvel[1][0], d.cvel[1][1])),
-                         1.0 if stair.mode == 'STAIR' else 0.0])
+                         1.0 if stair.mode == 'STAIR' else 0.0,
+                         _dbg_roll, float(d.qvel[3]), om_c, vx_c,
+                         float(np.median(terr)), _roll_tar_c])
 
         # 航点推进：只按原始折线水平距离；到点判（未越过）要求
         # 对准下一段 + 角速度收敛才推点（防原地转完成前抢跑）；

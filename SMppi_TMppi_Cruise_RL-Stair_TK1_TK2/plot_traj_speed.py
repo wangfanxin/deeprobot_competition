@@ -52,7 +52,9 @@ def main():
     ax.set_aspect('equal', adjustable='box')
     fig.colorbar(sc, ax=ax, label='speed [m/s]')
     fig.tight_layout()
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    _od = os.path.dirname(out_path)
+    if _od:
+        os.makedirs(_od, exist_ok=True)
     fig.savefig(out_path, dpi=160)
     print('saved', out_path)
 
