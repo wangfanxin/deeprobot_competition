@@ -1,53 +1,60 @@
 #!/bin/bash
-# SMppi/TMppi Cruise + RL-Stair + TK1/TK2 启动脚本
+# SMppi/TMppi Cruise + RL-Stair + TK1/TK2 启动脚本（2026-08-19: 40Hz/2s视界/终点代价）
 cd /home/wfx/DR_competition/0810new/deeprobot_competition/SMppi_TMppi_Cruise_RL-Stair_TK1_TK2
-export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-$HOME/.cache/s10_dial_mpc}"
+export JAX_COMPILATION_CACHE_DIR="/home/wfx/.cache/s10_dial_mpc"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export S10_USE_VIEWER=0
 
 # 仿真 / 任务
 export S10_INIT_YAW=1.5708
-export S10_AUTO_MAX_WP=${S10_AUTO_MAX_WP:-33}
-export S10_TEST_MAX_SIM=${S10_TEST_MAX_SIM:-600}
-export S10_STUCK_TIMEOUT=${S10_STUCK_TIMEOUT:-90}
+export S10_AUTO_MAX_WP=33
+export S10_TEST_MAX_SIM=600
+export S10_STUCK_TIMEOUT=90
 export S10_VMC_TERRAIN=lidar S10_VMC_MODE=rlstair
 
-# nav 层：只输出原始航点直线，不输出 vx/vyaw，不做曲率/CTE/模式判定
-export S10_GLOBAL_FILLET_R=0 S10_WP_ARRIVE_R=0.2 S10_WP_ADVANCE_DIST=1.5
-export S10_NAV_HZ=20
-# 主循环里的简单直线控制参数（不是 nav 层）
+# nav 层：只输出原始航点直线；控制拍 40Hz
+export S10_GLOBAL_FILLET_R=0 S10_WP_ARRIVE_R=0.2 S10_WP_ADVANCE_DIST=0.3
+export S10_NAV_HZ=40 S10_WP_ALIGN_DB=0.25 S10_WP_ALIGN_OM=0.3
+# 主循环直线控制：只保留 加速/到点刹车/航向保持（不过弯）
 export S10_AUTO_VMAX=4.0 S10_LINE_VMAX=4.0
-export S10_LINE_YAW_GAIN=2.5 S10_LINE_YAW_MAX=1.0 S10_LINE_BRAKE_DIST=2.0 S10_LINE_CTE_K=1.0 S10_LINE_MIN_VX=2.0 S10_LINE_TURN_ANGLE=1.0 S10_LINE_TURN_VMAX=1.5
+export S10_LINE_YAW_GAIN=2.5 S10_LINE_YAW_MAX=1.0 S10_LINE_BRAKE_DIST=2.5 S10_LINE_CTE_K=1.0
 
-# SMppi / TMppi
-export VMC_MPPI_N=512 VMC_MPPI_H=20 S10_MPPI_ADA=1
-export S10_MPPI_A_MAX=3.5 S10_MPPI_OMAX=2.5 S10_MPPI_W_GUIDE=0.5 S10_MPPI_W_DIST=2.0 S10_MPPI_W_HEAD=0.0
-export S10_TURN_SPLIT=1 S10_TURN_ERR_DEG=10 S10_TURN_K=3.0 S10_TURN_OM_MAX=2.0 S10_TURN_V_MAX=0.8 S10_WP_TURN_VX=0.4
+# SMppi / TMppi（40Hz，2s 视界=H*dt=40*0.05；输出 slew 按 1/40s）
+export VMC_MPPI_N=1024 VMC_MPPI_H=40 S10_MPPI_DT=0.05 S10_MPPI_CTRL_DT=0.025
+export S10_MPPI_ADA=1 S10_MPPI_A_MAX=3.5 S10_MPPI_OMAX=2.5 S10_MPPI_W_GUIDE=0.5 S10_MPPI_W_DIST=2.0 S10_MPPI_W_HEAD=0.0
+# 终点代价：到 wp dx=0 位置 + ref_v=0 速度（STOP_DX 内线性生效）
+export S10_SMppi_STOP_DX=4.0 S10_MPPI_W_TPOS=10.0 S10_MPPI_W_TV=10.0
+# TMppi 原地转（四轮差速；防打滑/硬刹只在实际 vx>0.5 时启用）
+export S10_TURN_SPLIT=1 S10_TURN_ERR_DEG=10 S10_TURN_K=3.0 S10_TURN_OM_MAX=3.0 S10_TURN_V_MAX=0.3 S10_WP_TURN_VX=0.2 S10_TURN_ARRIVE_R=0.5
+export S10_CAR_SLIP_VX_GATE=0.5
 
 # 全局 lidar 高程图（TK1/TK2/RL 共用；无 god-view ray，无避障 costmap）
 export S10_ELEV_HZ=4 S10_LIDAR_WALL=1 S10_TK1_MIN_CELLS=40
+# stair 接管一切 riser：单级 >=8cm 也交 RL；下行落差低速爬行兜底
+export S10_STAIR_SINGLE_RISE=0.08 S10_ELEV_DROP_TH=0.08 S10_DROP_LOOKAHEAD=2.0 S10_DROP_VX=0.3
 
-# TK1
+# TK1：减速由 SMppi 终点代价+decel 负责；TK1 只做对准 <1s（总预算 <2s），交付 1.5 m/s，对准目标 = lidar riser 航向
 export S10_TK1=1 S10_TK1_LOOKAHEAD=5.0 S10_ELEV_ENTER=2.0 S10_ELEV_DECEL_VX=2.0
-export S10_STAIR_ENTER_DIST=2.0 S10_TK1_VX=2.0 S10_TK1_YAW_DB=0.20 S10_TK1_YAW_K=2.5 S10_TK1_YAW_MAX=1.5
+export S10_STAIR_ENTER_DIST=2.0 S10_TK1_VX=1.5 S10_TK1_YAW_DB=0.20 S10_TK1_YAW_K=2.5 S10_TK1_YAW_MAX=1.5 S10_TK_OM_MAX=2.0 S10_TK_VX=1.5
 
 # RL-Stair（lidar 在线 riser 表 + 距离式 PRETRANS）
 export S10_RL_ELEV=1 S10_RL_POLICY=policy.pt S10_RL_VX=1.5 S10_RL_WARMUP=200
 export S10_PRETRANS=1 S10_PRETRANS_ENTER_DIST=3.0 S10_PRETRANS_BLEND_LEN=1.5
 export S10_PRETRANS_HOLD_DIST=3.0 S10_PRETRANS_EXIT_LEN=2.0
 
-# TK2：四轮全上最后一级台阶后立即对准下一航点，随后交回 SMppi/TMppi
+# TK2：四轮全上最后一级台阶后立即对准下一航点（<1s），随后交回 SMppi/TMppi
 export S10_POSTSTAIR_HOLD_DIST=1.5 S10_TK2=1 S10_TK2_YAW_DB=0.25 S10_TK2_YAW_K=2.5 S10_TK2_YAW_MAX=1.5 S10_TK2_VX=1.2
 export S10_STAIR_WHEEL_CLEAR=0.05
 
-# CarVMC
+# CarVMC（抬轮前馈已删；WHEEL_D 回退 0.02）
 export S10_CAR_SQUAT=1
 export S10_CAR_WHEEL_GF=1.0 S10_VMC_KPH=300 S10_VMC_KDH=60 S10_VMC_WHEEL_K=12.0 S10_VMC_WHEEL_D=0.02
 export S10_VMC_YAW_K_WHEEL=80 S10_VMC_OM_ABS_MAX=2.0 S10_VMC_OM_CAP=1.0
 export S10_VMC_WHEEL_TMAX=13.5 S10_VMC_MU=0.8
 
-# 轨迹
-export S10_TRAJ_DENSE=${S10_TRAJ_DENSE:-1}
-export VMC_TRAJ=${VMC_TRAJ:-tmp_cruise_traj.npy}
+# 轨迹（列: t,x,y,z,yaw,next_idx,speed,mode）
+export S10_TRAJ_DENSE=1
+export VMC_TRAJ=tmp_cruise_traj.npy
 mkdir -p tmp
 exec /home/wfx/DR_competition/.venv/bin/python cruise_main.py
+

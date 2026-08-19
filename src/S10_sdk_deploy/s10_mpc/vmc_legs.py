@@ -1158,18 +1158,21 @@ class CarVMC:
             # （vx<2.0 时滑模反馈线性降至 50%）。
             # v869: gate uses ACTUAL body forward speed (qvel projection),
             # NOT _vx_f (low-passed cmd, useless at startup). Both gates same.
+            _bq = qpos[3:7]
+            _f2 = np.array([
+                1.0 - 2.0 * (_bq[2] ** 2 + _bq[3] ** 2),
+                2.0 * (_bq[1] * _bq[2] + _bq[0] * _bq[3]), 0.0])
+            _vx_b = float(np.dot(qvel[0:3], _f2))
             _yvg = float(os.environ.get("S10_CAR_YAW_VX_GATE", "0.0"))
             self._yv_scale = 1.0
             if _yvg > 0.0:
-                _bq = qpos[3:7]
-                _f2 = np.array([
-                    1.0 - 2.0 * (_bq[2] ** 2 + _bq[3] ** 2),
-                    2.0 * (_bq[1] * _bq[2] + _bq[0] * _bq[3]), 0.0])
-                _vx_b = float(np.dot(qvel[0:3], _f2))
                 self._yv_scale = float(np.clip(abs(_vx_b) / _yvg, 0.0, 1.0))
-            # v855: 反向硬刹恢复（转弯自旋安全网，实测必需）
+            # v855: 反向硬刹恢复（转弯自旋安全网，实测必需）。
+            # 2026-08-19: 按实际前向速度门控（S10_CAR_SLIP_VX_GATE=0.5）——
+            # 原地转向（vx≈0）不触发，保证 TMppi 点转权威。
             _err_y = self._om_f - body["omega"]
-            if abs(_om_b) > _om_safe:
+            _svxg = float(os.environ.get("S10_CAR_SLIP_VX_GATE", "0.5"))
+            if abs(_vx_b) > _svxg and abs(_om_b) > _om_safe:
                 _om_ref = -float(np.clip(_om_b, -_om_safe, _om_safe))
                 _kd_eff = _kd_yaw + 8.0
             # v252: 差速参考用**即时指令**（导航已 slew 0.8/s，够平滑）——
@@ -1203,7 +1206,7 @@ class CarVMC:
             # v886: 打滑感知——该轮轮速超车身实际速度过多时，驱动参考向
             # 车身速度连续收敛（减少空转，恢复抓地；差速保留）。
             _slip = abs(v_wheel) - abs(_vx_bod)
-            if _slip > 0.5:
+            if abs(_vx_b) > _svxg and _slip > 0.5:
                 v_ref -= float(getattr(self, 'slip_gain', 0.8)) * (_slip - 0.5)
             # v241/v242: yaw 摩擦前馈（RobuROC6 库仑摩擦补偿）——差速转向需
             # 先克服侧向滑移阻力才有 yaw 运动，纯误差反馈有死区滞后；按指令

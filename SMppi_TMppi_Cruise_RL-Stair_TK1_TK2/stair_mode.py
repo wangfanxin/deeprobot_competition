@@ -24,7 +24,8 @@ class StairGate:
         os.environ.setdefault('S10_STAIR_CORRIDOR_X', '0.0')
         self.fol = AutoNavFollower(waypoints)
 
-    def update(self, pos2, next_idx, yaw, local_map, body_vx, wheel_z):
+    def update(self, pos2, next_idx, yaw, local_map, body_vx, wheel_z,
+               heading=None):
         # 只推进弧长游标供感知使用，不做速度/转向控制
         if hasattr(self.fol, 'path_pts'):
             k = int(np.argmin(np.sum(
@@ -34,7 +35,8 @@ class StairGate:
             self.fol._s_cur = max(float(getattr(self.fol, '_s_cur', 0.0)),
                                   s_proj)
         self.fol.update_mode(pos2, next_idx, yaw=yaw, local_map=local_map,
-                             body_vx=body_vx, wheel_z=wheel_z)
+                             body_vx=body_vx, wheel_z=wheel_z,
+                             heading=heading)
 
     @property
     def mode(self):
@@ -47,6 +49,10 @@ class StairGate:
     @property
     def stair_ahead_dist(self):
         return self.fol.stair_ahead_dist
+
+    @property
+    def drop_ahead_dist(self):
+        return self.fol.drop_ahead_dist
 
     @property
     def stair_first_heading(self):

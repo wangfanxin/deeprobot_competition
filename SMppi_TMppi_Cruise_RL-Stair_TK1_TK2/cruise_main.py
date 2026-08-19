@@ -92,13 +92,15 @@ def main():
     _over_worst = 0.0
     _over_total = 0.0
     _nav_period = max(1, int(round(200.0 / float(
-        os.environ.get('S10_NAV_HZ', '20')))))
+        os.environ.get('S10_NAV_HZ', '40')))))
     _ctrl_cnt = 0
     _correction = ''
     _planner = ''
-    _prev_line_head = None
-    _last_lift = np.zeros(4)
-    _last_lift_t = -1e9
+    _n_nav = 0
+    _tk1_t0 = None
+    _tk1_align_t0 = None
+    _tk2_t0 = None
+    _roll_gate = False
 
     while t < float(os.environ.get('S10_TEST_MAX_SIM', '600')):
         qpos = np.asarray(d.qpos, dtype=np.float64)
@@ -111,21 +113,25 @@ def main():
         body_vel = _Rbm.T @ np.asarray(d.cvel[1][3:6], dtype=np.float64)
 
         if int(t * 200) % _nav_period == 0:
+            _n_nav += 1
             pos2 = body_pos[:2]
             _correction = ''
             wheel_z = np.asarray([d.xpos[WHEEL_BODY[i]][2]
                                   for i in range(4)], dtype=np.float64)
             local_map = None
+            _ph = None
             if os.environ.get('S10_RL_ELEV', '0') == '1':
                 local_map = perc.local_tile(pos2, t)
+                _ph = perc.stair_heading(stair)
             stair.update(pos2, next_idx, yaw, local_map,
-                         float(body_vel[0]), wheel_z)
+                         float(body_vel[0]), wheel_z, heading=_ph)
 
             if stair.mode != 'STAIR' and _tk2_was_stair:
                 _post_stair_xy = np.asarray(pos2, dtype=np.float64)
                 _post_stair_t = t
                 if os.environ.get('S10_TK2', '0') == '1':
                     _tk2 = True
+                    _tk2_t0 = t
             _tk2_was_stair = (stair.mode == 'STAIR')
 
             if os.environ.get('S10_RL_ELEV', '0') == '1':
@@ -161,48 +167,37 @@ def main():
                     float(os.environ.get('S10_LINE_YAW_GAIN', '2.5')) * head_err,
                     -float(os.environ.get('S10_LINE_YAW_MAX', '2.0')),
                     float(os.environ.get('S10_LINE_YAW_MAX', '2.0'))))
+                # 2026-08-19: 只保留“加速 + 到点刹车”两个能力；
+                # head-err 降速/锐角预刹/MIN_VX 地板全部删除（不过弯）。
+                # 终点速度由 SMppi 终点代价（dx=0/ref_v=0）二次兜底。
                 brake = float(np.clip(
                     (dist_wp - float(os.environ.get('S10_WP_ARRIVE_R', '0.2')))
-                    / max(float(os.environ.get('S10_LINE_BRAKE_DIST', '1.5')),
+                    / max(float(os.environ.get('S10_LINE_BRAKE_DIST', '2.5')),
                           1e-3), 0.0, 1.0))
-                vx = float(os.environ.get('S10_LINE_VMAX', '3.0')) * brake
-                # 下一航段是锐角时，提前在当前段内减速，不能带 3m/s 冲入弯
-                if next_idx + 1 < len(wp) and dist_wp < 6.0:
-                    _next_vec = wp[next_idx + 1, :2] - wp[next_idx, :2]
-                    _next_head = float(np.arctan2(_next_vec[1], _next_vec[0]))
-                    _delta_next = abs(float(np.arctan2(
-                        np.sin(_next_head - line_head),
-                        np.cos(_next_head - line_head))))
-                    if _delta_next > float(os.environ.get(
-                            'S10_LINE_TURN_ANGLE', '0.5')):
-                        vx = min(vx, float(os.environ.get(
-                            'S10_LINE_TURN_VMAX', '1.2')))
-                # 近点：未对准时允许降到 TMppi 触发速度；对准后给最低速度过点
-                if abs(head_err) <= float(os.environ.get(
-                        'S10_LINE_ALIGNED_DB', '0.15')):
-                    vx = max(vx, float(os.environ.get('S10_LINE_MIN_VX', '0.5')))
-                elif dist_wp > 0.35:
-                    vx = max(vx, float(os.environ.get('S10_LINE_MIN_VX', '0.5')))
-                if _prev_line_head is not None:
-                    delta = abs(float(np.arctan2(
-                        np.sin(line_head - _prev_line_head),
-                        np.cos(line_head - _prev_line_head))))
-                    if delta > float(os.environ.get('S10_LINE_TURN_ANGLE', '0.5')):
-                        vx = min(vx, float(os.environ.get(
-                            'S10_LINE_TURN_VMAX', '1.2')))
-                _prev_line_head = line_head
+                vx = float(os.environ.get('S10_LINE_VMAX', '4.0')) * brake
 
-            # TK1：CRUISE 中检测到前方楼梯，只做“限速 + 对准”，不改模式
+            # TK1：CRUISE 中检测到前方楼梯，只做“对准”，不改模式。
+            # 减速由 SMppi 终点代价 + decel_request 负责；TK1 只在进入
+            # 交付圈（S10_STAIR_ENTER_DIST）后补 1.5m/s 交付速度上限。
             if (os.environ.get('S10_TK1', '0') == '1'
                     and os.environ.get('S10_RL_ELEV', '0') == '1'
                     and stair.mode == 'CRUISE'):
-                th = perc.stair_heading(stair)
+                th = _ph
                 if th is not None:
+                    if _tk1_t0 is None:
+                        _tk1_t0 = t
                     ey = float(np.arctan2(np.sin(th - yaw),
                                           np.cos(th - yaw)))
-                    vx = min(vx, float(os.environ.get('S10_TK1_VX', '2.0')))
+                    _ad = stair.stair_ahead_dist
+                    if (_ad is not None and _ad <= float(
+                            os.environ.get('S10_STAIR_ENTER_DIST', '2.0'))):
+                        vx = min(vx, float(os.environ.get('S10_TK1_VX', '1.5')))
                     _correction += 'TK1'
                     if abs(ey) > float(os.environ.get('S10_TK1_YAW_DB', '0.20')):
+                        if (_tk1_align_t0 is None and (_ad is None
+                                or _ad <= float(os.environ.get(
+                                    'S10_STAIR_ENTER_DIST', '2.0')))):
+                            _tk1_align_t0 = t
                         ky = float(os.environ.get('S10_TK1_YAW_K', '2.5'))
                         ym = float(os.environ.get('S10_TK1_YAW_MAX', '1.5'))
                         vyaw = float(np.clip(ky * ey, -ym, ym))
@@ -221,6 +216,10 @@ def main():
                     vyaw = float(np.clip(ky2 * ey2, -ym2, ym2))
                     vx = min(vx, float(os.environ.get('S10_TK2_VX', '1.5')))
                 else:
+                    if _tk2_t0 is not None:
+                        print('[TK2] 上顶->对准 %.2fs (预算1.0s)'
+                              % (t - _tk2_t0), flush=True)
+                        _tk2_t0 = None
                     _tk2 = False
 
             # 刚离开楼梯时先保持短时间直线慢行，避免平台边缘 yaw 过冲侧翻
@@ -232,18 +231,33 @@ def main():
 
             v_ref = vx
             if stair.decel_request > 0.0:
+                if _tk1_t0 is None:
+                    _tk1_t0 = t
                 dv = float(os.environ.get('S10_ELEV_DECEL_VX', '2.0'))
                 vx = vx * (1.0 - stair.decel_request) + dv * stair.decel_request
                 v_ref = min(v_ref, vx)
+            # 下行落差保护：前方检测到 >=0.08m 跌落沿时强制低速直行，
+            # 避免高速下台栽头（下行不交 RL，先慢速爬行兜底）。
+            if (stair.drop_ahead_dist is not None
+                    and stair.drop_ahead_dist < float(os.environ.get(
+                        'S10_DROP_LOOKAHEAD', '2.0'))):
+                vx = min(vx, float(os.environ.get('S10_DROP_VX', '0.3')))
+                vyaw = float(np.clip(vyaw, -0.5, 0.5))
+                v_ref = min(v_ref, vx)
+                _correction += 'DROP'
 
             ref_pts = []
+            _wp_dx = None
             if line is not None:
                 u = np.asarray(line['end'] - line['start'], dtype=np.float64)
                 u = u / max(np.linalg.norm(u), 1e-9)
-                look = min(12.0, max(float(line['dist_to_wp'] or 0.0) + 1.5, 2.0))
-                for ds in np.arange(0.0, look + 1e-6, 0.5):
+                _wp_dx = float(line['dist_to_wp'] or 0.0)
+                # 参考路径末端精确 = wp（不再越过）；1.0m 间距保证 40Hz 实时
+                for ds in np.arange(0.0, min(_wp_dx, 12.0) + 1e-6, 1.0):
                     pt = pos2 + u * ds
                     ref_pts.append([pt[0], pt[1], float(line['heading'])])
+                ref_pts.append([float(line['end'][0]), float(line['end'][1]),
+                                float(line['heading'])])
             if ref_pts:
                 ref_path = np.asarray(ref_pts, dtype=np.float64)
             else:
@@ -263,18 +277,28 @@ def main():
             else:
                 _planner = 'SMppi'
                 vx_c, om_c = smppi.plan(state, ref_path, v_ref, prev_u,
-                                        float(vyaw))
-            omcap = float(os.environ.get('S10_VMC_OM_CAP', '2.0'))
-            latmax = float(os.environ.get('S10_AUTO_LAT_MAX', '5.0'))
-            omcap = min(omcap, latmax / max(abs(vx_c), 0.5))
-            # 侧倾过大时停止转向并减速，防止 roll 正反馈翻车
+                                        float(vyaw), wp_dx=_wp_dx)
+            latmax = float(os.environ.get('S10_AUTO_LAT_MAX', '1.8'))
+            if used_turn:
+                omcap = min(float(os.environ.get('S10_TURN_OM_MAX', '3.0')),
+                            latmax / max(abs(vx_c), 0.5))
+            else:
+                omcap = min(float(os.environ.get('S10_VMC_OM_CAP', '2.0')),
+                            latmax / max(abs(vx_c), 0.5))
+            # 侧倾过大时停止转向并减速，防止 roll 正反馈翻车。
+            # 滞回门控（0.30 触发 / 0.15 释放）：防坡面抖振；
+            # 释放后经 sync_applied 从真实指令慢升，不 0.4->4.0 阶跃。
             _body_roll = float(np.arctan2(
                 2.0 * (d.xquat[1][0] * d.xquat[1][1]
                        + d.xquat[1][2] * d.xquat[1][3]),
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
-            if abs(_body_roll) > 0.35:
+            if abs(_body_roll) > 0.30:
+                _roll_gate = True
+            elif abs(_body_roll) < 0.15:
+                _roll_gate = False
+            if _roll_gate:
                 om_c = 0.0
-                vx_c = min(float(vx_c), 0.5)
+                vx_c = min(float(vx_c), 0.4)
             # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
             # 楼梯后：低倍率直接瞄当前目标 wp，直到距其足够近才放开
             if (_post_stair_xy is not None and next_idx < len(wp)
@@ -292,7 +316,16 @@ def main():
                 vx_c = min(float(vx_c), 0.8)
                 omcap = min(omcap, 0.3)
             om_c = float(np.clip(om_c, -omcap, omcap))
+            # TK 阶段（TK1 对准 / TK2 转出）直接执行对准转向：
+            # MPPI 的 om 上限被 VMC_OM_CAP=1.0 压住，<1s 预算不够；
+            # 低 vx 时 car_omega_limit≈3.0，TK 专用上限 2.0 安全。
+            if 'TK1' in _correction or 'TK2' in _correction:
+                _om_tk = float(os.environ.get('S10_TK_OM_MAX', '2.0'))
+                om_c = float(np.clip(vyaw, -_om_tk, _om_tk))
+                vx_c = min(float(vx_c), float(os.environ.get(
+                    'S10_TK_VX', '1.5')))
             prev_u = np.asarray([vx_c, om_c])
+            smppi.sync_applied(prev_u)
         else:
             vx_c, om_c = prev_u
 
@@ -302,6 +335,7 @@ def main():
                                        float(body_pos[2]),
                                        float(wheel_xyz[i, 2]) - 0.081)
                            for i in range(4)], dtype=np.float64)
+        # 2026-08-19: 地形前瞻/抬轮前馈已删除——一切 riser 交由 STAIR。
         roll_tar = float(np.clip(
             -float(os.environ.get('S10_CAR_ROLL_K', '0.06')) * om_c
             * abs(vx_c),
@@ -310,44 +344,9 @@ def main():
         # 高台/弱抓地地形关闭压弯，优先防侧翻
         if float(body_pos[2]) > 1.0:
             roll_tar = 0.0
-        # lidar 前方小台阶连续抬轮（只给 CarVMC 做前馈；不是独立技能）
-        _fwd_lift = np.array([np.cos(yaw), np.sin(yaw)])
-        _step_lift = np.zeros(4, dtype=np.float64)
-        if stair.mode == 'CRUISE' and _post_stair_xy is None:
-            _front_on_step = (float(np.max(terr[0:2]))
-                              > float(np.max(terr[2:4])) + 0.05)
-            for _li in range(4):
-                # 后轴只有在前轴已经骑上台面后才允许抬，防止四轮同时抬离地
-                if _li >= 2 and not _front_on_step:
-                    continue
-                _lx = float(wheel_xyz[_li, 0] + _fwd_lift[0] * 0.60)
-                _ly = float(wheel_xyz[_li, 1] + _fwd_lift[1] * 0.60)
-                _ha = perc.height(_lx, _ly, t, float(body_pos[2]),
-                                        fallback_h=float(np.max(terr)))
-                _rise = float(_ha - terr[_li])
-                if 0.06 <= _rise <= 0.25:
-                    _step_lift[_li] = float(np.clip(
-                        (_rise - 0.05) / 0.08, 0.0, 1.0))
-        _max_lift = float(np.max(_step_lift))
-        _last_lift = _step_lift.copy()
-        if _max_lift > 0.05:
-            _last_lift_t = t
-        _lift_hold = (t - _last_lift_t
-                      < float(os.environ.get('S10_LIFT_HOLD_T', '1.0')))
-        if _max_lift > 0.05 or _lift_hold:
-            os.environ['S10_CAR_WHEEL_GF'] = '0.5'
-        else:
-            os.environ['S10_CAR_WHEEL_GF'] = '1.0'
-        cmd = dict(vx=(1.0 if (_max_lift > 0.05 or _lift_hold) else vx_c),
-                   omega=(0.0 if _max_lift > 0.05 else
-                          (0.3 if _lift_hold else om_c)),
-                   roll_tar=roll_tar, pitch_tar=0.0,
-                   step_lift=_step_lift,
-                   lift_swing=1.2,
-                   yaw_scale=1.0 - 0.6 * _max_lift,
-                   ridge_dist=99.0,
-                   lift_f_scale=(0.3 if _max_lift > 0.05 else 1.0),
-                   wheel_press=(0.1 if _max_lift > 0.05 else 0.0))
+        # 2026-08-19: 抬轮前馈已删除；cmd 只给速度/姿态目标，
+        # 其余字段由 vmc_legs 的 cmd.get 默认值接管。
+        cmd = dict(vx=vx_c, omega=om_c, roll_tar=roll_tar, pitch_tar=0.0)
 
         # PRETRANS：楼梯前按 riser 距离进入 RL 高站姿；楼梯后按 handback 距离退出
         if os.environ.get('S10_PRETRANS', '1') == '1' and stair.mode != 'STAIR':
@@ -382,6 +381,14 @@ def main():
             print('[RL-DIAG] RL->CRUISE at pos=(%.2f,%.2f,%.2f) yaw=%.3f vx=%.2f'
                   % (body_pos[0], body_pos[1], body_pos[2], hy, hv), flush=True)
         if stair.mode == 'STAIR' and not _rl_diag_done:
+            if _tk1_t0 is not None:
+                print('[TK1] 减速+对准 %.2fs / 对准 %.2fs (预算 2.0/1.0s)'
+                      % (t - _tk1_t0,
+                         t - _tk1_align_t0 if _tk1_align_t0 is not None
+                         else -1.0),
+                      flush=True)
+                _tk1_t0 = None
+                _tk1_align_t0 = None
             _rl_diag_done = True
             if stair.stair_first_heading is not None:
                 rl.set_heading(float(stair.stair_first_heading))
@@ -445,12 +452,11 @@ def main():
             spd = float(np.hypot(d.cvel[1][3], d.cvel[1][4]))
             print('[T] t=%.0f wp=%d pos=(%.1f,%.1f,%.2f) yaw=%.2f '
                   'spd=%.2f roll=%.2f cmd=(%.2f,%.2f) mode=%s corr=%s plan=%s '
-                  'lift=%.2f terr=%s'
+                  'terr=%s'
                   % (t, next_idx, body_pos[0], body_pos[1], body_pos[2],
                      yaw, spd, roll, vx_c, om_c, stair.mode,
                      (_correction or 'NONE'), _planner,
-                     float(np.max(_last_lift)), np.round(terr, 2)), flush=True)
-            print('[LIFT]', np.round(_last_lift, 2), flush=True)
+                     np.round(terr, 2)), flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[T] *** 侧翻/摔倒 ***', flush=True)
                 break
@@ -462,12 +468,26 @@ def main():
 
         if os.environ.get('S10_TRAJ_DENSE', '0') == '1':
             traj.append([t, body_pos[0], body_pos[1], body_pos[2], yaw,
-                         1.0 if stair.mode == 'STAIR' else 0.0,
-                         float(np.hypot(d.cvel[1][3], d.cvel[1][4]))])
+                         float(next_idx),
+                         float(np.hypot(d.cvel[1][3], d.cvel[1][4])),
+                         1.0 if stair.mode == 'STAIR' else 0.0])
 
-        # 航点推进：只按原始折线水平距离
+        # 航点推进：只按原始折线水平距离 + 对准下一段方向后才推点
+        # （防“过点兜底”在转向完成前抢跑）
         if next_idx < len(wp):
-            if nav.reached(next_idx, d.xpos[1][:2]):
+            _arr = nav.reached(next_idx, d.xpos[1][:2])
+            _align_ok = True
+            if _arr and next_idx > 0 and next_idx + 1 < len(wp):
+                _segv = wp[next_idx + 1, :2] - wp[next_idx, :2]
+                _hdr = float(np.arctan2(_segv[1], _segv[0]))
+                _yerr = abs(float(np.arctan2(np.sin(_hdr - yaw),
+                                             np.cos(_hdr - yaw))))
+                _align_ok = (_yerr <= float(os.environ.get(
+                                 'S10_WP_ALIGN_DB', '0.25'))
+                             and abs(float(qvel[5]))
+                             <= float(os.environ.get(
+                                 'S10_WP_ALIGN_OM', '0.3')))
+            if _arr and _align_ok:
                 if next_idx == 0 and t_start is None:
                     t_start = t
                 wp_times[next_idx] = t
@@ -490,6 +510,10 @@ def main():
           '连续超限最长 %.2fs / 累计 %.2fs%s'
           % (_max_tau_leg, _max_tau_wh, _over_worst, _over_total,
              '  [超0.5s不合格!]' if _over_worst > 0.5 else ''), flush=True)
+    _p_ema, _p_max, _p_n = smppi.plan_stats
+    print('规划器: 40Hz 目标 plan=%d次 avg=%.1fms max=%.1fms | '
+          '实际控制拍=%.1fHz'
+          % (_p_n, _p_ema, _p_max, _n_nav / max(t - 0.5, 1e-3)), flush=True)
     if os.environ.get('VMC_TRAJ'):
         np.save(os.environ['VMC_TRAJ'], np.asarray(traj))
 

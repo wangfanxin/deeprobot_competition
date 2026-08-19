@@ -82,6 +82,7 @@ class AutoNavFollower:
         self.stair_ahead_dist = None
         self.stair_rises_s = []
         self.stair_rises_tops = []
+        self.drop_ahead_dist = None
         self._stair_exit_s = None
         self._stair_enter_s = None
         self._stair_first_riser_xy = None
@@ -832,7 +833,7 @@ class AutoNavFollower:
         return False
 
     def update_mode(self, robot_xy, next_idx, yaw=None, local_map=None,
-                    body_vx=0.0, wheel_z=None):
+                    body_vx=0.0, wheel_z=None, heading=None):
         """PERCEPTION-DRIVEN stair takeover (USER 2026-08-16; 2026-08-18 doc §9/§10 对齐).
 
         - CRUISE -> STAIR (TK1)：前方 S10_TK1_LOOKAHEAD 内检测到路径上楼梯，且
@@ -914,7 +915,10 @@ class AutoNavFollower:
                 _first_s = float(self.stair_rises_s[0])
                 _k = int(np.searchsorted(self.path_cum, _first_s, side="right") - 1)
                 _k = min(max(_k, 0), len(self.path_heading) - 1)
-                _first_head = float(self.path_heading[_k])
+                # 2026-08-19: TK1 对准目标优先用 lidar 检测的 riser 航向
+                # （perc.stair_heading），无 lidar 时退回路径航向。
+                _first_head = (float(heading) if heading is not None
+                               else float(self.path_heading[_k]))
                 if os.environ.get("S10_TK1", "0") == "1" and yaw is not None:
                     _ey = float(np.arctan2(np.sin(_first_head - yaw),
                                            np.cos(_first_head - yaw)))
@@ -1017,19 +1021,35 @@ class AutoNavFollower:
                     return [s_cur + float(ds)]
             return []
         step_th = float(os.environ.get("S10_ELEV_STEP_TH", "0.10"))
+        single_th = float(os.environ.get("S10_STAIR_SINGLE_RISE", "0.08"))
+        drop_th = float(os.environ.get("S10_ELEV_DROP_TH", "0.08"))
         steps = []
+        drops = []
         prev_h = prof[0][1]
         for (ds, h) in prof[1:]:
-            if h - prev_h > step_th and ds >= 0.5:
+            _dh = h - prev_h
+            if _dh > step_th and ds >= 0.5:
                 _conf = any(h2 > prev_h + step_th
                             for (ds2, h2) in prof
                             if 0.0 < ds2 - ds <= 0.5)
                 if _conf:
-                    steps.append((ds, h - prev_h, h))
+                    steps.append((ds, _dh, h))
+                elif _dh >= single_th:
+                    # 2026-08-19: 单级 riser（台面/单级台阶）也交 STAIR——
+                    # 跳变后 0.2~0.6m 内高度保持才算台面，滤噪声尖峰。
+                    _sustain = any(h2 >= prev_h + single_th
+                                   for (ds2, h2) in prof
+                                   if 0.2 < ds2 - ds <= 0.6)
+                    if _sustain:
+                        steps.append((ds, _dh, h))
+            elif _dh < -drop_th and ds >= 0.5:
+                drops.append(ds)
             prev_h = max(prev_h, h)
         self._elev_last_steps = [(float(d), float(j)) for d, j, _ in steps]
         self._elev_rises_tops = [float(h) for _, _, h in steps]
-        if len(steps) < int(os.environ.get("S10_ELEV_MIN_STEPS", "2")):
+        self.drop_ahead_dist = float(min(drops)) if drops else None
+        _single = (len(steps) == 1 and steps[0][1] < 0.35)
+        if len(steps) < int(os.environ.get("S10_ELEV_MIN_STEPS", "2"))                 and not _single:
             return []
         d0 = steps[0][0]
         span = float(os.environ.get("S10_ELEV_SEQ_SPAN", "3.0"))
@@ -1037,7 +1057,7 @@ class AutoNavFollower:
             return []
         base = float(min(h for _, h in prof[:20]))
         max_h = float(max(h for _, h in prof))
-        if max_h - base < float(os.environ.get("S10_ELEV_CLIMB_TH", "0.4")):
+        if max_h - base < float(os.environ.get("S10_ELEV_CLIMB_TH", "0.4"))                 and not _single:
             return []
         return [s_cur + float(d) for d, _, _ in steps]
 

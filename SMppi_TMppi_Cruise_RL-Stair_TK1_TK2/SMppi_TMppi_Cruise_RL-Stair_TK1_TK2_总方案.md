@@ -1,409 +1,218 @@
-# SMppi/TMppi Cruise + RL-Stair + TK1/TK2 总方案（2026-08-18，终版）
+# SMppi/TMppi Cruise + RL-Stair + TK1/TK2 总方案（2026-08-19 重构版，代码对齐）
 
-> 本文档只描述主链路允许的技能：
-> **SMppi、TMppi、CarVMC（Cruise）、RL-Stair、TK1、TK2**。
-> nav_waypoint、stair_mode 与 Lidar 高程图是支撑模块，不属于额外技能。
-> direct-nav、CRUISE_TK、POST-STAIR AIM、STEP_HOMING、W45_PULL、避障 costmap、
-> god-view ray / 已知地图预扫描均已从主链路删除或禁用。
+> 本文档与 2026-08-19 代码完全对齐。模块目录：`SMppi_TMppi_Cruise_RL-Stair_TK1_TK2/`，
+> 启动脚本：`run_smppi_tmppi_cruise_rlstair_tk12.sh`，主循环：`cruise_main.py`。
+> 旧单体链路（`src/S10_sdk_deploy/scripts/cruise_vmc_noros.py` 等）为遗留代码，不参与本方案。
 
-主链路脚本：`src/S10_sdk_deploy/scripts/cruise_vmc_noros.py`
-启动脚本：`run_smppi_tmppi_cruise_rlstair_tk12_wp033.sh`
+## 1. 目标与技能分工
 
-## 1. 技能划分
+- 在 MuJoCo 官方 `S10_track.xml` 中完成 33 个 `track_waypoint_*` 全程巡检。
+- 技能分工（用户口径）：
+  - **SMppi**：直线段走线保持（BodyMPPI 采样规划）。只做三件事：航向保持、快加速、到点减速。**不过弯**。
+  - **TMppi**：航点原地转向（四轮差速）。到点后尽快转到下一 wp 方向，转完交回 SMppi。
+  - **CarVMC**：巡航执行器（200Hz，16 维力矩）。
+  - **STAIR（RL-Stair）**：接管**一切 riser**（多级楼梯 + ≥8cm 单级台阶/台面沿），policy.pt 50Hz。
+  - **TK1**：楼梯前交接。**减速由 SMppi 终点代价 + decel 负责；TK1 只做对准 <1s**（总预算 <2s），交付速度 1.5 m/s，对准目标 = lidar riser 航向。
+  - **TK2**：四轮上顶后立即转出对准下一 wp（<1s），随后交回 SMppi/TMppi。
+  - **DROP**：下行落差（≥8cm 跌落沿）不交 RL，强制 0.3 m/s 低速爬行兜底。
 
-- SMppi：直线段走线保持（BodyMPPI，输出 `[vx, omega]`）。
-- TMppi：航点附近低速转向（yaw 误差 > 10° 时接管）。
-- CarVMC：巡航轮足执行器（200Hz，16 维力矩）。
-- TK1：楼梯前 lidar 检测、减速、yaw 对准、交付 RL。
-- RL-Stair：爬楼梯（policy 50Hz + 腿 PD / 轮速 200Hz）。
-- TK2：四轮全部站上最后一级台阶后，立即低速对准下一航点，随后交回 SMppi/TMppi。
+## 2. 模块清单
 
-## 2. 数据管线
+| 文件 | 职责 |
+|---|---|
+| cruise_main.py | 200Hz 主循环：状态机、线控、TK1/TK2/DROP/roll 门控、航点推进、计时、traj |
+| nav_waypoint.py | 航点提取、直线段输出（start/end/heading/dist_to_wp）、判点 |
+| smppi.py + s10_mpc/body_mppi.py | SMppi 采样规划（终点代价、40Hz slew、耗时统计） |
+| tmppi.py | TMppi 近点原地转向 |
+| carvmc.py + s10_mpc/vmc_legs.py | CarVMC 轮足执行（防打滑仅 vx>0.5 启用） |
+| perception_lidar.py + s10_mpc/lidar_terrain_v2.py | lidar 高程图、局部 tile、riser/heading 检测 |
+| stair_mode.py + s10_mpc/auto_nav.py | CRUISE/STAIR 门控（update_mode）、decel_request、单级/下行检测 |
+| rlstair_ctrl.py / rlstair_obs.py / policy.pt | RL 楼梯控制器（55 维观测→16 动作） |
+| plot_traj_speed.py | 轨迹 xy-速度图（traj 第 6 列 = 速度） |
 
-```text
-33 个 track_waypoint_*（原始航点折线）
-  → nav_waypoint（20Hz）：只输出当前航点直线段
-  → 主循环直线控制：由直线 heading / 到 wp 距离生成 [vx, vyaw]
-  → TK1 / TK2 修正 [vx, vyaw]
-  → TMppi（近点低速转向） / SMppi（BodyMPPI）
-  → CarVMC（CRUISE，200Hz） / RLStairCtrl（STAIR，policy 50Hz + PD 200Hz）
-  → 16 joint torque → MuJoCo
-```
+## 3. 控制频率与实时性
 
-感知管线（全局 lidar，不使用 god-view ray）：
-
-```text
-LidarTerrainV2（96×48 地形射线 + 61×13 wall 射线，mount 抬高 0.6m，4Hz 累计）
-  → h / hmax / wall 栅格
-  → 轮下 terrain_at（CarVMC 腿控）
-  → elev_tile + update_mode（TK1/TK2/RL 的 STAIR 判定）
-  → lidar 在线 riser 表（RL policy terrain_ctx）
-```
-
-
-
-## 2.1 完整主链路状态机（20Hz 一拍内顺序执行）
-
-```text
-1. nav_waypoint.line(next_idx, robot_xy)
-     -> 当前直线段 heading / dist_to_wp
-
-2. stair_mode.update(local_map, ...)
-     -> mode = CRUISE 或 STAIR
-
-3. CRUISE 时的修正层
-     TK1 检测到前方楼梯：
-        vx <= 2.0，对准楼梯方向，按距离减速；
-        满足距首级 riser<2m 且 |yaw_err|<=0.20 且 vx<2.0 时
-        stair_mode 切到 STAIR。
-
-     TK2 刚从 STAIR 切回 CRUISE：
-        vx <= 1.5，对准下一航点；
-        |yaw_err| <= 0.15 后释放，进入第 4 步。
-
-4. CRUISE 规划器二选一
-     TMppi：
-        距当前 wp < 0.2m
-        且 实际速度 < 0.2m/s
-        且 当前 yaw 与下一航段方向误差 > 10°
-        -> vx<=0.2，omega=clip(3.0*err, ±2.0)
-
-     SMppi：
-        除 TMppi 触发以外的所有 CRUISE 时间
-        -> BodyMPPI 规划 [vx, omega]
-
-5. 执行器
-     mode == CRUISE -> CarVMC 200Hz
-     mode == STAIR  -> RL policy 50Hz + 腿PD/轮速 200Hz
-
-6. STAIR 退出（TK2 的起点）
-     四轮轮心高度 >= max(lidar riser top) - 0.05
-     -> mode 切回 CRUISE
-     -> 同一拍置位 TK2
-```
-
-TMppi / SMppi 分工判定表：
-
-| 控制器 | 使用场景 | 触发/退出判定 | 输出 |
-|---|---|---|---|
-| TMppi | 只在当前航点附近低速转向 | 距 wp<0.2m 且 实际速度<0.2m/s 且 下一段 yaw 误差>10° | vx<=0.2，omega=P*yaw_err，限幅±2.0 |
-| SMppi | 除 TMppi 以外的全部巡航 | 上述条件不满足 | BodyMPPI 输出 [vx,omega] |
-
-TK1 / RL-Stair / TK2 分工判定表：
-
-| 模块 | 阶段 | 进入条件 | 退出条件 |
-|---|---|---|---|
-| TK1 | 楼梯前 CRUISE | lidar 检测到路径前方 riser | 距首级 riser<2m、yaw 已对准、vx<2.0，切 STAIR |
-| RL-Stair | 楼梯中 STAIR | TK1 交付 | 四轮全部站上最后一级台阶（轮心>=最高台面-0.05） |
-| TK2 | 楼梯后 CRUISE 的第一段 | STAIR→CRUISE 的同一拍 | 对准下一航点（|yaw_err|<=0.15），交回 TMppi/SMppi |
-
-## 3. 频率
-
-| 模块 | 频率 | 实现 |
+| 层 | 频率 | 说明 |
 |---|---|---|
-| 仿真 | 200Hz | DT=0.005 |
-| nav_waypoint / stair_mode | 20Hz | `S10_NAV_HZ=20`，每 round(200/HZ) 步一拍 |
-| SMppi / TMppi | 20Hz | 与 nav_waypoint / stair_mode 同拍 |
-| CarVMC | 200Hz | 每控制步 |
-| lidar 高程图更新 | 4Hz | `S10_ELEV_HZ=4`，全模块共用同一栅格 |
-| RL policy | 50Hz | `DECIMATION=4`，动作零阶保持 |
+| MuJoCo 仿真 | 200Hz | DT=0.005 |
+| 执行层 CarVMC / RLStairCtrl | 200Hz | 每仿真步一次 |
+| 规划/模式 tick | **40Hz** | S10_NAV_HZ=40，每 5 步一拍（SMppi/TMppi/TK/判点/模式） |
+| lidar 高程图 | 4Hz 增量 | S10_ELEV_HZ=4，tile 每拍重建 |
+| MPPI 内部 | 2s 视界 | N=1024、H=40、rollout dt=0.05（H×dt=2.0s） |
 
-## 4. 路径规划：原始航点折线
+**实时性保证（名义=实际）**：
+- 40Hz 预算 25ms。实测（WSL/竞赛 .venv，本轮基准）：plan 平均 **9.9~10.3ms**、最大 **19.2ms** < 25ms；实测控制拍 **40.0Hz**。
+- 输出 slew 与 rollout dt 解耦：rollout 用 S10_MPPI_DT=0.05，输出加速度/角加速度限幅用 S10_MPPI_CTRL_DT=0.025（=1/40s），保证限幅名义值在 40Hz 下不变形。
+- 参考路径间距 1.0m（12m 视界内 ≤13 点），把 _cost 的距离矩阵从 (1024,41,25) 压到 (1024,41,13)，plan 由 21.9ms 档降到 13.4ms 档。
+- 结束打印：规划器: plan=N次 avg=..ms max=..ms | 实际控制拍=..Hz，每轮测试必须核对。
 
-- 几何路径 = `wp[:, :2]` 的原始折线，**不做 biarc 圆角、不做走廊平移、
-  不做 diagonal bump**。
-- 实现：`nav_waypoint.py` 只保留 `wp` 数组，`line()` 输出当前航点直线段；
-  CRUISE/STAIR 判定所需的路径几何由 `stair_mode.py` 单独构建。
-- nav 层不做 `vx/vyaw` 控制、不做曲率 vlim、不做 CTE、不做 CRUISE/STAIR 判定。
-- 主循环只根据直线 heading 误差与到下一航点距离做简单直线控制。
-- 航点推进只按水平距离：`S10_WP_ADVANCE_DIST=0.2`，不使用弧长兜底、
-  不使用 wp7 走廊平移判点。
-- `WaypointLineNav.line(next_idx, robot_xy)` 输出：
-  `start / end / heading / length / dist_to_wp`。
-- CRUISE/STAIR 判定移到独立模块 `stair_mode.py`，不再属于 nav 层。
+## 4. 数据管线
 
-参数：
+### 4.1 运动控制管线（40Hz tick）
 
-```bash
-S10_GLOBAL_FILLET_R=0
-S10_WP_ARRIVE_R=0.2
-S10_WP_ADVANCE_DIST=0.2
-S10_AUTO_VMAX=3.0
-S10_LINE_VMAX=3.0
-S10_LINE_YAW_GAIN=2.5
-S10_LINE_YAW_MAX=2.0
-S10_LINE_BRAKE_DIST=1.5
-```
+    33 track_waypoint_*
+      -> nav_waypoint.line(next_idx, pos)  [直线段 start/end/heading/dist_to_wp]
+      -> 线控制器: vyaw = clip(2.5*(line_head+CTE-yaw), ±1.0)
+                   vx   = LINE_VMAX(4.0) * brake(dist_wp)   # 到点线性刹车
+      -> 修正层: TK1 对准(lidar heading, 交付圈内 vx<=1.5)
+                 TK2 对准下一 wp (vx<=1.2)
+                 DROP 前方跌落沿 -> vx<=0.3, |vyaw|<=0.5
+                 post-stair hold 0.6s / 慢速瞄准
+                 decel_request -> vx 向 2.0 插值
+      -> v_ref = min(...)
+      -> 规划二选一:
+           TMppi: dist<0.5m 且 speed<0.3 且 |yaw_err|>10deg -> vx<=0.2, om=clip(3*err,±3.0)
+           SMppi: ref_path(末端精确=wp, 1m间距) + 终点代价(dx=0/ref_v=0) -> [vx,om]
+      -> om 上限: TMppi=min(TURN_OM_MAX=3.0, latmax/|vx|); SMppi=min(VMC_OM_CAP=1.0, 1.8/|vx|)
+      -> roll 门控(0.30/0.15 滞回): 触发 -> om=0, vx<=0.4
+      -> TK 阶段直接对准: om=clip(vyaw, ±2.0)   # 绕过 MPPI 的 1.0 om 上限
+      -> post-stair / 高台(z>1: vx<=0.8, om<=0.3, 压弯关)
+      -> cmd{vx,omega,roll_tar,pitch_tar}
+      -> STAIR ? RLStairCtrl.compute_tau : CarVMC.compute_tau
+      -> 16 joint torque -> mujoco(200Hz)
 
-## 5. SMppi 直线保持（BodyMPPI）
+### 4.2 感知管线（lidar，无 god-view）
 
-- 状态输入：`[x, y, yaw, body_vx, body_vy, omega]`；`body_vx/body_vy` 由世界
-  速度经 `xmat` 旋转到机体系。
-- 采样配置：`N=512, H=20, dt=0.05` → 视界 1.0s；`S10_MPPI_ADA=1`。
-- 采样中心：`[v_ref, guide_om]`，其中
-  `v_ref = 主循环直线控制 vx`（TK 限速与 decel 也会进入 v_ref），
-  `guide_om = nav vyaw`。
-- 参考轨迹：从 `s_cur` 起 0~12m、步长 0.5m，截止到当前航点弧长 +1.5m。
-- rollout 约束：
-  - 摩擦锥 `|vx·omega| <= mu·g / |vx|`；
-  - CarVMC 能力表 `car_omega_limit(vx)`；
-  - 纵向加速度 `|dvx| <= S10_MPPI_A_MAX * dt`。
-- 成本：
-  `2.0 * dist + 0.8 * v_err^2 + 0.5 * guide_err^2 + 0.05 * smooth`
-  （`S10_MPPI_W_HEAD=0`）。
-- 输出约束：vx 不超过 `v_ref`，并按 `S10_MPPI_A_MAX` 做速率限幅；omega 按
-  摩擦锥/能力表/slew 限幅。
-- 最终 omega 上限：`S10_VMC_OM_CAP=2.0`。
+    LidarTerrainV2 (4Hz 增量, 96 地形射线 + wall 通道, mount+0.6m)
+      -> 高程栅格 h/hmax
+      -> perc.local_tile(pos)  [step_flag 梯度]
+      -> StairGate.update(update_mode):
+           _elev_rises_on_path: 沿路径窗口 0.5~5.0m 剖面
+             - 多级楼梯: 步跳>=0.10 且 0.5m 内确认, >=2 级, 跨度<=3m, 总爬升>=0.4
+             - 单级 riser: 跳变>=0.08 且 0.2~0.6m 内平台持续  -> 也进 STAIR
+             - 下行跌落: 剖面下降>=0.08  -> drop_ahead_dist
+           -> stair_rises_s / stair_rises_tops / stair_ahead_dist /
+              decel_request / drop_ahead_dist / stair_first_heading
+      -> perc.riser_table(fol) -> RLStairCtrl.set_risers(xy, tops, heading)
 
-参数：
+## 5. 状态机与门控
 
-```bash
-VMC_MPPI_N=512
-VMC_MPPI_H=20
-S10_MPPI_ADA=1
-S10_MPPI_A_MAX=2.0
-S10_MPPI_OMAX=2.5
-S10_MPPI_W_GUIDE=0.5
-S10_MPPI_W_DIST=2.0
-S10_MPPI_W_HEAD=0.0
-S10_VMC_OM_CAP=2.0
-```
+    CRUISE ------------ STAIR ------------ CRUISE
+      |  SMppi走线         |  RL policy         |  post-stair hold
+      |  TMppi原地转        |  PRETRANS 腿锁     |  TK2 对准 -> 交回
+      |  TK1对准(不动模式)   |                    |
+      |  DROP 慢爬          |                    |
 
-## 6. TMppi 航点转向
+    CRUISE -> STAIR: 前方 riser(多级或单级) 且 stair_ahead_dist<=ENTER(2.0)
+                     且 TK1 门控通过: |yaw-riser航向|<=0.20 且 body_vx<=1.5
+    STAIR -> CRUISE: 四轮 z >= max(riser tops)-0.05 (S10_STAIR_WHEEL_CLEAR)
+                     兜底: 沿爬升方向前进 >2.5m
+                     重入保护: 退出后 3m 内禁止重进 STAIR
 
-- 触发条件（三者同时满足）：
-  `S10_TURN_SPLIT=1`、距当前 wp `< S10_WP_ARRIVE_R (0.2m)`、
-  世界速度范数 `< S10_TURN_V_MAX (0.2m/s)`。
-- 动作：
-  `vx <= S10_WP_TURN_VX (0.2)`，
-  `omega = clip(S10_TURN_K * yaw_err, +-S10_TURN_OM_MAX)`，
-  其中 `yaw_err` 是当前 yaw 与下一航段方向的误差。
-- 交回 SMppi：`|yaw_err| <= S10_TURN_ERR_DEG (10°)`。
-- 风险：判点半径与 TMppi 触发半径都是 0.2m。若快速进点来不及减速触发，
-  需要把减速半径与判点半径分离（下一步验证项）。
+**航点推进（防抢跑）**：dist<0.3 且 |yaw-下一段heading|<=0.25 且 |ω_body|<=0.3 才推点。
+**roll 安全网**：|roll|>0.30 触发（om=0、vx<=0.4），<0.15 释放；实际施加指令回同步进 MPPI slew 基准（sync_applied），释放后从真实指令按 3.5 m/s² 慢升，禁止 0.4→4.0 阶跃。
+**终止条件**：|roll|>0.9 或 body z<0.12 侧翻；卡死超时 90s；到达 MAX_WP。
 
-参数：
+## 6. 时序预算（验收口径）
 
-```bash
-S10_TURN_SPLIT=1
-S10_TURN_K=3.0
-S10_TURN_OM_MAX=2.0
-S10_TURN_ERR_DEG=10
-S10_TURN_V_MAX=0.2
-S10_WP_TURN_VX=0.2
-```
+| 阶段 | 定义（起→止） | 预算 | 日志字段 |
+|---|---|---|---|
+| TK1 | 首次检测到前方 riser（decel/TK1 激活）→ STAIR 交付 | <2.0s（含减速） | [TK1] 减速+对准 X.XXs / 对准 X.XXs |
+| TK1 对准 | 交付圈内 |ey|>DB 首次出现 → 交付 | **<1.0s** | 同上第二字段 |
+| 交付状态 | 交付瞬间 | body_vx≈1.5 m/s、|ey|<=0.20 | [RL-DIAG] takeover... |
+| TK2 | 四轮过顶（STAIR→CRUISE）→ 对准下一 wp | **<1.0s** | [TK2] 上顶->对准 X.XXs |
+| TMppi | 触发（dist<0.5, speed<0.3）→ |err|<=10° 释放 | 尽量 <1.0s | plan=TMppi 段 |
+| post-stair hold | STAIR→CRUISE 后 | 0.6s 直线 | corr 字段 |
 
-## 7. 航点推进
+## 7. 模块细节
 
-```bash
-S10_WP_ADVANCE_DIST=0.2
-```
+### 7.1 线控制器（只走线，不过弯）
+- 方向：航段 heading + CTE 修正（K=1.0，|cte| 限 1.0）；dist<0.5m 直接瞄 wp。
+- vyaw = clip(2.5·err, ±1.0)，作为 SMppi 的 guide_om。
+- vx = 4.0 × brake，brake=(dist-0.2)/2.5 线性（终点代价二次兜底）。
+- 已删除：head-err 降速、下一段锐角预刹、MIN_VX 地板。
 
-- 只按当前 wp 水平距离判点：`dist(base_xy, wp_xy) <= 0.2`。
-- 不使用 `S10_WP_ADVANCE_BY_S` 弧长兜底，不偏移 wp7 坐标。
-- 判点半径 `S10_WP_ARRIVE_R=0.2` 同时用于 TMppi 触发与主循环直线刹车区。
+### 7.2 SMppi（BodyMPPI）
+- 状态 [x,y,yaw,vx,vy,ω]；dt=0.05；N=1024、H=40（2s 视界）；ADA=1。
+- 采样中心 [v_ref, vyaw]；约束：摩擦锥 |vx·ω|≤μg（μ 标定 0.36 档）、car_omega_limit 表、加速度钳制 3.5 m/s²。
+- 成本：2.0·路径距离 + 0.8·速度偏差 + 0.5·guide 偏差 + 0.05·控制平滑 + **终点代价**。
+- **终点代价（dx=0 / ref_v=0）**：参考路径末端精确=wp；STOP_DX=4.0 内生效；
+  cost += 10·dist(rollout终点, wp) + 10·(v_end − 4.0·dx/4.0)² → 到点速度自动归零。
+- 输出：vx 按 ctrl_dt(0.025) 限幅 3.5 m/s²；ω slew 6.0 rad/s²；ω 上限 min(OMAX=2.5, VMC_OM_CAP=1.0)。
 
-## 8. CarVMC 基线
+### 7.3 TMppi（原地转向）
+- 触发：dist<0.5（S10_TURN_ARRIVE_R，独立于判点半径）且世界速度<0.3 且 |yaw_err|>10°。
+- 动作：vx<=0.2，om=clip(3·err, ±3.0)；om 上限独立于 VMC_OM_CAP（min(3.0, 1.8/|vx|)）。
+- 释放：|err|<=10° 交回 SMppi。
 
-- 半蹲站姿：`S10_CAR_SQUAT=1`，关节目标
-  `hipx=+-0.05, hipy=∓1.10, knee=±1.90`。
-- 腿控制：每腿垂直力 = `mg/4 + roll/pitch 姿态分配 + 地形阻抗`；
-  地形阻抗增益 `S10_VMC_KPH=300 / KDH=60`。
-- 轮控制：速度 PID `wheel_k=4.0 / d=0.08` + 差速 yaw 反馈
-  `S10_VMC_YAW_K_WHEEL=60` + 摩擦前馈；直线轮矩上限 13.5Nm，
-  弯道/近脊收敛到 μN·r。
-- 压弯：`roll_tar = clip(-S10_CAR_ROLL_K * omega * |vx|, +-S10_CAR_ROLL_AMP)`，
-  默认 `ROLL_K=0.06 / ROLL_AMP=0.06`。
-- 最终 omega 上限：`S10_VMC_OM_CAP=2.0`；侧向包线 `S10_AUTO_LAT_MAX=5.0`。
-- 力矩钳制：腿 ±48Nm、轮 ±13.5Nm；连续超限 >0.5s 判不合格。
+### 7.4 CarVMC（巡航执行）
+- 半蹲站姿 S10_CAR_SQUAT=1（hipy∓1.10 / knee±1.90）。
+- 轮：速度 PID（K=12, D=0.02）+ 差速 yaw 反馈（K=80）+ 摩擦前馈；直线轮矩限 13.5 Nm。
+- **防打滑仅实际 vx>0.5 启用**（S10_CAR_SLIP_VX_GATE=0.5）：打滑回缩、v855 反向硬刹都不在原地转（vx≈0）时触发。
+- 压弯 roll_tar=clip(-0.06·ω·|vx|, ±0.06)；高台(z>1)关闭压弯。
+- 抬轮前馈/地形前瞻已删除（riser 全交 STAIR）。
 
-```bash
-S10_CAR_SQUAT=1
-S10_VMC_KPH=300
-S10_VMC_KDH=60
-S10_VMC_WHEEL_K=4.0
-S10_VMC_WHEEL_D=0.08
-S10_VMC_YAW_K_WHEEL=60
-S10_VMC_OM_ABS_MAX=2.0
-S10_VMC_OM_CAP=2.0
-S10_VMC_WHEEL_TMAX=13.5
-S10_VMC_MU=0.8
-```
+### 7.5 感知与 riser 检测
+- 高程图 4Hz 增量；tile 半宽 8m；step_flag=|hmax 梯度|。
+- 沿路径窗口 ±1.2m 取最高剖面：
+  - 多级：≥2 级、跨度≤3m、总爬升≥0.4（6 级楼梯）；
+  - **单级：跳变≥0.08 且 0.2~0.6m 内平台持续** → 进 STAIR；
+  - **下行：剖面下降≥0.08** → drop_ahead_dist → DROP 慢爬。
+- TK1 对准目标 = lidar 检测 riser 的路径航向（perc.stair_heading）。
 
-## 9. TK1（楼梯前接管）
+### 7.6 STAIR / TK1 / RL / PRETRANS
+- 交接条件：dist<=2.0 + |ey|<=0.20 + body_vx<=1.5（TK1 只负责对准；减速归 SMppi）。
+- PRETRANS：距离式（enter 3.0 / blend 1.5 / hold 3.0 / exit 2.0），半蹲→RL 高站姿，y≥32 后 stand PD 锁腿。
+- RL：policy.pt（55→16，tanh），腿 PD(Kp50/Kd1/clip48，动作×0.7) + 轮速 PD(Kp2, 24m/s, clip13.5)，50Hz 零阶保持；WARMUP=200；riser 表 = lidar 在线。
+- 交付诊断：[RL-DIAG] takeover pos/yaw/max_leg_err。
 
-触发：`S10_TK1=1`、lidar 高程图已启用、当前为 CRUISE，且路径前方
-`[s+0.5, s+S10_TK1_LOOKAHEAD]` 内检测到 riser。
+### 7.7 TK2 / post-stair
+- 四轮 z ≥ max(tops)-0.05 → CRUISE：0.6s 直线 hold（vx<=0.5，vyaw=0，防平台边缘 yaw 反冲）。
+- TK2：|yaw_err|>0.25 时 vyaw=clip(2.5·err,±1.5)、vx<=1.2；<=0.25 释放（<1s 预算），直接执行对准（om 上限 2.0）。
+- post-stair 慢速瞄准：距下一 wp >1.5m 时 vx<=0.6、om=clip(0.5·err,±0.2)；<=1.5m 释放回 SMppi/TMppi。
 
-检测使用双检测器：
-1. terrain hmax 梯度：`rise=0.05, max_dh=0.16`，适合宽单级台阶；
-2. on-path wall 垂直面：距路径 `< S10_OBST_LAT_MIN(0.5m)` 的 wall 格子
-   `>= S10_TK1_MIN_CELLS(8)`，适合六级楼梯。
+### 7.8 航点推进
+- 判点：水平距离 <=0.3 或过点兜底（proj>len-0.5 且 lat<0.8）。
+- 追加门控：对准下一段（DB 0.25）且 |ω_body|<=0.3，防转向扫过目标航向时抢跑。
 
-动作：
-- 速度上限：`vx <= S10_TK1_VX (2.0)`。
-- yaw 对准：`|yaw_err| > S10_TK1_YAW_DB(0.20)` 时
-  `vyaw = clip(S10_TK1_YAW_K * yaw_err, +-S10_TK1_YAW_MAX)`。
-- 减速：`decel_request` 随到首级 riser 的距离从 0（5m）连续升到 1（2m），
-  `vx` 向 `S10_ELEV_DECEL_VX=2.0` 混合，混合结果进入 SMppi 的 `v_ref`。
-  公式：`decel_request = clip((LOOKAHEAD - dist) / (LOOKAHEAD - ENTER), 0, 1)`，
-  当前 `LOOKAHEAD=5.0, ENTER=2.0`。
+## 8. 关键参数（run_smppi_tmppi_cruise_rlstair_tk12.sh 实际值）
 
-交付 RL 门控（`stair_mode.StairGate.update`）：
-- 距首级 riser `< S10_STAIR_ENTER_DIST (2.0m)`；
-- `|yaw_err| <= S10_TK1_YAW_DB (0.20)`；
-- `body_vx < S10_TK1_VX (2.0m/s)`。
+    S10_NAV_HZ=40 S10_WP_ARRIVE_R=0.2 S10_WP_ADVANCE_DIST=0.3 S10_WP_ALIGN_DB=0.25 S10_WP_ALIGN_OM=0.3
+    S10_AUTO_VMAX=4.0 S10_LINE_VMAX=4.0 S10_LINE_YAW_GAIN=2.5 S10_LINE_YAW_MAX=1.0 S10_LINE_BRAKE_DIST=2.5 S10_LINE_CTE_K=1.0
+    VMC_MPPI_N=1024 VMC_MPPI_H=40 S10_MPPI_DT=0.05 S10_MPPI_CTRL_DT=0.025 S10_MPPI_ADA=1
+    S10_MPPI_A_MAX=3.5 S10_MPPI_OMAX=2.5 S10_MPPI_W_GUIDE=0.5 S10_MPPI_W_DIST=2.0 S10_MPPI_W_HEAD=0.0
+    S10_SMppi_STOP_DX=4.0 S10_MPPI_W_TPOS=10.0 S10_MPPI_W_TV=10.0
+    S10_TURN_SPLIT=1 S10_TURN_ERR_DEG=10 S10_TURN_K=3.0 S10_TURN_OM_MAX=3.0 S10_TURN_V_MAX=0.3 S10_WP_TURN_VX=0.2 S10_TURN_ARRIVE_R=0.5
+    S10_CAR_SLIP_VX_GATE=0.5
+    S10_ELEV_HZ=4 S10_LIDAR_WALL=1 S10_STAIR_SINGLE_RISE=0.08 S10_ELEV_DROP_TH=0.08 S10_DROP_LOOKAHEAD=2.0 S10_DROP_VX=0.3
+    S10_TK1=1 S10_TK1_LOOKAHEAD=5.0 S10_ELEV_ENTER=2.0 S10_ELEV_DECEL_VX=2.0 S10_STAIR_ENTER_DIST=2.0
+    S10_TK1_VX=1.5 S10_TK1_YAW_DB=0.20 S10_TK1_YAW_K=2.5 S10_TK1_YAW_MAX=1.5 S10_TK_OM_MAX=2.0 S10_TK_VX=1.5
+    S10_RL_ELEV=1 S10_RL_WARMUP=200 S10_PRETRANS=1 S10_PRETRANS_ENTER_DIST=3.0 S10_PRETRANS_BLEND_LEN=1.5 S10_PRETRANS_HOLD_DIST=3.0 S10_PRETRANS_EXIT_LEN=2.0
+    S10_POSTSTAIR_HOLD_DIST=1.5 S10_TK2=1 S10_TK2_YAW_DB=0.25 S10_TK2_YAW_K=2.5 S10_TK2_YAW_MAX=1.5 S10_TK2_VX=1.2 S10_STAIR_WHEEL_CLEAR=0.05
+    S10_CAR_SQUAT=1 S10_VMC_KPH=300 S10_VMC_KDH=60 S10_VMC_WHEEL_K=12.0 S10_VMC_WHEEL_D=0.02
+    S10_VMC_YAW_K_WHEEL=80 S10_VMC_OM_ABS_MAX=2.0 S10_VMC_OM_CAP=1.0 S10_VMC_WHEEL_TMAX=13.5 S10_VMC_MU=0.8 S10_AUTO_LAT_MAX=1.8
 
-防重入：STAIR→CRUISE 后，距离 handback 点 `< S10_STAIR_REENTRY_GUARD (3.0m)`
-时不允许再次进入 STAIR。无 `S10_FORCE_MODE` 调试强制模式。
+## 9. 已删除 / 禁用清单
 
-```bash
-S10_TK1=1
-S10_TK1_LOOKAHEAD=5.0
-S10_ELEV_ENTER=2.0
-S10_ELEV_DECEL_VX=2.0
-S10_TK1_VX=2.0
-S10_TK1_YAW_DB=0.20
-S10_TK1_YAW_K=2.5
-S10_TK1_YAW_MAX=1.5
-S10_STAIR_ENTER_DIST=2.0
-S10_STAIR_REENTRY_GUARD=3.0
-S10_TK1_MIN_CELLS=8
-```
+避障 costmap（整体删除）、抬轮前馈与地形前瞻（删除）、god-view mj_ray 预扫描（删除）、
+硬编码楼梯表 STAIR_RISERS/TOPS（清空，由 lidar 在线检测替代）、CRUISE_TK wp4→5 特殊段、
+head-err 降速、锐角预刹、MIN_VX 地板、S10_AUTO_STAIR_VX 死参数。
 
-## 10. RL-Stair
+## 10. 测试矩阵（执行顺序）
 
-- 执行器切换：`S10_VMC_MODE=rlstair`；CRUISE 用 CarVMC，STAIR 用
-  `rl_stair/deploy/rlstair_ctrl.py`。
-- riser 表：只允许 lidar 在线检测注入。`_lidar_riser_table()` 沿原始折线
-  调用 `LidarTerrainV2.detect_risers(rise=0.05, max_dh=0.16)`，把每个 riser
-  的世界 xy 与 top 高度注入 `RLStairCtrl.set_risers()`。
-  禁止 `STAIR_RISERS/STAIR_TOPS` 硬编码表，禁止预扫描表。
-- 坐标处理：`obs_np.py` 把 riser 世界坐标投影到楼梯爬升方向
-  `[cos(heading), sin(heading)]`，前/后轴位置用
-  `cos(yaw - target_heading)` 投影。训练环境（+y 楼梯、target=pi/2）是该
-  公式的特例，部署不再依赖世界 y 轴。
-- PRETRANS（按距离，不使用 y 坐标）：
-  - 楼梯前：距首级 riser `3.0m → 2.0m` 内把 CarVMC 半蹲姿态插值到 RL
-    高站姿；`<=2.0m` 后腿部用 stand PD 锁定。
-  - 楼梯后：从 STAIR→CRUISE handback 点起，前进 `S10_PRETRANS_EXIT_LEN=2.0m`
-    内把腿部控制平滑交还 CarVMC。
-- 策略：TorchScript `policy.pt`（55 维观测 → 16 动作 tanh）。
-  观测布局：
-  `angvel*0.25 | gravity | cmd | leg_err | leg_vel*0.05 | last_action |
-  heading[cos,sin] | terrain_ctx(4) | rough`。
-  `terrain_ctx` 为前/后轴到下一 riser 的距离与高差；`rough=1` 表示前方有 riser。
-- 执行：腿 PD `Kp=50/Kd=1/clip±48`，动作缩放 0.7；轮速
-  `Kp=2 * (action*24 - qd)/clip±13.5`；policy 50Hz（`DECIMATION=4`）。
-- 航向目标：`S10_RL_HEADING` 默认 pi/2；TK1 交接时设为 lidar 检测到的
-  riser 爬升方向。
-- 退出：四轮轮心高度均 `>= max(lidar riser top) - S10_STAIR_WHEEL_CLEAR(0.05)`，
-  即四轮全部站上最后一级台阶后立即 CRUISE。fallback：沿爬升方向前进超过
-  `S10_STAIR_MIN_CLIMB_S=2.5m`（仅 lidar top 缺失时使用）。
-- RL→CRUISE：`CarVMC.reset_state()` 复位滤波器。
+| # | 测试 | 配置 | 判据 |
+|---|---|---|---|
+| T1 | 修复后首跑 smoke | 40s, MAX_WP=5 | 无侧翻；过 wp1~2；实际拍=40Hz；plan max<25ms |
+| T2 | 台面专项 wp4→5 | 80s, MAX_WP=5 | 上沿触发 STAIR(单级) 且 RL 上 12.5cm；台面 SMppi 巡航；下沿 DROP 慢爬不栽头；推进 wp5 |
+| T3 | 单级 wp5→6 | 60s, MAX_WP=6 | 同 T2 单级路径 |
+| T4 | 六级楼梯 wp6→7 | 100s, MAX_WP=8 | [TK1] 总<2s/对准<1s；RL 上 6 级；[TK2]<1s；交接日志正常 |
+| T5 | 平台段 wp8→12 | 120s, MAX_WP=12 | 高台限速段通过，无侧翻 |
+| T6 | 全量回归 | 600s, MAX_WP=33 | 33 点全过；力矩合规（腿48/轮13.5，连续超限<0.5s）；无侧翻；40Hz 保持 |
+| T7 | 退化回归 | 重放 tune4 配置 | 确认 wp4 侧翻不回潮 |
+| T8 | RL 单级 12.5cm eval（T2 前置） | sim2sim 20 seeds | 上步成功率>=80%；不达标则规划下行课程微调 |
 
-```bash
-S10_RL_ELEV=1
-S10_RL_POLICY=rl_stair/deploy/policy.pt
-S10_RL_VX=1.5
-S10_RL_WARMUP=0
-S10_PRETRANS=1
-S10_PRETRANS_ENTER_DIST=2.0
-S10_PRETRANS_BLEND_LEN=1.0
-S10_PRETRANS_HOLD_DIST=2.0
-S10_PRETRANS_EXIT_LEN=2.0
-S10_STAIR_WHEEL_CLEAR=0.05
-S10_STAIR_MIN_CLIMB_S=2.5
-```
+traj 列（8）：t,x,y,z,yaw,next_idx,speed,mode(STAIR=1)。
 
-## 11. TK2（楼梯后立即交接）
+## 11. 当前状态（2026-08-19）
 
-- 触发：`update_mode` 检测到四轮全部站上最后一级台阶并切回 CRUISE 的同一拍，
-  `_tk2` 置位。
-- 动作：只做一次“对准下一航点”的低速转向：
-  `vx <= S10_TK2_VX (1.5)`，若 `|yaw_err| > S10_TK2_YAW_DB(0.15)` 则
-  `vyaw = clip(S10_TK2_YAW_K * yaw_err, +-S10_TK2_YAW_MAX)`。
-- 释放：`|yaw_err| <= S10_TK2_YAW_DB` 后立即释放，交回 **SMppi/TMppi**。
-- 删除内容：楼梯后慢速区、POST-STAIR AIM、平台 step-turn、transition pause、
-  平台专用 CarVMC 参数切换全部不使用。
+- 代码全部修改完成、编译通过；**尚未跑通**。
+- 两轮 smoke（修复前）失败记录：
+  1. wp1 附近绕圈 6s + 高速过点侧翻 → 终点代价按 STOP_DX 门控、权重 10、TMppi 提前 0.5m 触发、判点加角速度门。
+  2. 坡面 roll 门控 0.4→4.0 阶跃正反馈侧翻 → roll 滞回 0.30/0.15 + sync_applied 回同步。
+- 以上两修复已落码，T1 是第一次验证。
 
-```bash
-S10_TK2=1
-S10_TK2_VX=1.5
-S10_TK2_YAW_DB=0.15
-S10_TK2_YAW_K=2.5
-S10_TK2_YAW_MAX=1.5
-```
+## 12. 待确认事项
 
-## 12. 全局 lidar 地形
-
-- `terrain_at()` 只使用 `LidarTerrainV2` 的 `height(x,y)`；数据缺失时用
-  运动学兜底，不再调用 `mj_ray` god-view ray。
-- 站起阶段、CarVMC 轮下地形、TK1/TK2/RL 高程图共用同一个 lidar 栅格，
-  更新频率 `S10_ELEV_HZ=4`。
-- `S10_VMC_TERRAIN=lidar` 现在真实生效。
-
-```bash
-S10_VMC_TERRAIN=lidar
-S10_ELEV_HZ=4
-```
-
-## 13. 已删除 / 禁用内容
-
-| 删除项 | 处理 |
-|---|---|
-| 避障 costmap / `S10_MPPI_OBSTACLE` | 完全删除；lidar 高程图保留给 TK1/TK2/RL |
-| god-view ray / mj_ray 预扫描 | 完全删除 |
-| 硬编码 `STAIR_RISERS/TOPS`、STAIR_ZONE | 删除为默认空表；只能 lidar 或 env 注入 |
-| `S10_FORCE_MODE` 强制模式 | 删除 |
-| direct-nav / `S10_SWITCH_*` / LINE_TURN | 删除，巡航只有 SMppi/TMppi |
-| CRUISE_TK、POST-STAIR AIM、STEP_HOMING、W45_PULL | 删除 |
-| 楼梯走廊平移 `S10_STAIR_CORRIDOR_X` | 默认 0，路径用原始折线 |
-| 楼梯后 8m 慢速区、平台 step-turn/pause | 删除，TK2 对齐后交回 SMppi/TMppi |
-
-## 14. 当前状态与验证点（2026-08-18）
-
-- 已落地：原始航点折线；全局 lidar；SMppi/TMppi；TK1 距离减速；RL 使用
-  lidar riser 表与距离式 PRETRANS；TK2 立即交接；避障与已知地图删除。
-- 待验证：
-  1. lidar 在线 riser 表在真实 mesh 上的检出率/top 精度（原硬编码表删除后，
-     需要实测确认 6 级楼梯每级 top 是否正确；若个别 tread 被遮挡，需要调
-     `S10_LIDAR_RAISE_Z`、`S10_LIDAR_NZ_MIN` 或 `detect_risers` 参数）。
-  2. TK1 `LOOKAHEAD=5 / ENTER=2` 的减速效果。
-  3. TK2 在四轮登顶后转向下一航点的稳定性。
-  4. wp0→33 全程。
-  5. 判点半径与 TMppi 触发半径同为 0.2m 的进点风险。
-
-## 15. 遗留代码（不参与本方案）
-
-- `dial-mpc/`
-- `src/S10_sdk_deploy/s10_mpc/mpc_controller.py`、`mppi_controller.py`
-- `src/S10_sdk_deploy/scripts/stair_dial_noros.py`、`cruise_test.py`
-- `src/S10_sdk_deploy/s10_mpc/stair_*.py`（历史楼梯控制器）
-
-以上仅为历史遗留，主链路不依赖，可归档/删除。
-
----
-
-## 附：新文件夹模块清单
-
-| 文件 | 作用 |
-|---|---|
-| `run_smppi_tmppi_cruise_rlstair_tk12.sh` | 新启动脚本，所有参数显式写出 |
-| `cruise_main.py` | 新主循环：nav → TK1/TK2 → TMppi/SMppi → CarVMC/RL |
-| `nav_waypoint.py` | 导航模块：只输出原始航点直线段 |
-| `stair_mode.py` | CRUISE/STAIR 判定模块（独立于 nav） |
-| `smppi.py` | SMppi：BodyMPPI 封装，无避障 |
-| `tmppi.py` | TMppi：近点低速转向，独立实现 |
-| `carvmc.py` | CarVMC：半蹲站姿执行封装 |
-| `perception_lidar.py` | 感知：全局 lidar 高程图 + stair heading + riser 表 |
-| `rlstair_ctrl.py` | RL-Stair 部署控制器（policy→腿 PD/轮速） |
-| `rlstair_obs.py` | 55 维观测编码（含 lidar 世界坐标投影） |
-| `policy.pt` | RL 策略权重 |
-
-运行方式（等确认后再运行）：
-
-```bash
-cd /home/wfx/DR_competition/0810new/deeprobot_competition/SMppi_TMppi_Cruise_RL-Stair_TK1_TK2
-bash run_smppi_tmppi_cruise_rlstair_tk12.sh
-```
+1. 模块命名口径：SMppi=走线 / TMppi=原地转（文档与实现一致；用户此前消息中两名称写反，按此口径执行）。
+2. RL 单级 12.5cm 上步未验证（课程 T1d 曾删除）——T8 先行。
+3. 下行 riser：当前 DROP 慢爬兜底（RL 未练下行）；若要 RL 接管下行需补课程微调。

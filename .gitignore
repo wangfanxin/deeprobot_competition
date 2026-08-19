@@ -20,3 +20,7 @@ rl_stair/logs*/
 nohup.out
 *.bak_*
 _*.py
+
+# 模块化方案 tmp 与轨迹产物
+SMppi_TMppi_Cruise_RL-Stair_TK1_TK2/tmp/
+*_traj.npy

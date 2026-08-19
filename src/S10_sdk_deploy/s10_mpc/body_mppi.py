@@ -13,6 +13,7 @@ DBaS 自适应 σ：成本高时放大采样噪声，低时收敛。
 纯 numpy，N=4096/H=40/dt=0.05 → 2.0s 视界（用户 2026-08-10：进弯刹车交给
 MPPI 摩擦锥 + 长视界，导航不再做动力学限速）；20Hz 调用（CPU）。
 """
+import time
 import numpy as np
 from s10_mpc.vmc_legs import car_omega_limit
 
@@ -55,7 +56,9 @@ class BodyMPPI:
         # 北 1.5m 时 w_dist*d_min 压过 w_g，MPPI 输出 om≈0 不转向绕圈）；
         # 对准后距离成本恢复精修路线。连续量，无门控。
         self.omega_lim_fn = car_omega_limit
-        self.N, self.H, self.dt = N, H, dt
+        self.N, self.H = N, H
+        self.dt = float(_os.environ.get('S10_MPPI_DT', dt))
+        self.ctrl_dt = float(_os.environ.get('S10_MPPI_CTRL_DT', self.dt))
         self.tau_v, self.tau_w = tau_v, tau_w
         self.mu, self.g = mu, g
         self.vx_max, self.omega_max = vx_max, omega_max
@@ -85,6 +88,9 @@ class BodyMPPI:
         self._out_prev = np.zeros(2)
         self._cost_ref = 1.0
         self.sigma_scale = 1.0
+        self.plan_ms_ema = 0.0
+        self.plan_ms_max = 0.0
+        self.n_plan = 0
 
     def set_costmap(self, costmap):
         """兼容旧调用；避障功能已删除，costmap 恒为 None。"""
@@ -119,7 +125,7 @@ class BodyMPPI:
             s[:, h + 1, 5] = s[:, h, 5] + (om_c - s[:, h, 5]) * dt / self.tau_w
         return s
 
-    def _cost(self, s, u_seq, prev_u, ref, v_ref, guide=None):
+    def _cost(self, s, u_seq, prev_u, ref, v_ref, guide=None, wp_dx=None):
         """ref: (R,3) [x, y, heading] 路径参考轨迹；v_ref: 标量限速；
         guide: (2,) 导航期望 [vx, om]——v376 指令跟踪：MPPI 在执行层
         约束内跟随导航转向，距离成本只做辅助（wp1 后 donut 实测）。"""
@@ -140,6 +146,18 @@ class BodyMPPI:
                 + self.w_h * h_err ** 2
                 + self.w_v * v_err ** 2)
         cost = cost.sum(axis=1)
+        if wp_dx is not None:
+            import os as _osc
+            _stop = float(_osc.environ.get('S10_SMppi_STOP_DX', '4.0'))
+            if wp_dx <= _stop:
+                _wt = float(_osc.environ.get('S10_MPPI_W_TPOS', '10.0'))
+                _wv = float(_osc.environ.get('S10_MPPI_W_TV', '10.0'))
+                _vref_t = self.vx_max * float(np.clip(
+                    wp_dx / max(_stop, 1e-3), 0.0, 1.0))
+                _dend = np.sqrt(np.sum(
+                    (s[:, -1, 0:2] - ref[-1, 0:2]) ** 2, axis=-1))
+                _vend = s[:, -1, 3]
+                cost = cost + _wt * _dend + _wv * (_vend - _vref_t) ** 2
         if guide is not None and self.w_g > 0.0:
             cost += self.w_g * np.sum(
                 (u_seq - np.asarray(guide, dtype=np.float64)[None, None, :])
@@ -148,10 +166,11 @@ class BodyMPPI:
                                   axis=(1, 2))
         return cost
 
-    def plan(self, state, ref, v_ref, prev_u=None, guide_om=None):
+    def plan(self, state, ref, v_ref, prev_u=None, guide_om=None, wp_dx=None):
         """state: (x,y,yaw,vx,vy,ω)；ref: (R,3) 路径参考轨迹；v_ref: 限速；
         guide_om: 可选曲率前馈（κ·v_ref）作采样中心——默认用参考航向变化率。
         """
+        _t0 = time.perf_counter()
         s0 = np.asarray(state, dtype=np.float64)
         ref = np.asarray(ref, dtype=np.float64)
         prev_u = np.asarray(prev_u if prev_u is not None else self._u,
@@ -182,7 +201,7 @@ class BodyMPPI:
         u_seq[0] = prev_u
         s = self._rollout(s0, u_seq, prev_u)
         cost = self._cost(s, u_seq, prev_u, ref, v_ref,
-                          guide=[guide_vx, guide_om])
+                          guide=[guide_vx, guide_om], wp_dx=wp_dx)
         cmin = float(cost.min())
         w = np.exp(-(cost - cmin) / max(self.lam, 1e-6))
         w = w / (w.sum() + 1e-9)
@@ -214,17 +233,22 @@ class BodyMPPI:
         # 那样 0→6 阶跃打滑自旋侧翻。
         _vx_out = float(np.clip(
             u_new[0],
-            self._out_prev[0] - self.a_max * self.dt,
-            self._out_prev[0] + self.a_max * self.dt))
+            self._out_prev[0] - self.a_max * self.ctrl_dt,
+            self._out_prev[0] + self.a_max * self.ctrl_dt))
         _vx_out = float(np.clip(_vx_out, 0.0, _vcap))
         _om_c = float(np.clip(u_new[1], -_om_out, _om_out))
         # v889: om 输出加速度限幅——过点瞬间 0→1.8 跳变引发角动量过冲
         # （wp3→4 实测过转 3 倍侧滑）。默认 6.0 rad/s²。
-        _om_slew = 6.0 * self.dt
+        _om_slew = 6.0 * self.ctrl_dt
         _om_c = float(np.clip(
             _om_c,
             self._out_prev[1] - _om_slew,
             self._out_prev[1] + _om_slew))
         u_out = np.array([_vx_out, _om_c])
         self._out_prev = u_out
+        _ms = (time.perf_counter() - _t0) * 1000.0
+        self.n_plan += 1
+        self.plan_ms_ema = (0.9 * self.plan_ms_ema + 0.1 * _ms
+                            if self.plan_ms_ema > 0.0 else _ms)
+        self.plan_ms_max = max(self.plan_ms_max, _ms)
         return float(u_out[0]), float(u_out[1])
