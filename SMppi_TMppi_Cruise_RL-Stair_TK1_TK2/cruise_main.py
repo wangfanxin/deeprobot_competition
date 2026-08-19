@@ -1203,6 +1203,22 @@ def main():
                                  and abs(float(qvel[5]))
                                  <= float(os.environ.get(
                                      'S10_WP_ALIGN_OM', '0.3')))
+                elif float(np.linalg.norm(
+                        pos2 - wp[next_idx, :2])) <= 1.0:
+                    # 近点越过（wp 1m 内但投影超段末 0.8）：也要求
+                    # 下一段航向对齐才推点——wp2 冲过判点圆 0.75m
+                    # 时航向仍朝西、推点后带动量右转甩出 S 绕圈
+                    # （round251 图实测）；1m 门只拦近点，远处 RL
+                    # 斜爬出口的兜底推点不受影响
+                    _segv = wp[next_idx + 1, :2] - wp[next_idx, :2]
+                    _hdr = float(np.arctan2(_segv[1], _segv[0]))
+                    _yerr = abs(float(np.arctan2(np.sin(_hdr - yaw),
+                                                 np.cos(_hdr - yaw))))
+                    _align_ok = (_yerr <= float(os.environ.get(
+                                     'S10_WP_ALIGN_DB', '0.25'))
+                                 and abs(float(qvel[5]))
+                                 <= float(os.environ.get(
+                                     'S10_WP_ALIGN_OM', '0.3')))
             # 楼梯顶刚交还时跳过对准门：wp7 就在六级楼梯顶沿上
             # （距顶沿 0.15m），原地转对 wp8 方向（西 2.81）会在
             # 台沿原地转 10s+，roll 门反复触发后翻（round111 实测）；
