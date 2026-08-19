@@ -1,26 +1,28 @@
+# 环境与构建
+.venv/
 build/
 install/
 log/
-vscode/
-tmp/*
-!tmp/run_*.sh
-!tmp/patch_*.py
-.venv/
-AGENTS.md
+.vscode/
 __pycache__/
 *.py[cod]
-.reasonix/
-reasonix.toml
 *.egg-info/
 *.egg-link
 .pytest_cache/
-MUJOCO_LOG.TXT
-*.log
-rl_stair/logs*/
-nohup.out
-*.bak_*
-_*.py
 
-# 模块化方案 tmp 与轨迹产物
+# 运行产物与轨迹
+tmp/
 SMppi_TMppi_Cruise_RL-Stair_TK1_TK2/tmp/
+*.log
+nohup.out
+MUJOCO_LOG.TXT
 *_traj.npy
+*.npy
+
+# RL 训练日志与导出
+rl_stair/logs*/
+rl_stair/deploy/policy.pt
+rl_stair/deploy/*.onnx
+
+# 备份与临时文件
+*.bak_*

@@ -170,11 +170,14 @@ def main():
                 # 2026-08-19: 只保留“加速 + 到点刹车”两个能力；
                 # head-err 降速/锐角预刹/MIN_VX 地板全部删除（不过弯）。
                 # 终点速度由 SMppi 终点代价（dx=0/ref_v=0）二次兜底。
-                brake = float(np.clip(
-                    (dist_wp - float(os.environ.get('S10_WP_ARRIVE_R', '0.2')))
-                    / max(float(os.environ.get('S10_LINE_BRAKE_DIST', '2.5')),
-                          1e-3), 0.0, 1.0))
-                vx = float(os.environ.get('S10_LINE_VMAX', '4.0')) * brake
+                _bd = max(float(os.environ.get(
+                    'S10_LINE_BRAKE_DIST', '3.5')), 1e-3)
+                _brk = float(np.clip(
+                    (dist_wp - float(os.environ.get(
+                        'S10_WP_ARRIVE_R', '0.2'))) / _bd, 0.0, 1.0))
+                # 物理一致刹车剖面 v∝sqrt(剩余距离)：配合 A_MAX 保证
+                # 到点前可刹停（线性剖面短段刹不住，wp3 过冲侧翻实测）
+                vx = float(os.environ.get('S10_LINE_VMAX', '4.0')) * float(np.sqrt(_brk))
 
             # TK1：CRUISE 中检测到前方楼梯，只做“对准”，不改模式。
             # 减速由 SMppi 终点代价 + decel_request 负责；TK1 只在进入
@@ -245,6 +248,38 @@ def main():
                 vyaw = float(np.clip(vyaw, -0.5, 0.5))
                 v_ref = min(v_ref, vx)
                 _correction += 'DROP'
+            # 终点刹车直入 v_ref（不依赖软代价）：STOP_DX 内目标
+            # 速度按剩余距离线性归零——实测软终端代价刹不住，
+            # wp3 以 3.2m/s 冲点过冲 1.6m。
+            if line is not None:
+                _stdx = float(os.environ.get('S10_SMppi_STOP_DX', '4.0'))
+                if dist_wp <= _stdx:
+                    _vstop = float(os.environ.get(
+                        'S10_AUTO_VMAX', '4.0')) * float(np.clip(
+                        dist_wp / _stdx, 0.0, 1.0))
+                    v_ref = min(v_ref, _vstop)
+            # 坡顶限速（纯感知，仅 CRUISE）：前方地形变平（rise_f≈0）
+            # 而后方仍在爬坡（rise_b>0.05）=> 接近坡顶，限速防横倾过渡侧翻
+            if stair.mode == 'CRUISE':
+                _chk = float(os.environ.get('S10_CREST_LOOKAHEAD', '1.5'))
+                if _chk > 0.0:
+                    _cf = np.array([np.cos(yaw), np.sin(yaw)])
+                    _ch0 = float(body_pos[2]) - 0.55
+                    _hf = perc.height(body_pos[0] + _cf[0] * _chk,
+                                       body_pos[1] + _cf[1] * _chk, t,
+                                       float(body_pos[2]), _ch0)
+                    _hb = perc.height(body_pos[0] - _cf[0] * 0.6,
+                                       body_pos[1] - _cf[1] * 0.6, t,
+                                       float(body_pos[2]), _ch0)
+                    _h0 = perc.height(body_pos[0], body_pos[1], t,
+                                       float(body_pos[2]), _ch0)
+                    _rise_f = float(_hf - _h0)
+                    _rise_b = float(_h0 - _hb)
+                    if _rise_b > 0.05 and _rise_f < 0.03:
+                        vx = min(vx, float(os.environ.get(
+                            'S10_CREST_VX', '1.2')))
+                        v_ref = min(v_ref, vx)
+                        _correction += 'CREST'
 
             ref_pts = []
             _wp_dx = None
@@ -298,7 +333,7 @@ def main():
                 _roll_gate = False
             if _roll_gate:
                 om_c = 0.0
-                vx_c = min(float(vx_c), 0.4)
+                vx_c = min(float(vx_c), 0.3)
             # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
             # 楼梯后：低倍率直接瞄当前目标 wp，直到距其足够近才放开
             if (_post_stair_xy is not None and next_idx < len(wp)
@@ -319,7 +354,10 @@ def main():
             # TK 阶段（TK1 对准 / TK2 转出）直接执行对准转向：
             # MPPI 的 om 上限被 VMC_OM_CAP=1.0 压住，<1s 预算不够；
             # 低 vx 时 car_omega_limit≈3.0，TK 专用上限 2.0 安全。
-            if 'TK1' in _correction or 'TK2' in _correction:
+            # 2026-08-19 修复：必须让位 roll 门控（此前 TK 直接给 om
+            # 会覆盖门控的 om=0，平台边 TK2 侧倾正反馈翻车实测）。
+            if ('TK1' in _correction or 'TK2' in _correction) \
+                    and not _roll_gate:
                 _om_tk = float(os.environ.get('S10_TK_OM_MAX', '2.0'))
                 om_c = float(np.clip(vyaw, -_om_tk, _om_tk))
                 vx_c = min(float(vx_c), float(os.environ.get(
@@ -335,7 +373,31 @@ def main():
                                        float(body_pos[2]),
                                        float(wheel_xyz[i, 2]) - 0.081)
                            for i in range(4)], dtype=np.float64)
-        # 2026-08-19: 地形前瞻/抬轮前馈已删除——一切 riser 交由 STAIR。
+        # 地形低通：坡顶过渡/栅格噪声防腿阻抗踢振（riser 不在此处理）
+        _tlp = float(os.environ.get('S10_VMC_TERRAIN_LP', '0.0'))
+        if _tlp > 0.0:
+            if '_terr_f' not in globals():
+                globals()['_terr_f'] = terr.copy()
+            _terr_f = globals()['_terr_f']
+            _terr_f = _tlp * terr + (1.0 - _tlp) * _terr_f
+            globals()['_terr_f'] = _terr_f
+            terr = _terr_f
+        # 坡顶前瞻平滑（仅 CRUISE）：前方 0.05~0.25m 升高时把前轮
+        # 地形参考预伸，防坡顶 pitch/roll 踢振。非抬轮前馈；
+        # riser(>=8cm) 在 2m 外已交 STAIR，STAIR 模式内不生效。
+        _lk = float(os.environ.get('S10_VMC_TERRAIN_LOOKAHEAD', '0.0'))
+        if _lk > 0.0 and stair.mode == 'CRUISE':
+            _fwd = np.asarray(d.xmat[1][[0, 3]], dtype=np.float64)
+            _fwd = _fwd / max(float(np.linalg.norm(_fwd)), 1e-9)
+            _hx = body_pos[0] + _fwd[0] * _lk
+            _hy = body_pos[1] + _fwd[1] * _lk
+            _ahead = perc.height(_hx, _hy, t, float(body_pos[2]),
+                                 float(body_pos[2]) - 0.55)
+            _ahead = min(_ahead, float(np.max(terr)) + 0.25)
+            _rise_ahead = float(_ahead - np.max(terr))
+            if 0.05 <= _rise_ahead <= 0.25:
+                _w = float(os.environ.get('S10_VMC_TERRAIN_AHEAD_W', '0.6'))
+                terr = (1.0 - _w) * terr + _w * _ahead
         roll_tar = float(np.clip(
             -float(os.environ.get('S10_CAR_ROLL_K', '0.06')) * om_c
             * abs(vx_c),
@@ -472,21 +534,28 @@ def main():
                          float(np.hypot(d.cvel[1][3], d.cvel[1][4])),
                          1.0 if stair.mode == 'STAIR' else 0.0])
 
-        # 航点推进：只按原始折线水平距离 + 对准下一段方向后才推点
-        # （防“过点兜底”在转向完成前抢跑）
+        # 航点推进：只按原始折线水平距离；到点判（未越过）要求
+        # 对准下一段 + 角速度收敛才推点（防原地转完成前抢跑）；
+        # 过点兜底：刚越过（<=len+0.8，仍可能原地转中）同样要求
+        # 对准；只有明显越过后才跳过对准直接推点。
         if next_idx < len(wp):
             _arr = nav.reached(next_idx, d.xpos[1][:2])
             _align_ok = True
             if _arr and next_idx > 0 and next_idx + 1 < len(wp):
-                _segv = wp[next_idx + 1, :2] - wp[next_idx, :2]
-                _hdr = float(np.arctan2(_segv[1], _segv[0]))
-                _yerr = abs(float(np.arctan2(np.sin(_hdr - yaw),
-                                             np.cos(_hdr - yaw))))
-                _align_ok = (_yerr <= float(os.environ.get(
-                                 'S10_WP_ALIGN_DB', '0.25'))
-                             and abs(float(qvel[5]))
-                             <= float(os.environ.get(
-                                 'S10_WP_ALIGN_OM', '0.3')))
+                _segv0 = wp[next_idx, :2] - wp[next_idx - 1, :2]
+                _len0 = float(np.linalg.norm(_segv0)) + 1e-9
+                _proj = float(np.dot(pos2 - wp[next_idx - 1, :2],
+                                     _segv0 / _len0))
+                if _proj <= _len0 + 0.8:
+                    _segv = wp[next_idx + 1, :2] - wp[next_idx, :2]
+                    _hdr = float(np.arctan2(_segv[1], _segv[0]))
+                    _yerr = abs(float(np.arctan2(np.sin(_hdr - yaw),
+                                                 np.cos(_hdr - yaw))))
+                    _align_ok = (_yerr <= float(os.environ.get(
+                                     'S10_WP_ALIGN_DB', '0.25'))
+                                 and abs(float(qvel[5]))
+                                 <= float(os.environ.get(
+                                     'S10_WP_ALIGN_OM', '0.3')))
             if _arr and _align_ok:
                 if next_idx == 0 and t_start is None:
                     t_start = t

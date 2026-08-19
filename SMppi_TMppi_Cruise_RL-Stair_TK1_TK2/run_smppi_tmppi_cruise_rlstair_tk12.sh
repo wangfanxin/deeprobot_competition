@@ -1,23 +1,23 @@
 #!/bin/bash
 # SMppi/TMppi Cruise + RL-Stair + TK1/TK2 启动脚本（2026-08-19: 40Hz/2s视界/终点代价）
 cd /home/wfx/DR_competition/0810new/deeprobot_competition/SMppi_TMppi_Cruise_RL-Stair_TK1_TK2
-export JAX_COMPILATION_CACHE_DIR="/home/wfx/.cache/s10_dial_mpc"
+export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-$HOME/.cache/s10_dial_mpc}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export S10_USE_VIEWER=0
 
 # 仿真 / 任务
 export S10_INIT_YAW=1.5708
-export S10_AUTO_MAX_WP=33
-export S10_TEST_MAX_SIM=600
-export S10_STUCK_TIMEOUT=90
+export S10_AUTO_MAX_WP="${S10_AUTO_MAX_WP:-33}"
+export S10_TEST_MAX_SIM="${S10_TEST_MAX_SIM:-600}"
+export S10_STUCK_TIMEOUT="${S10_STUCK_TIMEOUT:-90}"
 export S10_VMC_TERRAIN=lidar S10_VMC_MODE=rlstair
 
 # nav 层：只输出原始航点直线；控制拍 40Hz
-export S10_GLOBAL_FILLET_R=0 S10_WP_ARRIVE_R=0.2 S10_WP_ADVANCE_DIST=0.3
+export S10_GLOBAL_FILLET_R=0 S10_WP_ARRIVE_R=0.2 S10_WP_ADVANCE_DIST=0.5
 export S10_NAV_HZ=40 S10_WP_ALIGN_DB=0.25 S10_WP_ALIGN_OM=0.3
 # 主循环直线控制：只保留 加速/到点刹车/航向保持（不过弯）
 export S10_AUTO_VMAX=4.0 S10_LINE_VMAX=4.0
-export S10_LINE_YAW_GAIN=2.5 S10_LINE_YAW_MAX=1.0 S10_LINE_BRAKE_DIST=2.5 S10_LINE_CTE_K=1.0
+export S10_LINE_YAW_GAIN=2.0 S10_LINE_YAW_MAX=1.0 S10_LINE_BRAKE_DIST=3.5 S10_LINE_CTE_K=0.3
 
 # SMppi / TMppi（40Hz，2s 视界=H*dt=40*0.05；输出 slew 按 1/40s）
 export VMC_MPPI_N=1024 VMC_MPPI_H=40 S10_MPPI_DT=0.05 S10_MPPI_CTRL_DT=0.025
@@ -25,7 +25,7 @@ export S10_MPPI_ADA=1 S10_MPPI_A_MAX=3.5 S10_MPPI_OMAX=2.5 S10_MPPI_W_GUIDE=0.5 
 # 终点代价：到 wp dx=0 位置 + ref_v=0 速度（STOP_DX 内线性生效）
 export S10_SMppi_STOP_DX=4.0 S10_MPPI_W_TPOS=10.0 S10_MPPI_W_TV=10.0
 # TMppi 原地转（四轮差速；防打滑/硬刹只在实际 vx>0.5 时启用）
-export S10_TURN_SPLIT=1 S10_TURN_ERR_DEG=10 S10_TURN_K=3.0 S10_TURN_OM_MAX=3.0 S10_TURN_V_MAX=0.3 S10_WP_TURN_VX=0.2 S10_TURN_ARRIVE_R=0.5
+export S10_TURN_SPLIT=1 S10_TURN_ERR_DEG=10 S10_TURN_K=3.0 S10_TURN_OM_MAX=3.0 S10_TURN_V_MAX=1.2 S10_WP_TURN_VX=0.2 S10_TURN_ARRIVE_R=0.6
 export S10_CAR_SLIP_VX_GATE=0.5
 
 # 全局 lidar 高程图（TK1/TK2/RL 共用；无 god-view ray，无避障 costmap）
@@ -48,13 +48,13 @@ export S10_STAIR_WHEEL_CLEAR=0.05
 
 # CarVMC（抬轮前馈已删；WHEEL_D 回退 0.02）
 export S10_CAR_SQUAT=1
-export S10_CAR_WHEEL_GF=1.0 S10_VMC_KPH=300 S10_VMC_KDH=60 S10_VMC_WHEEL_K=12.0 S10_VMC_WHEEL_D=0.02
+export S10_CAR_WHEEL_GF=1.0 S10_VMC_KPH=300 S10_VMC_KDH=60 S10_VMC_WHEEL_K=12.0 S10_VMC_WHEEL_D=0.02 S10_VMC_TERRAIN_LP=0.4 S10_VMC_TERRAIN_LOOKAHEAD=0.35 S10_VMC_TERRAIN_AHEAD_W=0.6 S10_CAR_KP_ROLL=150 S10_CAR_KD_ROLL=20
 export S10_VMC_YAW_K_WHEEL=80 S10_VMC_OM_ABS_MAX=2.0 S10_VMC_OM_CAP=1.0
 export S10_VMC_WHEEL_TMAX=13.5 S10_VMC_MU=0.8
 
 # 轨迹（列: t,x,y,z,yaw,next_idx,speed,mode）
-export S10_TRAJ_DENSE=1
-export VMC_TRAJ=tmp_cruise_traj.npy
+export S10_TRAJ_DENSE="${S10_TRAJ_DENSE:-1}"
+export VMC_TRAJ="${VMC_TRAJ:-tmp_cruise_traj.npy}"
 mkdir -p tmp
 exec /home/wfx/DR_competition/.venv/bin/python cruise_main.py
 
