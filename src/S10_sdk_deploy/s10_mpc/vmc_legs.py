@@ -949,6 +949,13 @@ class CarVMC:
             # differential and spun (om -4.16 flip). Cruise lift<0.01 unaffected.
             self._ground_f = float(np.clip(
                 1.0 - max(0.0, _lift_amt - 0.01) / 0.03, 0.0, 1.0))
+            if os.environ.get("S10_GF_DEBUG", "0") == "1":
+                self._gf_dbg_n = getattr(self, "_gf_dbg_n", 0) + 1
+                if self._gf_dbg_n % 100 == 0:
+                    print("[GF] lift=%.4f gf=%.3f terrmin=%.3f terrmax=%.3f"
+                          % (float(_lift_amt), float(self._ground_f),
+                             float(np.min(np.asarray(terrain_h))),
+                             float(np.max(np.asarray(terrain_h)))), flush=True)
         else:
             self._ground_f = 1.0
 
