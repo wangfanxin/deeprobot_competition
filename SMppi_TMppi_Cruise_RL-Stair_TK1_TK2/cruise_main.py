@@ -565,7 +565,7 @@ def main():
         # v595 后轮登台：前轴骑上台面后，把后轴轮下地形参考抬到
         # 台面高——阻抗把后轮拉起越过立面（后轮对垂直面只推不升，
         # 实测卡死；必须抬参考高度）
-        if (float(np.max(terr[0:2])) - float(np.max(terr[2:4])) > 0.05
+        if (float(np.max(terr[0:2])) - float(np.max(terr[2:4])) >= 0.04
                 and stair.mode == 'CRUISE'):
             terr[2:4] = np.maximum(terr[2:4], float(np.max(terr[0:2])))
         roll_tar = float(np.clip(

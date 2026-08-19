@@ -932,7 +932,7 @@ class AutoNavFollower:
                                            np.cos(_first_head - yaw)))
                     _db = float(os.environ.get("S10_TK1_YAW_DB", "0.20"))
                     _vx_gate = float(os.environ.get("S10_TK1_VX", "2.0"))
-                    if abs(_ey) > _db or body_vx > _vx_gate:
+                    if (abs(_ey) > _db or body_vx > _vx_gate):
                         if _dbg:
                             print(f"[MODE] TK1 gate hold: ey={_ey:.2f} "
                                   f"vx={body_vx:.2f}", flush=True)
