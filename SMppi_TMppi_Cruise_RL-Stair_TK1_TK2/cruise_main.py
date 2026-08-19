@@ -1243,6 +1243,20 @@ def main():
             # （距顶沿 0.15m），原地转对 wp8 方向（西 2.81）会在
             # 台沿原地转 10s+，roll 门反复触发后翻（round111 实测）；
             # 先推点让机器人在平顶上边开边转
+            # 贴点悬停死锁破除：距 wp ≤0.8m 且 2s 内距点距离几乎不变
+            # （位置冻结=轮滑空转，航向转不动）时跳过对准门——wp13 判点
+            # 圆沿悬停 15s 航向 ±π 狩猎、roll 累积侧翻（round272 实测）；
+            # 高速过点（wp2 0.75m 2m/s）距离持续变化不触发
+            if '_hover_d0' not in globals():
+                globals()['_hover_d0'] = 1e9
+                globals()['_hover_t0'] = 0.0
+            _hd = float(np.linalg.norm(pos2 - wp[next_idx, :2]))
+            if (_hd <= 0.8 and t - globals()['_hover_t0'] >= 2.0
+                    and abs(_hd - globals()['_hover_d0']) < 0.03):
+                _align_ok = True
+            if (_hd > 0.8 or abs(_hd - globals()['_hover_d0']) >= 0.05):
+                globals()['_hover_d0'] = _hd
+                globals()['_hover_t0'] = t
             if _post_stair_xy is not None:
                 _align_ok = True
             # 平顶判点也跳对准门：1.5m 判点圆内 MPPI 终点代价
