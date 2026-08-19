@@ -107,6 +107,7 @@ def main():
     _stuck_chk_xy = None
     _stuck_escape_until = None
     _terr_raw = np.zeros(4, dtype=np.float64)
+    _prev_bz = None
     _edge_lift = np.zeros(4)
     _vyaw_f = 0.0
     _lip_hold = False
@@ -232,7 +233,7 @@ def main():
                 # wp12 推进后机器人东偏 2.1m（proj=0.13），只按段航向
                 # +cte 饱和会斜切台角掉下南沿（round241 实测侧翻），
                 # 瞄起点先横移回台阶顶再下行
-                if ((_proj_cur < 0.0
+                if ((_proj_cur < -1.0
                      or (0.0 <= _proj_cur < 1.0 and abs(_cte) > 0.8))
                         and float(body_pos[2]) > 1.2
                         and float(np.linalg.norm(
@@ -328,14 +329,13 @@ def main():
                 if (_wsc is not None and stair.s_cur > _wsc + 0.2):
                     _ahead = next_idx + 1
             # TK2：STAIR→CRUISE 后立即对准下一航点；对齐后交回 TMppi/SMppi
-            # 平顶（z>1）出口延迟 2s 让高站姿下蹲过渡先完成：
+            # 平顶（z>1）出口延迟让高站姿下蹲过渡先完成：
             # 台顶原地转+下蹲激起 roll 2.5rad/s 冲量卡死侧翻
-            # （round210 实测）；低台出口（wp4/5 平台、两级台阶）
-            # 立即对准不受影响（round211 全延迟破坏 wp5→6 实测）
+            # （round210 实测）；低台出口立即对准。2.0->1.5 提速
             if (os.environ.get('S10_TK2', '0') == '1' and _tk2
                     and stair.mode == 'CRUISE'
                     and (_post_stair_t is None
-                         or t - _post_stair_t > 2.0
+                         or t - _post_stair_t > 1.5
                          or float(body_pos[2]) <= 1.15)):
                 _correction += 'TK2'
                 th2 = float(np.arctan2(wp[_ahead, 1] - body_pos[1],
@@ -493,7 +493,11 @@ def main():
             # 平顶（z>1.2）s 投影假 drop 连续触发 18s（round199 实测
             # 平顶爬行 0.3 + roll 累积侧翻）——只保留轮下跨骑兜底，
             # 真下行台阶的跨骑保护不受影响
-            _drop_s_ok = (float(body_pos[2]) <= 1.2)
+            # 1.5：下行台阶顶（z≈1.45）的 s 投影保护不能被 1.2 挡掉
+            # （round252 wp12→13 六级下行 1.8-2.75m/s 冲阶侧翻实测——
+            # 顶段 z>1.2 时 s 保护不生效，只有跨骑兜底）；平顶假 drop
+            # 若回归再收紧
+            _drop_s_ok = (float(body_pos[2]) <= 1.5)
             _drop_active = False
             if ((stair.drop_ahead_dist is not None
                     and _drop_s_ok
@@ -761,7 +765,7 @@ def main():
                 _rel3 = pos2 - np.asarray(line['start'])
                 _proj3 = float(np.dot(_rel3, _u3))
                 _cte3 = float(-_u3[1] * _rel3[0] + _u3[0] * _rel3[1])
-                if ((_proj3 < 0.0
+                if ((_proj3 < -1.0
                      or (0.0 <= _proj3 < 1.0 and abs(_cte3) > 0.8))
                         and abs(_cte3) > 0.4
                         and float(np.linalg.norm(
@@ -813,7 +817,7 @@ def main():
             # 垂直回航线再沿线走；阈值放宽 0.8（round244 wp9→10 南漂
             # 0.9m 卡进障碍口袋实测）
             if (line is not None
-                    and abs(_cte) > (0.6 if float(body_pos[2]) > 1.2
+                    and abs(_cte) > (0.8 if float(body_pos[2]) > 1.2
                                     else 1.2)
                     and stair.mode == 'CRUISE'
                     and not _roll_gate
