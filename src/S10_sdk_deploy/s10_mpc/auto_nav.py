@@ -894,6 +894,7 @@ class AutoNavFollower:
                 self._stair_first_heading = None
                 self._stair_enter_s = None
                 self._stair_exit_xy = np.asarray(robot_xy, dtype=np.float64).copy()
+                self._stair_exit_s = float(getattr(self, '_s_cur', 0.0))
                 if _dbg:
                     print(f"[MODE] CRUISE (handback) prog={_prog:.1f} "
                           f"pos=({robot_xy[0]:.2f},{robot_xy[1]:.2f})", flush=True)
@@ -905,10 +906,17 @@ class AutoNavFollower:
             # RE-ENTRY GUARD: after a STAIR->CRUISE handback, do not re-enter STAIR until the
             # robot has moved S10_STAIR_REENTRY_GUARD metres past the exit (prevents mode
             # flap on the platform where the stale projection still sees the staircase ahead).
-            _guard = float(os.environ.get("S10_STAIR_REENTRY_GUARD", "3.0"))
+            _guard = float(os.environ.get("S10_STAIR_REENTRY_GUARD", "1.0"))
             if self._stair_exit_xy is not None:
+                # 距离 + 弧长双条件：越过旧 riser（s_cur > 旧 riser s + 0.5）
+                # 即清除——重入保护只挡同一台阶的重复触发，
+                # 不挡前方的新台阶（wp3-4 与 wp5 台沿相距 1.7m，
+                # 旧 3m 距离保护把第二次 STAIR 也挡住，实测卡台沿）
                 _dx = float(np.linalg.norm(np.asarray(robot_xy) - self._stair_exit_xy))
-                if _dx < _guard:
+                _past = (getattr(self, '_stair_exit_s', None) is not None
+                         and float(getattr(self, '_s_cur', 0.0))
+                         > float(self._stair_exit_s) + 0.5)
+                if _dx < _guard and not _past:
                     return
             if self.stair_ahead_dist <= _enter:
                 # doc §9 交付 RL 条件：距 riser<2m + yaw 对准 + 速度<2.0（S10_TK1=1 门控）
@@ -1043,7 +1051,14 @@ class AutoNavFollower:
                     if _sustain:
                         steps.append((ds, _dh, h))
             elif _dh < -drop_th and ds >= 0.2:
-                drops.append(ds)
+                # 下沉确认：之后 0.2~0.6m 保持低位才算跌落沿，
+                # 滤除高程栅格无效区/噪声尖峰（wp4 前 2.5m 处
+                # 假 drop 使 DROP 限速整段爬行实测）
+                _sustd = any(h2 <= prev_h - drop_th + 0.02
+                             for (ds2, h2) in prof
+                             if 0.2 < ds2 - ds <= 0.6)
+                if _sustd:
+                    drops.append(ds)
             prev_h = max(prev_h, h)
         self._elev_last_steps = [(float(d), float(j)) for d, j, _ in steps]
         self._elev_rises_tops = [float(h) for _, _, h in steps]
