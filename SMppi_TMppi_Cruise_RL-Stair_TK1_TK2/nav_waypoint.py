@@ -88,4 +88,10 @@ class WaypointLineNav:
                     pos - (self.wp[next_idx - 1, :2] + u * proj)))
                 if proj > length - 0.5 and lat < 0.8:
                     return True
+                # 明显越过（>len+0.8）无条件推点：RL 斜向爬台后
+                # 投影远超段末而横向偏差>0.8（爬升点偏离航线），
+                # lat 门把推点卡死，TK2 瞄身后 wp 拉机器人回走
+                # （round92 西漂 3.5m 实测）
+                if proj > length + 0.8:
+                    return True
         return False

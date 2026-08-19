@@ -108,6 +108,9 @@ def main():
     _lip_g0 = 0.0
     _lip_grind_since = None
     _lip_xy = None
+    _lip_rel_t = None
+    _lip_wp_idx = None
+    _lip_t0 = None
     _last_lift = np.zeros(4)
     _last_lift_t = -1e9
 
@@ -134,14 +137,18 @@ def main():
                 _ph = perc.stair_heading(stair)
             stair.update(pos2, next_idx, yaw, local_map,
                          float(body_vel[0]), wheel_z)
-            if os.environ.get('S10_LIP_DEBUG', '0') == '1' and next_idx == 5:
+            if os.environ.get('S10_LIP_DEBUG', '0') == '1' and next_idx in (4, 5):
                 print('[LIPDBG] t=%.2f pos=(%.2f,%.2f) rises=%s ahead=%s '
-                      'decel=%.2f'
+                      'drops=%s dropahead=%s ch=%.2f sc=%.2f'
                       % (t, pos2[0], pos2[1],
                          [round(v, 2) for v in stair.fol.stair_rises_s[:2]],
                          None if stair.stair_ahead_dist is None
                          else round(stair.stair_ahead_dist, 2),
-                         stair.decel_request), flush=True)
+                         [round(v, 2) for v in getattr(stair.fol, '_elev_drops', [])],
+                         None if stair.drop_ahead_dist is None
+                         else round(stair.drop_ahead_dist, 2),
+                         stair.climb_heading if stair.climb_heading is not None else -9.0,
+                         stair.s_cur), flush=True)
 
             if stair.mode != 'STAIR' and _tk2_was_stair:
                 _post_stair_xy = np.asarray(pos2, dtype=np.float64)
@@ -163,6 +170,19 @@ def main():
                                                 side='right') - 1)
                     _k2 = min(max(_k2, 0), len(stair.path_pts) - 1)
                     _xy2 = np.asarray(stair.path_pts[_k2][:2])
+                    rxy = np.vstack([rxy, _xy2])
+                    rtops = np.append(rtops, rtops[0])
+                elif rxy is not None and len(rxy) == 1:
+                    # 无跌落沿可锚定（台顶延伸出前瞻）：沿爬升航向
+                    # 合成虚拟第二级 riser（+1.0m 同高），观测表
+                    # 保持两节台阶在分布内；实际只爬第一级，
+                    # 四轮越顶即切回 CRUISE
+                    _hh2 = float(stair.climb_heading
+                                 if stair.climb_heading is not None
+                                 else 0.0)
+                    _xy2 = (np.asarray(rxy[0])
+                            + np.array([np.cos(_hh2),
+                                        np.sin(_hh2)]) * 1.0)
                     rxy = np.vstack([rxy, _xy2])
                     rtops = np.append(rtops, rtops[0])
                 if rxy is not None and len(rxy) >= 2:
@@ -244,12 +264,24 @@ def main():
                         ym = float(os.environ.get('S10_TK1_YAW_MAX', '1.5'))
                         vyaw = float(np.clip(ky * ey, -ym, ym))
 
+            # 前方航点：当前目标 wp 已被越过（投影过段末+0.5）时
+            # 瞄下一航点——RL 斜向爬台后 next_idx 可能还是身后的
+            # wp4，TK2 瞄它会把机器人拉回西行（round92 西漂 3.5m）
+            _ahead = next_idx
+            if next_idx > 0 and next_idx + 1 < len(wp):
+                # 弧长判定：路径投影已越过当前 wp（RL 斜向爬台时
+                # 直线段投影不前进——exit 点投影仅 4.56<len，
+                # 而 s_cur 已越过 wp4 2m，投影法把 wp 判成在前方
+                # （round95 TK2 瞄 wp4 拉机器人西转侧翻实测）
+                _wsc = stair.wp_s(next_idx)
+                if (_wsc is not None and stair.s_cur > _wsc + 0.2):
+                    _ahead = next_idx + 1
             # TK2：STAIR→CRUISE 后立即对准下一航点；对齐后交回 TMppi/SMppi
             if (os.environ.get('S10_TK2', '0') == '1' and _tk2
                     and stair.mode == 'CRUISE'):
                 _correction += 'TK2'
-                th2 = float(np.arctan2(wp[next_idx, 1] - body_pos[1],
-                                       wp[next_idx, 0] - body_pos[0]))
+                th2 = float(np.arctan2(wp[_ahead, 1] - body_pos[1],
+                                       wp[_ahead, 0] - body_pos[0]))
                 ey2 = float(np.arctan2(np.sin(th2 - yaw),
                                        np.cos(th2 - yaw)))
                 if abs(ey2) > float(os.environ.get('S10_TK2_YAW_DB', '0.15')):
@@ -281,6 +313,19 @@ def main():
                 _post_stair_t = None
 
             v_ref = vx
+            # 航线夹角门（用户指示）：只对爬升轴与航线夹角小的台阶
+            # 生效——平台东角在 wp4 前 0.44m、爬升轴与航线差 60°+，
+            # 属路径外障碍，EDGE/锁存不得把它当台阶骑（round91 骑上
+            # 角台 0.44m 窄条、西沿侧翻实测）
+            _edge_route_ok = True
+            if line is not None:
+                _chh = stair.climb_heading
+                if _chh is not None:
+                    _raa = float(np.arctan2(np.sin(_chh - line_head),
+                                            np.cos(_chh - line_head)))
+                    if abs(_raa) > float(os.environ.get(
+                            'S10_TK1_ROUTE_ANGLE', '0.45')):
+                        _edge_route_ok = False
             # STAIR 扫描是权威台阶源：riser 逼近到 1.5m 内时
             # 压 0.6 并锁存——贴沿后扫描会变空（s_proj 越过 riser）
             # 但轮子还在坎上，解锁会 3.6m/s 冲坎侧翻（wp5 实测）。
@@ -289,23 +334,29 @@ def main():
             # 也触发锁存——路径扫描/EDGE 都有盲区，跨骑是最后信号
             if (os.environ.get('S10_LIP_LATCH', '1') == '1'
                     and next_idx >= 4
+                    and _edge_route_ok
                     and float(np.max(terr[0:2])) - float(np.min(terr))
                     >= 0.08):
                 if not _lip_hold:
                     _lip_g0 = float(np.min(terr))
                     _lip_xy = np.asarray(pos2, dtype=np.float64).copy()
+                    _lip_wp_idx = next_idx
+                    _lip_t0 = t
                 _lip_hold = True
             _past_wp = (stair.wp_s(next_idx - 1) is not None
                         and stair.s_cur
                         > stair.wp_s(next_idx - 1) + 0.3)
             if (os.environ.get('S10_LIP_LATCH', '1') == '1'
                     and next_idx >= 4
+                    and _edge_route_ok
                     and _past_wp
                     and stair.decel_request > 0.5
                     and stair.stair_ahead_dist is not None
                     and stair.stair_ahead_dist <= 1.2):
                 if not _lip_hold:
                     _lip_g0 = float(np.min(terr))
+                    _lip_wp_idx = next_idx
+                    _lip_t0 = t
                     if os.environ.get('S10_LIP_DEBUG', '0') == '1':
                         print('[LATCH] set t=%.2f pos=(%.2f,%.2f) g0=%.2f'
                               % (t, pos2[0], pos2[1], _lip_g0), flush=True)
@@ -313,13 +364,12 @@ def main():
             if _lip_hold:
                 # 骑坎滞留是台沿扭振侧滑的根源：前轮一上台就给
                 # 1.2m/s 冲量把后轮拉过立面，骑坎时间压到 1-2s
-                _lv = float(os.environ.get('S10_STAIR_APPROACH_VX', '0.6'))
                 if (float(np.max(terr[0:2])) - float(np.min(terr)) >= 0.04
                         and (stair.drop_ahead_dist is None
                              or stair.drop_ahead_dist > 1.0)):
                     _lv = float(os.environ.get('S10_LIP_BURST_VX', '1.2'))
-                vx = _lv
-                v_ref = min(v_ref, vx)   # MPPI 的上限是 v_ref，必须同步
+                    vx = _lv
+                    v_ref = min(v_ref, vx)   # MPPI 的上限是 v_ref，必须同步
                 # 锁存期间保持正对路径航向 + 前轮抬升：斜贴台沿会
                 # 单轮骑坎沿坎侧滑（wp5 实测东滑 3m 卡死）
                 if line is not None:
@@ -338,20 +388,27 @@ def main():
                     # 抬轮与推力冲突（抬轮减轮压致打滑），锁存期不抬，
                     # 靠 1.2m/s 冲量 + 轮半径滚上 0.064 立面
                     _edge_lift[0:2] = 0.0
-                # 距离制释放：锁存后前进 >= 台面宽(2.5m) 或已贴近 wp 才放
-                # （高度制被地形噪声 0.57 抖动提前释放，3.7m/s 冲对侧沿）
-                _rel_d = 1e9
-                if _lip_xy is not None:
-                    _rel_d = float(np.linalg.norm(
-                        np.asarray(pos2) - _lip_xy))
-                if (_rel_d >= float(os.environ.get(
-                        'S10_LIP_RELEASE_DIST', '2.5'))
-                        or dist_wp <= 1.0):
+                # 释放锚定 wp 推进点：推进过锁存时的 wp 且过点 0.3m
+                # 才放（距离制释放过早，台顶压速磨对侧沿 wp5 实测）
+                _rel = False
+                if (_lip_wp_idx is not None
+                        and _lip_wp_idx < len(wp)
+                        and next_idx > _lip_wp_idx):
+                    _dwp = float(np.linalg.norm(
+                        np.asarray(pos2) - wp[_lip_wp_idx, :2]))
+                    if _dwp >= 0.3:
+                        _rel = True
+                if _lip_t0 is not None and t - _lip_t0 > 25.0:
+                    _rel = True   # 兜底：长时间未推进强放
+                if _rel:
                     if os.environ.get('S10_LIP_DEBUG', '0') == '1':
-                        print('[LATCH] release t=%.2f pos=(%.2f,%.2f) d=%.2f'
-                              % (t, pos2[0], pos2[1], _rel_d), flush=True)
+                        print('[LATCH] release t=%.2f pos=(%.2f,%.2f)'
+                              % (t, pos2[0], pos2[1]), flush=True)
                     _lip_hold = False
                     _lip_xy = None
+                    _lip_wp_idx = None
+                    _lip_t0 = None
+                    _lip_rel_t = t
                     _edge_lift[0:2] = 0.0
                     _lip_grind_since = None
             if stair.decel_request > 0.0:
@@ -362,9 +419,14 @@ def main():
                 v_ref = min(v_ref, vx)
             # 下行落差保护：前方检测到 >=0.08m 跌落沿时强制低速直行，
             # 避免高速下台栽头（下行不交 RL，先慢速爬行兜底）。
-            if (stair.drop_ahead_dist is not None
+            # 轮下兜底：s 投影越过跌落后扫描变空（round93 台沿前
+            # drops=[] 失保、0.6m/s 下台栽头实测）——后轮上台前轮
+            # 已下的跨骑状态也强制低速直行
+            if ((stair.drop_ahead_dist is not None
                     and stair.drop_ahead_dist < float(os.environ.get(
-                        'S10_DROP_LOOKAHEAD', '2.0'))):
+                        'S10_DROP_LOOKAHEAD', '2.0')))
+                    or float(np.max(terr[2:4])) - float(np.min(terr))
+                    >= 0.08):
                 vx = min(vx, float(os.environ.get('S10_DROP_VX', '0.3')))
                 vyaw = float(np.clip(vyaw, -0.5, 0.5))
                 v_ref = min(v_ref, vx)
@@ -373,6 +435,7 @@ def main():
             # 前方 0.3~1.2m 升高 0.08~0.25m => 正对直行低速骑上（不交 RL）
             _rf = float(os.environ.get('S10_EDGE_LOOKAHEAD', '1.2'))
             if (_rf > 0.0 and stair.mode == 'CRUISE'
+                    and _edge_route_ok
                     and abs(_cte) <= float(os.environ.get(
                         'S10_EDGE_CTE_MAX', '0.8'))):
                 # 探针沿路径航向（机器人实际航向偏移时也能看到前方台阶）
@@ -419,6 +482,8 @@ def main():
                         if not _lip_hold:
                             _lip_g0 = float(np.min(terr))
                             _lip_xy = np.asarray(pos2, dtype=np.float64).copy()
+                            _lip_wp_idx = next_idx
+                            _lip_t0 = t
                         _lip_hold = True
                     # 前轮抬轮前馈：仅 >=10cm 的台阶（小台阶
                     # 抬轮会失牵引，wp0-1 坡底实测 12s 卡死）
@@ -514,13 +579,13 @@ def main():
                     om_c = 0.0
             # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
             # 楼梯后：低倍率直接瞄当前目标 wp，直到距其足够近才放开
-            if (_post_stair_xy is not None and next_idx < len(wp)
+            if (_post_stair_xy is not None and _ahead < len(wp)
                     and float(np.linalg.norm(
-                        body_pos[:2] - wp[next_idx, :2]))
+                        body_pos[:2] - wp[_ahead, :2]))
                     > float(os.environ.get('S10_POSTSTAIR_HOLD_DIST', '0.7'))):
                 vx_c = min(float(vx_c), 0.6)
-                _ph = float(np.arctan2(wp[next_idx, 1] - body_pos[1],
-                                       wp[next_idx, 0] - body_pos[0]))
+                _ph = float(np.arctan2(wp[_ahead, 1] - body_pos[1],
+                                       wp[_ahead, 0] - body_pos[0]))
                 _pe = float(np.arctan2(np.sin(_ph - yaw),
                                        np.cos(_ph - yaw)))
                 om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
@@ -540,7 +605,19 @@ def main():
                 _ehl = float(np.arctan2(np.sin(_thw - yaw),
                                          np.cos(_thw - yaw)))
                 om_c = float(np.clip(2.0 * _ehl, -1.0, 1.0))
-                vx_c = min(float(vx_c), 0.6)
+                # 不再提前压速：锁存期 vx 交给 MPPI（跨骑冲量在上游）
+            # 锁存释放后 1s 航向保持：上台面瞬间 MPPI 会立刻拉偏
+            # 航向（台面顶自旋侧翻实测），先稳 1s 再交还
+            if (_lip_rel_t is not None and not _roll_gate
+                    and t - _lip_rel_t < 1.0):
+                _thr = float(np.arctan2(wp[next_idx, 1] - body_pos[1],
+                                          wp[next_idx, 0] - body_pos[0]))
+                _err = float(np.arctan2(np.sin(_thr - yaw),
+                                         np.cos(_thr - yaw)))
+                om_c = float(np.clip(1.5 * _err, -0.8, 0.8))
+                vx_c = min(float(vx_c), 1.2)
+            elif _lip_rel_t is not None and t - _lip_rel_t >= 1.0:
+                _lip_rel_t = None
             # 大偏航纠偏：偏离航线 >1.5m 时 cmd 级直指当前 wp
             # （爬升后沿台壁西滑 90s 死锁实测——MPPI 弱 guide
             # 压不过平台边腿阻抗扭振）
@@ -792,6 +869,13 @@ def main():
         # 对准；只有明显越过后才跳过对准直接推点。
         if next_idx < len(wp):
             _arr = nav.reached(next_idx, d.xpos[1][:2])
+            # 弧长兜底：RL 斜向爬台后沿路径投影已越过当前 wp，
+            # 但直线段投影不前进（exit 点投影 4.56<len+0.8），
+            # next_idx 卡在身后 wp → MPPI 沿旧段西拉侧翻（round96）
+            if not _arr and next_idx > 0:
+                _wsc = stair.wp_s(next_idx)
+                if _wsc is not None and stair.s_cur > _wsc + 0.3:
+                    _arr = True
             _align_ok = True
             if _arr and next_idx > 0 and next_idx + 1 < len(wp):
                 _segv0 = wp[next_idx, :2] - wp[next_idx - 1, :2]

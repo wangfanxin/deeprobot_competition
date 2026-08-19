@@ -901,11 +901,11 @@ class AutoNavFollower:
                           f"pos=({robot_xy[0]:.2f},{robot_xy[1]:.2f})", flush=True)
             return
 
-        # CRUISE -> STAIR (TK1 entry, doc §9)。只对多级楼梯（>=2 riser）
-        # 交 RL：单级台面 RL 爬升西拖实测（round69/70），CRUISE
-        # 冲量+v595 骑坎 5s 内完成。
+        # CRUISE -> STAIR (TK1 entry, doc §9)。单级台阶也交 RL
+        # （用户指示）：cruise_main 用远侧跌落沿合成虚拟第二级
+        # riser 补观测表（T8 验证），RL 四轮越顶切回 CRUISE。
         if (self.stair_ahead_dist is not None
-                and len(self.stair_rises_s) >= 2):
+                and len(self.stair_rises_s) >= 1):
             _enter = float(os.environ.get("S10_STAIR_ENTER_DIST", "2.0"))
             # RE-ENTRY GUARD: after a STAIR->CRUISE handback, do not re-enter STAIR until the
             # robot has moved S10_STAIR_REENTRY_GUARD metres past the exit (prevents mode
@@ -946,10 +946,19 @@ class AutoNavFollower:
                                            np.cos(_first_head - yaw)))
                     _db = float(os.environ.get("S10_TK1_YAW_DB", "0.20"))
                     _vx_gate = float(os.environ.get("S10_TK1_VX", "2.0"))
-                    if (abs(_ey) > _db or body_vx > _vx_gate):
+                    # TK1 只认与航线夹角小的楼梯（用户指示）：
+                    # 平台东角爬升轴与航线差 60°+，属路径外障碍，
+                    # 不交 RL；正对航线的台面/楼梯夹角 ~0 才放行
+                    _rh = float(self.path_heading[_k])
+                    _rd = float(np.arctan2(np.sin(_first_head - _rh),
+                                           np.cos(_first_head - _rh)))
+                    _ra = float(os.environ.get(
+                        "S10_TK1_ROUTE_ANGLE", "0.45"))
+                    if (abs(_ey) > _db or body_vx > _vx_gate
+                            or abs(_rd) > _ra):
                         if _dbg:
                             print(f"[MODE] TK1 gate hold: ey={_ey:.2f} "
-                                  f"vx={body_vx:.2f}", flush=True)
+                                  f"vx={body_vx:.2f} ra={_rd:.2f}", flush=True)
                         return
                 self.mode = "STAIR"
                 self._stair_enter_s = float(getattr(self, "_s_cur", 0.0))
@@ -1033,6 +1042,9 @@ class AutoNavFollower:
                         best = hv
             if best is not None:
                 prof.append((ds, best))
+        if os.environ.get("S10_ELEV_DEBUG") and 31.0 <= s_cur <= 33.8:
+            print(f"[ELEVPROF] sc={s_cur:.2f} " +
+                  " ".join(f"{d:.1f}:{h:.2f}" for d, h in prof), flush=True)
         if len(prof) < 3:
             return []
         if os.environ.get("S10_ELEV_STEP", "1") != "1":
@@ -1064,7 +1076,7 @@ class AutoNavFollower:
                                    if 0.2 < ds2 - ds <= 0.6)
                     if _sustain:
                         steps.append((ds, _dh, h))
-            elif _dh < -drop_th and ds >= 0.2:
+            elif _dh < -drop_th and ds >= 0.05:
                 # 下沉确认：之后 0.2~0.6m 保持低位才算跌落沿，
                 # 滤除高程栅格无效区/噪声尖峰（wp4 前 2.5m 处
                 # 假 drop 使 DROP 限速整段爬行实测）
@@ -1076,6 +1088,7 @@ class AutoNavFollower:
             prev_h = max(prev_h, h)
         self._elev_last_steps = [(float(d), float(j)) for d, j, _ in steps]
         self._elev_rises_tops = [float(h) for _, _, h in steps]
+        self._elev_drops = [float(x) for x in drops]
         self.drop_ahead_dist = float(min(drops)) if drops else None
         _single = (len(steps) == 1 and steps[0][1] < 0.35)
         if len(steps) < int(os.environ.get("S10_ELEV_MIN_STEPS", "2"))                 and not _single:
