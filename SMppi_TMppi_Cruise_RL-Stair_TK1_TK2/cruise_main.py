@@ -792,7 +792,7 @@ def main():
         # 把机器人推过侧翻点（round116 平顶转向 roll -0.86 实测）；
         # 目标反向偏置把 CarVMC 内部 roll 环推向扶正方向
         if _roll_gate:
-            roll_tar = float(np.clip(-1.2 * _body_roll, -0.12, 0.12))
+            roll_tar = float(np.clip(-2.0 * _body_roll, -0.25, 0.25))
         # 逐轮抬轮前馈（tune4 版恢复）：台阶/台沿由 CarVMC 巡航爬升。
         # RL 单级 12.5cm 未训练（T8 实测 policy 直接摔倒），
         # STAIR 只接管 6 级楼梯。
