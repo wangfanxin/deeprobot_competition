@@ -59,7 +59,8 @@ class BodyMPPI:
         self.N, self.H = N, H
         self.dt = float(_os.environ.get('S10_MPPI_DT', dt))
         self.ctrl_dt = float(_os.environ.get('S10_MPPI_CTRL_DT', self.dt))
-        self.tau_v, self.tau_w = tau_v, tau_w
+        self.tau_v = float(_os.environ.get('S10_MPPI_TAU_V', str(tau_v)))
+        self.tau_w = float(_os.environ.get('S10_MPPI_TAU_W', str(tau_w)))
         self.mu, self.g = mu, g
         self.vx_max, self.omega_max = vx_max, omega_max
         # v826: 纵向加速度硬约束（S10_MPPI_A_MAX，默认 2.5 m/s² =
