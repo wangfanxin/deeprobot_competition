@@ -644,11 +644,12 @@ def main():
             # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
             # 楼梯后：低倍率直接瞄当前目标 wp，直到距其足够近才放开
             if (_post_stair_xy is not None and _ahead < len(wp)
-                    and t - _post_stair_t < float(os.environ.get(
+                    and (t - _post_stair_t < float(os.environ.get(
                         'S10_POSTSTAIR_HOLD_T', '2.5'))
-                    and float(np.linalg.norm(
-                        body_pos[:2] - wp[_ahead, :2]))
-                    > float(os.environ.get('S10_POSTSTAIR_HOLD_DIST', '0.7'))):
+                         or float(np.linalg.norm(
+                            body_pos[:2] - wp[_ahead, :2]))
+                         > float(os.environ.get(
+                            'S10_POSTSTAIR_HOLD_DIST', '1.2')))):
                 # 交接瞬态限速：RL 快走交还时 MPPI 平滑刹车太弱
                 # （round175 台面 cmd0.2 实际 2.18->4.08m/s 加速），
                 # 前 1.0s 直接零指令硬停 + 禁止转向（台面 om-0.96

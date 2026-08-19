@@ -886,8 +886,10 @@ class AutoNavFollower:
             # 只看到 5 级（第 6 级超出高程表），top_max=第 5 级顶，
             # 轮心在第 5 级就误判越顶交还，wp7 推点+转向在楼梯沿上
             # 侧翻（round147 实测）；s 过最后 riser 才放
-            _rs_last = (float(self.stair_rises_s[-1])
-                        if getattr(self, 'stair_rises_s', None) else -1.0)
+            # 用入口时的最后 riser：顶台上扫描还会看到平顶的假
+            # riser（ad 1.3 前方），_rs_last 被假 riser 拉远导致
+            # _spast 永不满足（round189 六级楼梯顶又卡 36s）
+            _rs_last = float(getattr(self, '_stair_last_riser_s', -1.0))
             _spast = (float(getattr(self, '_s_cur', 0.0))
                       > _rs_last + 0.8)
             _exit_ok = (float(np.min(np.asarray(wheel_z, dtype=np.float64)))
@@ -929,7 +931,7 @@ class AutoNavFollower:
                             and (roll is None
                                  or abs(float(roll)) <= 0.3)
                             and (pitch is None
-                                 or abs(float(pitch)) <= 0.3)
+                                 or abs(float(pitch)) <= 0.45)
                             and (vy is None or abs(float(vy)) <= 0.8))
             if _exit_ok:
                 self.mode = "CRUISE"
@@ -1040,6 +1042,7 @@ class AutoNavFollower:
                 self._stair_nrisers = len(self.stair_rises_s)
                 self._stair_riser_span = (float(self.stair_rises_s[-1])
                                            - float(self.stair_rises_s[0]))
+                self._stair_last_riser_s = float(self.stair_rises_s[-1])
                 self._stair_first_riser_xy = self._path_point_at(_first_s)[:2]
                 self._stair_first_heading = _first_head
                 self.stair_rises_tops = list(getattr(self,
