@@ -200,6 +200,19 @@ def main():
                 _seg_head = float(np.arctan2(_uy, _ux))
                 _rel = pos2 - np.asarray(line['start'])
                 _cte = float(-_uy * _rel[0] + _ux * _rel[1])
+                # RL 漂移强退：策略在两节台阶上西漂 6m、6.9m/s
+                # 侧翻（round177 实测），离航线 >1.2m 时强制交还
+                # CRUISE 自救（MPPI 拉回航线）
+                if (stair.mode == 'STAIR' and abs(_cte) > 1.2
+                        and t - float(getattr(stair.fol, '_stair_enter_s', t))
+                        > 1.0):
+                    stair.fol.mode = 'CRUISE'
+                    stair.fol.decel_request = 0.0
+                    stair.fol._stair_exit_xy = np.asarray(
+                        pos2, dtype=np.float64).copy()
+                    stair.fol._stair_exit_s = float(stair.s_cur)
+                    print('[RL-DIAG] drift-abort cte=%.2f pos=(%.1f,%.1f)'
+                          % (_cte, pos2[0], pos2[1]), flush=True)
                 _cte_k = float(os.environ.get('S10_LINE_CTE_K', '1.0'))
                 _des = _seg_head - _cte_k * float(np.clip(_cte, -1.0, 1.0))
                 if dist_wp < 0.5:
