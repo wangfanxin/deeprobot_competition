@@ -25,7 +25,7 @@ class StairGate:
         self.fol = AutoNavFollower(waypoints)
 
     def update(self, pos2, next_idx, yaw, local_map, body_vx, wheel_z,
-               heading=None):
+               heading=None, pitch=None):
         self._next_idx = next_idx
         # 只推进弧长游标供感知使用，不做速度/转向控制
         if hasattr(self.fol, 'path_pts'):
@@ -38,7 +38,7 @@ class StairGate:
         _ch = self._climb_heading()
         self.fol.update_mode(pos2, next_idx, yaw=yaw, local_map=local_map,
                              body_vx=body_vx, wheel_z=wheel_z,
-                             heading=_ch)
+                             heading=_ch, pitch=pitch)
 
     @property
     def mode(self):
@@ -68,8 +68,16 @@ class StairGate:
         # 平台角 riser 落在 wp3-4 段中部，顶点=wp3，算出的
         # riser->drop 方位变成整段西向，round86 实测 RL 西直行）
         rxy0 = np.asarray(self.fol._path_point_at(float(rs[0]))[:2])
-        # 台阶立面法向 = riser -> 远沿方向（比路径航向准：路径斜穿
-        # 台沿时爬升轴会被带偏，RL 沿 2.91 爬台西漂 3m 实测）
+        # 多级楼梯：riser1 -> 最后一级 riser 即爬升轴，不需要远沿
+        # （噪声 drop 簇会越过楼梯顶把方位带向西侧平台边，
+        # round109 六级楼梯底 TK1 卡死 ra=0.88 实测）
+        if len(rs) >= 2:
+            _xyl = np.asarray(self.fol._path_point_at(float(rs[-1]))[:2])
+            _dvl = _xyl - rxy0
+            if np.linalg.norm(_dvl) > 0.3:
+                return float(np.arctan2(_dvl[1], _dvl[0]))
+        # 单级台面：台阶立面法向 = riser -> 远沿方向（比路径航向准：
+        # 路径斜穿台沿时爬升轴会被带偏，RL 沿 2.91 爬台西漂 3m 实测）
         # 选 riser 之后 >=0.8m 的跌落沿（台面远沿）：平台东角是
         # 0.44m 窄条，最近的 drop 是角自身西沿，riser->drop 方位
         # 变成西向（round86/87 实测 RL 西直行）；取远沿才是台面

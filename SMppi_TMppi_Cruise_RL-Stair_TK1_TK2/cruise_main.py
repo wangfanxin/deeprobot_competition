@@ -135,8 +135,12 @@ def main():
             if os.environ.get('S10_RL_ELEV', '0') == '1':
                 local_map = perc.local_tile(pos2, t)
                 _ph = perc.stair_heading(stair)
+            _bp = float(np.arctan2(
+                2.0 * (d.xquat[1][0] * d.xquat[1][3]
+                       - d.xquat[1][1] * d.xquat[1][2]),
+                1.0 - 2.0 * (d.xquat[1][2] ** 2 + d.xquat[1][3] ** 2)))
             stair.update(pos2, next_idx, yaw, local_map,
-                         float(body_vel[0]), wheel_z)
+                         float(body_vel[0]), wheel_z, pitch=_bp)
             if os.environ.get('S10_LIP_DEBUG', '0') == '1' and next_idx in (4, 5):
                 print('[LIPDBG] t=%.2f pos=(%.2f,%.2f) rises=%s ahead=%s '
                       'drops=%s dropahead=%s ch=%.2f sc=%.2f'
@@ -170,19 +174,6 @@ def main():
                                                 side='right') - 1)
                     _k2 = min(max(_k2, 0), len(stair.path_pts) - 1)
                     _xy2 = np.asarray(stair.path_pts[_k2][:2])
-                    rxy = np.vstack([rxy, _xy2])
-                    rtops = np.append(rtops, rtops[0])
-                elif rxy is not None and len(rxy) == 1:
-                    # 无跌落沿可锚定（台顶延伸出前瞻）：沿爬升航向
-                    # 合成虚拟第二级 riser（+1.0m 同高），观测表
-                    # 保持两节台阶在分布内；实际只爬第一级，
-                    # 四轮越顶即切回 CRUISE
-                    _hh2 = float(stair.climb_heading
-                                 if stair.climb_heading is not None
-                                 else 0.0)
-                    _xy2 = (np.asarray(rxy[0])
-                            + np.array([np.cos(_hh2),
-                                        np.sin(_hh2)]) * 1.0)
                     rxy = np.vstack([rxy, _xy2])
                     rtops = np.append(rtops, rtops[0])
                 if rxy is not None and len(rxy) >= 2:
@@ -251,6 +242,7 @@ def main():
             if (os.environ.get('S10_TK1', '0') == '1'
                     and os.environ.get('S10_RL_ELEV', '0') == '1'
                     and stair.mode == 'CRUISE'
+                    and _post_stair_xy is None
                     and dist_wp <= float(os.environ.get(
                         'S10_TK1_WP_MAX', '2.5'))
                     and abs(_cte) <= float(os.environ.get(
@@ -422,8 +414,14 @@ def main():
                 # 圈外保持 2.0 供角部绕行速度
                 _ad = stair.stair_ahead_dist
                 if (_ad is not None and _ad <= float(os.environ.get(
-                        'S10_STAIR_ENTER_DIST', '2.0'))):
-                    dv = min(dv, float(os.environ.get('S10_TK1_VX', '1.5')))
+                        'S10_STAIR_ENTER_DIST', '2.0'))
+                        and _edge_route_ok):
+                    # 压到交付门以下 0.3：贴门限交付时 RL 带转向动量
+                    # 接手，六级楼梯西漂侧翻（round112 实测）；
+                    # 只对航线对齐的楼梯压速——角部（路径外障碍）
+                    # 压 1.2 会再现 round98 慢速绕角死循环
+                    dv = min(dv, float(os.environ.get('S10_TK1_VX', '1.5'))
+                             - 0.3)
                 vx = vx * (1.0 - stair.decel_request) + dv * stair.decel_request
                 v_ref = min(v_ref, vx)
             # 下行落差保护：前方检测到 >=0.08m 跌落沿时强制低速直行，
@@ -576,7 +574,9 @@ def main():
                 _roll_gate_since = None
             if _roll_gate:
                 # 允许 +/-0.3 慢转向脱困：此前 om=0 让机器人在
-                # 台沿侧倾死锁（wp5 实测 30s 卡死）
+                # 台沿侧倾死锁（wp5 实测 30s 卡死）；roll 力矩
+                # 主要靠 counter-roll 扶正（round121 六级楼梯底
+                # om=0 时原地自旋 roll 2.23 侧翻实测）
                 om_c = float(np.clip(om_c, -0.3, 0.3))
                 vx_c = min(float(vx_c), 0.3)
                 # 死锁脱困：门控持续 >2s => 直线倒车离开台阶边缘。
@@ -596,18 +596,22 @@ def main():
                     and float(np.linalg.norm(
                         body_pos[:2] - wp[_ahead, :2]))
                     > float(os.environ.get('S10_POSTSTAIR_HOLD_DIST', '0.7'))):
-                # 交接瞬态 1.5s 内限速：RL 腿位交还 CarVMC 的瞬态在
-                # 1.0m/s+转向时 roll 正反馈侧翻（round100 实测）；
-                # 1.5s 后交还 MPPI 全速，不再按距离爬到 wp 才放
-                vx_c = min(float(vx_c), float(os.environ.get(
-                    'S10_POSTSTAIR_HOLD_VX', '0.6')))
+                # 交接瞬态限速：RL 快走 1.87m/s 交还时 MPPI 平滑
+                # 刹车仅 ~1m/s2（round115 台面 1.1m 刹不住、下台
+                # 1.13m/s 栽头实测）；前 0.8s 硬刹 0.3 再过渡 0.6
+                _hv = float(os.environ.get('S10_POSTSTAIR_HOLD_VX', '0.6'))
+                if t - _post_stair_t < 0.8:
+                    _hv = 0.3
+                vx_c = min(float(vx_c), _hv)
                 _ph = float(np.arctan2(wp[_ahead, 1] - body_pos[1],
                                        wp[_ahead, 0] - body_pos[0]))
                 _pe = float(np.arctan2(np.sin(_ph - yaw),
                                        np.cos(_ph - yaw)))
                 om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
-            # 高台弱抓地：进一步限制速度与转向率
-            if float(body_pos[2]) > 1.0:
+            # 高台弱抓地：进一步限制速度与转向率（旧平台顶弱抓地
+            # 时代遗留；wp7+ 的 1.166 平顶抓地正常，omcap 0.3 导致
+            # 顶上台转向过慢、绕大圈外漂 3.3m 卡死 round117 实测）
+            if float(body_pos[2]) > 2.0:
                 vx_c = min(float(vx_c), 0.8)
                 omcap = min(omcap, 0.3)
             om_c = float(np.clip(om_c, -omcap, omcap))
@@ -713,6 +717,11 @@ def main():
         # 高台/弱抓地地形关闭压弯，优先防侧翻
         if float(body_pos[2]) > 1.0:
             roll_tar = 0.0
+        # roll 门控期主动反向压弯：门控只限 om/vx，roll 动量仍会
+        # 把机器人推过侧翻点（round116 平顶转向 roll -0.86 实测）；
+        # 目标反向偏置把 CarVMC 内部 roll 环推向扶正方向
+        if _roll_gate:
+            roll_tar = float(np.clip(-1.2 * _body_roll, -0.12, 0.12))
         # 逐轮抬轮前馈（tune4 版恢复）：台阶/台沿由 CarVMC 巡航爬升。
         # RL 单级 12.5cm 未训练（T8 实测 policy 直接摔倒），
         # STAIR 只接管 6 级楼梯。
@@ -803,6 +812,9 @@ def main():
             _rl_diag_done = True
             if stair.stair_first_heading is not None:
                 rl.set_heading(float(stair.stair_first_heading))
+            # RL 速度目标保持策略默认（set_cmd 改写观测后两级台阶
+            # 入口处策略南转 roll 1.30 侧翻 round134；round128 的
+            # 两级台阶 wheel-clear 交还 vx 1.02 干净）
             dq = qpos[rl.idx['act2jnt']] - rl.default_dof
             print('[RL-DIAG] takeover pos=(%.2f,%.2f,%.2f) yaw=%.3f '
                   'max_leg_err=%.3f'
@@ -912,6 +924,12 @@ def main():
                                  and abs(float(qvel[5]))
                                  <= float(os.environ.get(
                                      'S10_WP_ALIGN_OM', '0.3')))
+            # 楼梯顶刚交还时跳过对准门：wp7 就在六级楼梯顶沿上
+            # （距顶沿 0.15m），原地转对 wp8 方向（西 2.81）会在
+            # 台沿原地转 10s+，roll 门反复触发后翻（round111 实测）；
+            # 先推点让机器人在平顶上边开边转
+            if _post_stair_xy is not None:
+                _align_ok = True
             if _arr and _align_ok:
                 if next_idx == 0 and t_start is None:
                     t_start = t

@@ -833,7 +833,7 @@ class AutoNavFollower:
         return False
 
     def update_mode(self, robot_xy, next_idx, yaw=None, local_map=None,
-                    body_vx=0.0, wheel_z=None, heading=None):
+                    body_vx=0.0, wheel_z=None, heading=None, pitch=None):
         """PERCEPTION-DRIVEN stair takeover (USER 2026-08-16; 2026-08-18 doc §9/§10 对齐).
 
         - CRUISE -> STAIR (TK1)：前方 S10_TK1_LOOKAHEAD 内检测到路径上楼梯，且
@@ -885,7 +885,8 @@ class AutoNavFollower:
             _exit_ok = (float(np.min(np.asarray(wheel_z, dtype=np.float64)))
                             >= _top_max - _clear
                             and body_vx <= float(os.environ.get(
-                                "S10_STAIR_EXIT_VX", "1.0")))
+                                "S10_STAIR_EXIT_VX", "1.6"))
+                            and (pitch is None or abs(float(pitch)) <= 0.15))
             if not _exit_ok and self._stair_first_riser_xy is not None:
                 _fwd = np.array([np.cos(self._stair_first_heading),
                                  np.sin(self._stair_first_heading)])
@@ -894,9 +895,17 @@ class AutoNavFollower:
                 _min_climb = float(os.environ.get("S10_STAIR_MIN_CLIMB_S", "2.5"))
                 # 单级台面：越过首级 1.2m 即交还（台面 2m 宽，
                 # 2.5m 已过对侧沿；round101 RL 提速到 3.1m/s
-                # 冲过退出圈栽头实测）；多级楼梯保持 2.5
+                # 冲过退出圈栽头实测）
                 if int(getattr(self, '_stair_nrisers', 2)) == 1:
                     _min_climb = 1.2
+                else:
+                    # 多级：兜底退出必须越过整个楼梯段（末级之后
+                    # 2m）——固定 2.5m 在六级楼梯上只到第 3-4 级，
+                    # wheel-clear 因 vx>1.6 未触发时中途交还，
+                    # 2.03m/s 跨步姿态侧翻（round124 实测）
+                    _rs = list(getattr(self, 'stair_rises_s', []) or [])
+                    if len(_rs) >= 2:
+                        _min_climb = (float(_rs[-1]) - float(_rs[0])) + 2.0
                 _exit_ok = _prog > _min_climb
             if _exit_ok:
                 self.mode = "CRUISE"
@@ -914,8 +923,26 @@ class AutoNavFollower:
         # CRUISE -> STAIR (TK1 entry, doc §9)。单级台阶也交 RL
         # （用户指示）：cruise_main 用远侧跌落沿合成虚拟第二级
         # riser 补观测表（T8 验证），RL 四轮越顶切回 CRUISE。
+        # 单级 riser 必须有台面远沿（drop 可见）才交 RL：
+        # 六级楼梯顶的平顶假 riser（楼梯末级回波/台面噪声）无
+        # 真实 drop，此前合成虚拟第二级后被 RL 西拉侧翻
+        # （round110 实测）；平台真台面 drop 2.0m 可见
+        # 交付圈还需机器人贴近航线：平台西沿外的假 riser/drop
+        # （机器人漂到台沿外 3.3m，TK1 卡死 roll 门反转侧翻
+        # round117 实测）不得触发 STAIR
+        _lat = 1e9
+        if hasattr(self, 'path_pts'):
+            _k0 = int(np.argmin(np.sum(
+                (self.path_pts[:, :2] - np.asarray(robot_xy)[None, :]) ** 2,
+                axis=1)))
+            _lat = float(np.linalg.norm(
+                self.path_pts[_k0, :2] - np.asarray(robot_xy)[:2]))
+        _lat_max = float(os.environ.get('S10_STAIR_ENTRY_LAT_MAX', '1.0'))
         if (self.stair_ahead_dist is not None
-                and len(self.stair_rises_s) >= 1):
+                and _lat <= _lat_max
+                and (len(self.stair_rises_s) >= 2
+                     or (len(self.stair_rises_s) == 1
+                         and self.drop_ahead_dist is not None))):
             _enter = float(os.environ.get("S10_STAIR_ENTER_DIST", "2.0"))
             # RE-ENTRY GUARD: after a STAIR->CRUISE handback, do not re-enter STAIR until the
             # robot has moved S10_STAIR_REENTRY_GUARD metres past the exit (prevents mode
@@ -929,10 +956,8 @@ class AutoNavFollower:
                 _dx = float(np.linalg.norm(np.asarray(robot_xy) - self._stair_exit_xy))
                 _past = (getattr(self, '_stair_exit_s', None) is not None
                          and float(getattr(self, '_s_cur', 0.0))
-                         > float(self._stair_exit_s) + 0.5)
-                if _dx < _guard and not _past:
-                    if _dbg and robot_xy[1] > 24:
-                        print(f"[MODE] reentry guard: dx={_dx:.2f} exit={self._stair_exit_xy}", flush=True)
+                         > float(self._stair_exit_s) + 2.0)
+                if not _past:
                     return
             if self.stair_ahead_dist <= _enter:
                 # 已骑上台阶（前轮已达台面）就不再交 RL：
