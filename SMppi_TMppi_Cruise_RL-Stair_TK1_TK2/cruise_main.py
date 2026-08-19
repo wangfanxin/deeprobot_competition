@@ -21,6 +21,7 @@ from tmppi import TMppi
 from carvmc import CarVMCExecutor
 from rlstair_ctrl import RLStairCtrl
 from s10_mpc.vmc_legs import WHEEL_BODY
+from s10_mpc.vmc_legs import WHEEL_QV_IDX
 
 DT = 0.005
 XML = os.environ.get('S10_XML',
@@ -623,12 +624,17 @@ def main():
                 2.0 * (d.xquat[1][0] * d.xquat[1][1]
                        + d.xquat[1][2] * d.xquat[1][3]),
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
-            # 平顶门控 0.22 实验回退 0.34：交还期转向让位后（round219
-            # 交还 roll ±0.31 内、无卡死），平顶正常巡航 roll 摆动
-            # ±0.2 被 0.22 误触，wp10 后 drive-crawl 极限环 90s 不进
-            # 点（round219 实测）；统一 0.34/0.28
             _rg_hi = float(os.environ.get('S10_ROLL_GATE_HI', '0.34'))
             _rg_lo = float(os.environ.get('S10_ROLL_GATE_LO', '0.28'))
+            # wp7->8 是 1.235 窄脊骑行（脊宽~0.7m，两侧 1.166），
+            # 轮沿磕碰激起 roll 冲量（round221 实测 -4.2rad/s 侧翻）；
+            # 0.22 提前门控在冲量不可逆前爬行保位（round219 该段
+            # 0.22 下 19.6s 通过）；开敞平顶巡航 roll 摆动 ±0.2 会
+            # 误触 0.22 成 drive-crawl 极限环（round219 wp10 后 90s
+            # 不进点），故只在窄脊段收紧
+            if float(body_pos[2]) > 1.0 and next_idx == 8:
+                _rg_hi = min(_rg_hi, 0.22)
+                _rg_lo = min(_rg_lo, 0.18)
             if abs(_body_roll) > _rg_hi:
                 if not _roll_gate:
                     _roll_gate_since = t
@@ -1030,7 +1036,11 @@ def main():
                          float(np.hypot(d.cvel[1][0], d.cvel[1][1])),
                          1.0 if stair.mode == 'STAIR' else 0.0,
                          _dbg_roll, float(d.qvel[3]), om_c, vx_c,
-                         float(np.median(terr)), _roll_tar_c])
+                         float(np.median(terr)), _roll_tar_c,
+                         float(wheel_xyz[0, 2]), float(wheel_xyz[1, 2]),
+                         float(wheel_xyz[2, 2]), float(wheel_xyz[3, 2]),
+                         float(d.qvel[6 + WHEEL_QV_IDX[0]]),
+                         float(d.qvel[6 + WHEEL_QV_IDX[2]])])
 
         # 航点推进：只按原始折线水平距离；到点判（未越过）要求
         # 对准下一段 + 角速度收敛才推点（防原地转完成前抢跑）；
