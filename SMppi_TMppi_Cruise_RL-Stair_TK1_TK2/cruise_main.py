@@ -609,6 +609,7 @@ def main():
                     # 边界误锁 + om 强制正对 = 坡顶自旋侧翻（round46）
                     if (os.environ.get('S10_LIP_LATCH', '1') == '1'
                                             and _past_wp
+                                            and stair.stair_ahead_dist is not None
                             and _rise_edge >= 0.10):
                         if not _lip_hold:
                             _lip_g0 = float(np.min(terr))
@@ -679,6 +680,7 @@ def main():
                 _planner = 'SMppi'
                 vx_c, om_c = smppi.plan(state, ref_path, v_ref, prev_u,
                                         float(vyaw), wp_dx=_wp_dx)
+                _om_raw_plan = float(om_c)
             latmax = float(os.environ.get('S10_AUTO_LAT_MAX', '1.8'))
             if used_turn:
                 omcap = min(float(os.environ.get('S10_TURN_OM_MAX', '3.0')),
@@ -1015,6 +1017,15 @@ def main():
             os.environ['S10_CAR_WHEEL_GF'] = '0.5'
         else:
             os.environ['S10_CAR_WHEEL_GF'] = '1.0'
+        if os.environ.get('S10_DUMP_TICKS', '0') == '1' and t < 7.0:
+            print('[DUMP] t=%.4f x=%.6f y=%.6f z=%.6f yaw=%.6f bvx=%.6f bvy=%.6f qv5=%.6f vyaw=%.6f vxl=%.6f vref=%.6f dist=%.6f cte=%.6f des=%.6f herr=%.6f omc=%.6f vxc=%.6f omraw=%.6f prevu=%.6f,%.6f roll=%.6f gate=%d corr=%s ut=%d'
+                  % (t, float(pos2[0]), float(pos2[1]), float(body_pos[2]),
+                     float(yaw), float(body_vel[0]), float(body_vel[1]),
+                     float(qvel[5]), float(vyaw), float(vx), float(v_ref),
+                     float(dist_wp), float(_cte), float(_des), float(head_err),
+                     float(om_c), float(vx_c), float(_om_raw_plan), float(prev_u[0]), float(prev_u[1]),
+                     float(_body_roll), int(_roll_gate), _correction, int(used_turn)),
+                  flush=True)
         cmd = dict(vx=(0.6 if (_max_lift > 0.05 or _lift_hold) else vx_c),
                    omega=(0.0 if _max_lift > 0.05 else
                           (0.3 if _lift_hold else om_c)),
@@ -1135,6 +1146,9 @@ def main():
 
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
+        if os.environ.get('S10_DUMP_STOP', '0') == '1' and t > 6.5:
+            print('[T] dump-stop t=%.2f' % t, flush=True)
+            break
         t += DT
         _ctrl_cnt += 1
 
