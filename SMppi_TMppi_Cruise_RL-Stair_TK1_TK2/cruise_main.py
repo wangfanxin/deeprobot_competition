@@ -491,8 +491,13 @@ def main():
             # 台沿锁存期：cmd 级强制正对路径航向（经 MPPI 的弱 guide
             # 被其它代价压过，wp5 实测贴沿航向漂 0.3rad 侧滑）
             if _lip_hold and not _roll_gate:
-                _ehl = float(np.arctan2(np.sin(line_head - yaw),
-                                         np.cos(line_head - yaw)))
+                # 锁存期瞄当前 wp（不是航线航向）：爬升中若漂离航线，
+                # 朝 wp 的方向自然把机器人拉回线上（round51 西漂 3.6m
+                # 掉西沿实测）
+                _thw = float(np.arctan2(wp[next_idx, 1] - body_pos[1],
+                                          wp[next_idx, 0] - body_pos[0]))
+                _ehl = float(np.arctan2(np.sin(_thw - yaw),
+                                         np.cos(_thw - yaw)))
                 om_c = float(np.clip(2.0 * _ehl, -1.0, 1.0))
                 vx_c = min(float(vx_c), 0.6)
             # TK 阶段（TK1 对准 / TK2 转出）直接执行对准转向：

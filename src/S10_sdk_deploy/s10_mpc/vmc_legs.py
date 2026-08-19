@@ -1172,7 +1172,10 @@ class CarVMC:
             # 原地转向（vx≈0）不触发，保证 TMppi 点转权威。
             _err_y = self._om_f - body["omega"]
             _svxg = float(os.environ.get("S10_CAR_SLIP_VX_GATE", "0.5"))
-            if abs(_vx_b) > _svxg and abs(_om_b) > _om_safe:
+            # v855 反向硬刹必须全速域生效：低速自旋侧翻的最后一层
+            # 安全网（round52 低速 yaw 反旋 roll -1.05 侧翻实测）。
+            # 只有打滑回缩(v886)按 vx>0.5 门控。
+            if abs(_om_b) > _om_safe:
                 _om_ref = -float(np.clip(_om_b, -_om_safe, _om_safe))
                 _kd_eff = _kd_yaw + 8.0
             # v252: 差速参考用**即时指令**（导航已 slew 0.8/s，够平滑）——
