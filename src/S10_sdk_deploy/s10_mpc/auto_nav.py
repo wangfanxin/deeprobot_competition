@@ -851,8 +851,12 @@ class AutoNavFollower:
         _eenter = float(os.environ.get("S10_ELEV_ENTER", "5.0"))
 
         # perception: on-path staircase riser arc-lengths ahead
+        _wclip = None
+        if next_idx < len(self.path_wp_s):
+            _wclip = float(self.path_wp_s[next_idx]) + float(os.environ.get(
+                "S10_ELEV_WP_CLIP", "0.8"))
         self.stair_rises_s = self._elev_rises_on_path(
-            robot_xy, yaw, local_map, lookahead=_elook)
+            robot_xy, yaw, local_map, lookahead=_elook, s_clip=_wclip)
         if self.stair_rises_s:
             _sc = float(getattr(self, "_s_cur", 0.0))
             self.stair_ahead_dist = float(self.stair_rises_s[0] - _sc)
@@ -968,7 +972,7 @@ class AutoNavFollower:
         # 1.247 以上（round184 平顶假入口 RL 接手 4.36m/s 侧翻）
         _wz_lo = (wheel_z is None
                   or float(np.min(np.asarray(wheel_z, dtype=np.float64)))
-                  <= 1.2)
+                  <= float(os.environ.get("S10_Z_PLAT", "1.2")))
         if (self.stair_ahead_dist is not None
                 and _lat <= _lat_max
                 and _wz_lo

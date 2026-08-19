@@ -380,6 +380,7 @@ def main():
             # 骑坎锁存兜底：前轮已上台、后轮还在台下（跨骑状态）
             # 也触发锁存——路径扫描/EDGE 都有盲区，跨骑是最后信号
             if (os.environ.get('S10_LIP_LATCH', '1') == '1'
+                    and next_idx >= 4  # DIAG300
                     and _edge_route_ok
                     and float(body_pos[2]) <= float(os.environ.get('S10_Z_TK1', '1.1'))
                     and float(np.max(terr[0:2])) - float(np.min(terr))
@@ -394,6 +395,7 @@ def main():
                         and stair.s_cur
                         > stair.wp_s(next_idx - 1) + 0.3)
             if (os.environ.get('S10_LIP_LATCH', '1') == '1'
+                    and next_idx >= 4  # DIAG300
                     and _edge_route_ok
                     and float(body_pos[2]) <= float(os.environ.get('S10_Z_TK1', '1.1'))
                     and _past_wp
@@ -469,7 +471,8 @@ def main():
                 _ad = stair.stair_ahead_dist
                 if (_ad is not None and _ad <= float(os.environ.get(
                         'S10_STAIR_ENTER_DIST', '2.0'))
-                        and _edge_route_ok):
+                        and next_idx >= 4  # DIAG300
+                    and _edge_route_ok):
                     # 压到交付门以下 0.3：贴门限交付时 RL 带转向动量
                     # 接手，六级楼梯西漂侧翻（round112 实测）；
                     # 只对航线对齐的楼梯压速——角部（路径外障碍）
@@ -571,6 +574,7 @@ def main():
             # 前方 0.3~1.2m 升高 0.08~0.25m => 正对直行低速骑上（不交 RL）
             _rf = float(os.environ.get('S10_EDGE_LOOKAHEAD', '1.2'))
             if (_rf > 0.0 and stair.mode == 'CRUISE'
+                    and next_idx >= 4  # DIAG300
                     and _edge_route_ok
                     and abs(_cte) <= float(os.environ.get(
                         'S10_EDGE_CTE_MAX', '0.8'))):
@@ -612,7 +616,8 @@ def main():
                     # EDGE 锁存只认 >=10cm 的真台阶：坡顶 0.05 的
                     # 边界误锁 + om 强制正对 = 坡顶自旋侧翻（round46）
                     if (os.environ.get('S10_LIP_LATCH', '1') == '1'
-                                    and _past_wp
+                                    and next_idx >= 4  # DIAG300
+                            and _past_wp
                             and _rise_edge >= 0.10):
                         if not _lip_hold:
                             _lip_g0 = float(np.min(terr))
