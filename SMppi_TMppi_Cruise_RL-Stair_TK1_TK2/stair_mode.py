@@ -90,18 +90,18 @@ class StairGate:
             dv = xy2 - rxy0
             if np.linalg.norm(dv) > 0.3:
                 return float(np.arctan2(dv[1], dv[0]))
-        # 无台面远沿：riser 距段末航点 >=1.0m（航线过台后仍直行）
-        # → 航线航向（6 级楼梯/正对台面，与航线夹角 ~0 放行）；
-        # 距段末 <1.0m（航线即将转弯，riser 属路径外障碍——平台
-        # 东角在 wp4 前 0.44m 实测）→ 瞄下一航点，与航线夹角大
-        # 被 TK1 航线夹角门挡住，不交 RL
+        # 无台面远沿：按 riser 所在段的段末距离判定——航线过台后
+        # 仍直行 >=1.0m（段末-riser）→ 航线航向（wp5-6 两级台阶
+        # riser 在段中、航线直行，回退朝 wp6 会把机器人往东拉
+        # round97 实测）；距段末 <1.0m（航线即将转弯，riser 属
+        # 路径外障碍——平台东角在 wp4 前 0.44m）→ 瞄下一航点，
+        # 与航线夹角大被 TK1 航线夹角门挡住，不交 RL
         _ni = getattr(self, '_next_idx', None)
-        _ws = self.wp_s(_ni) if _ni is not None else None
-        if _ws is not None and _ws - float(rs[0]) >= 1.0:
-            k = int(np.searchsorted(self.fol.path_cum, float(rs[0]),
+        _kseg = int(np.searchsorted(self.fol.path_cum, float(rs[0]),
                                     side='right') - 1)
-            k = min(max(k, 0), len(self.fol.path_heading) - 1)
-            return float(self.fol.path_heading[k])
+        _kseg = min(max(_kseg, 0), len(self.fol.path_cum) - 2)
+        if float(self.fol.path_cum[_kseg + 1]) - float(rs[0]) >= 1.0:
+            return float(self.fol.path_heading[_kseg])
         if _ni is not None and _ni + 1 < len(self.fol.wp):
             _wxy = np.asarray(self.fol.wp[_ni + 1][:2])
             _dv2 = _wxy - rxy0

@@ -231,6 +231,20 @@ def main():
                 # 到点前可刹停（线性剖面短段刹不住，wp3 过冲侧翻实测）
                 vx = float(os.environ.get('S10_LINE_VMAX', '4.0')) * float(np.sqrt(_brk))
 
+            # 航线夹角门（用户指示）：只对爬升轴与航线夹角小的台阶
+            # 生效——平台东角在 wp4 前 0.44m、爬升轴与航线差 60°+，
+            # 属路径外障碍，EDGE/锁存/TK1/decel 不得把它当台阶骑
+            # （round91 骑上角台 0.44m 窄条西沿侧翻、round98 角部
+            # 减速对准 44s 死循环实测）
+            _edge_route_ok = True
+            if line is not None:
+                _chh = stair.climb_heading
+                if _chh is not None:
+                    _raa = float(np.arctan2(np.sin(_chh - line_head),
+                                            np.cos(_chh - line_head)))
+                    if abs(_raa) > float(os.environ.get(
+                            'S10_TK1_ROUTE_ANGLE', '0.45')):
+                        _edge_route_ok = False
             # TK1：CRUISE 中检测到前方楼梯，只做“对准”，不改模式。
             # 减速由 SMppi 终点代价 + decel_request 负责；TK1 只在进入
             # 交付圈（S10_STAIR_ENTER_DIST）后补 1.5m/s 交付速度上限。
@@ -313,19 +327,6 @@ def main():
                 _post_stair_t = None
 
             v_ref = vx
-            # 航线夹角门（用户指示）：只对爬升轴与航线夹角小的台阶
-            # 生效——平台东角在 wp4 前 0.44m、爬升轴与航线差 60°+，
-            # 属路径外障碍，EDGE/锁存不得把它当台阶骑（round91 骑上
-            # 角台 0.44m 窄条、西沿侧翻实测）
-            _edge_route_ok = True
-            if line is not None:
-                _chh = stair.climb_heading
-                if _chh is not None:
-                    _raa = float(np.arctan2(np.sin(_chh - line_head),
-                                            np.cos(_chh - line_head)))
-                    if abs(_raa) > float(os.environ.get(
-                            'S10_TK1_ROUTE_ANGLE', '0.45')):
-                        _edge_route_ok = False
             # STAIR 扫描是权威台阶源：riser 逼近到 1.5m 内时
             # 压 0.6 并锁存——贴沿后扫描会变空（s_proj 越过 riser）
             # 但轮子还在坎上，解锁会 3.6m/s 冲坎侧翻（wp5 实测）。
@@ -415,6 +416,14 @@ def main():
                 if _tk1_t0 is None:
                     _tk1_t0 = t
                 dv = float(os.environ.get('S10_ELEV_DECEL_VX', '2.0'))
+                # 交付圈内压到 TK1 交付速度（1.5）：wp5-6 两级台阶
+                # 前 decel 目标 2.0 高于交付门，机器人 1.67m/s 冲进
+                # 台阶面 tip 后 STAIR 才接手（round103 实测）；
+                # 圈外保持 2.0 供角部绕行速度
+                _ad = stair.stair_ahead_dist
+                if (_ad is not None and _ad <= float(os.environ.get(
+                        'S10_STAIR_ENTER_DIST', '2.0'))):
+                    dv = min(dv, float(os.environ.get('S10_TK1_VX', '1.5')))
                 vx = vx * (1.0 - stair.decel_request) + dv * stair.decel_request
                 v_ref = min(v_ref, vx)
             # 下行落差保护：前方检测到 >=0.08m 跌落沿时强制低速直行，
@@ -556,11 +565,13 @@ def main():
                 2.0 * (d.xquat[1][0] * d.xquat[1][1]
                        + d.xquat[1][2] * d.xquat[1][3]),
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
-            if abs(_body_roll) > 0.30:
+            _rg_hi = float(os.environ.get('S10_ROLL_GATE_HI', '0.34'))
+            _rg_lo = float(os.environ.get('S10_ROLL_GATE_LO', '0.28'))
+            if abs(_body_roll) > _rg_hi:
                 if not _roll_gate:
                     _roll_gate_since = t
                 _roll_gate = True
-            elif abs(_body_roll) < 0.20:
+            elif abs(_body_roll) < _rg_lo:
                 _roll_gate = False
                 _roll_gate_since = None
             if _roll_gate:
@@ -580,10 +591,16 @@ def main():
             # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
             # 楼梯后：低倍率直接瞄当前目标 wp，直到距其足够近才放开
             if (_post_stair_xy is not None and _ahead < len(wp)
+                    and t - _post_stair_t < float(os.environ.get(
+                        'S10_POSTSTAIR_HOLD_T', '1.5'))
                     and float(np.linalg.norm(
                         body_pos[:2] - wp[_ahead, :2]))
                     > float(os.environ.get('S10_POSTSTAIR_HOLD_DIST', '0.7'))):
-                vx_c = min(float(vx_c), 0.6)
+                # 交接瞬态 1.5s 内限速：RL 腿位交还 CarVMC 的瞬态在
+                # 1.0m/s+转向时 roll 正反馈侧翻（round100 实测）；
+                # 1.5s 后交还 MPPI 全速，不再按距离爬到 wp 才放
+                vx_c = min(float(vx_c), float(os.environ.get(
+                    'S10_POSTSTAIR_HOLD_VX', '0.6')))
                 _ph = float(np.arctan2(wp[_ahead, 1] - body_pos[1],
                                        wp[_ahead, 0] - body_pos[0]))
                 _pe = float(np.arctan2(np.sin(_ph - yaw),
@@ -638,6 +655,9 @@ def main():
             if ('TK1' in _correction or 'TK2' in _correction) \
                     and not _roll_gate:
                 _om_tk = float(os.environ.get('S10_TK_OM_MAX', '2.0'))
+                # TK 转向也守侧向加速度上限：2m/s 时 om1.5=3.0>1.8
+                # 打滑致 roll 正反馈（round100 下台后 TK1 转侧翻）
+                _om_tk = min(_om_tk, latmax / max(abs(vx_c), 0.5))
                 om_c = float(np.clip(vyaw, -_om_tk, _om_tk))
                 vx_c = min(float(vx_c), float(os.environ.get(
                     'S10_TK_VX', '1.5')))

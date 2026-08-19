@@ -878,15 +878,25 @@ class AutoNavFollower:
             if wheel_z is not None and len(self.stair_rises_tops) > 0:
                 _clear = float(os.environ.get("S10_STAIR_WHEEL_CLEAR", "0.05"))
                 _top_max = float(np.max(np.asarray(self.stair_rises_tops, dtype=np.float64)))
-                _exit_ok = (float(np.min(np.asarray(wheel_z, dtype=np.float64)))
+                # 四轮越顶 + 速度收敛才交还：vx 放宽到 1.6 后 RL
+            # 爬升步态中后轮瞬时越顶（弹跳）+vx1.55 触发提前交还，
+            # 半爬姿态交 CarVMC 在平顶侧翻（round102 实测）；
+            # 恢复 1.0 保证交还时 RL 已稳定支撑
+            _exit_ok = (float(np.min(np.asarray(wheel_z, dtype=np.float64)))
                             >= _top_max - _clear
-                            and body_vx <= 1.0)
+                            and body_vx <= float(os.environ.get(
+                                "S10_STAIR_EXIT_VX", "1.0")))
             if not _exit_ok and self._stair_first_riser_xy is not None:
                 _fwd = np.array([np.cos(self._stair_first_heading),
                                  np.sin(self._stair_first_heading)])
                 _prog = float(np.dot(
                     np.asarray(robot_xy) - self._stair_first_riser_xy, _fwd))
                 _min_climb = float(os.environ.get("S10_STAIR_MIN_CLIMB_S", "2.5"))
+                # 单级台面：越过首级 1.2m 即交还（台面 2m 宽，
+                # 2.5m 已过对侧沿；round101 RL 提速到 3.1m/s
+                # 冲过退出圈栽头实测）；多级楼梯保持 2.5
+                if int(getattr(self, '_stair_nrisers', 2)) == 1:
+                    _min_climb = 1.2
                 _exit_ok = _prog > _min_climb
             if _exit_ok:
                 self.mode = "CRUISE"
@@ -921,17 +931,27 @@ class AutoNavFollower:
                          and float(getattr(self, '_s_cur', 0.0))
                          > float(self._stair_exit_s) + 0.5)
                 if _dx < _guard and not _past:
+                    if _dbg and robot_xy[1] > 24:
+                        print(f"[MODE] reentry guard: dx={_dx:.2f} exit={self._stair_exit_xy}", flush=True)
                     return
             if self.stair_ahead_dist <= _enter:
                 # 已骑上台阶（前轮已达台面）就不再交 RL：
                 # CRUISE 抬轮+v595 已完成爬升，迟到的 STAIR 会
                 # 让 RL 在台面上乱向（round69 西拖 2.5m 实测）
-                if (wheel_z is not None
-                        and len(self.stair_rises_tops) > 0):
+                # 已骑上台阶就不再交 RL（CRUISE 已完成爬升，迟到
+                # STAIR 会在台面上乱向）。注意：wheel_z 是轮心高，
+                # 必须与 top+轮半径比较；旧实现用上一级台阶的陈旧
+                # top 且轮心与台面地形比（平地轮心 0.547 > 0.541
+                # 恒判已上台，wp5-6 台阶入口被永久挡住 round107）
+                _tops_cur = (getattr(self, '_elev_rises_tops', [])
+                             or self.stair_rises_tops)
+                if (wheel_z is not None and len(_tops_cur) > 0):
                     _top0 = float(np.max(np.asarray(
-                        self.stair_rises_tops, dtype=np.float64)))
+                        _tops_cur, dtype=np.float64)))
                     if float(np.min(np.asarray(
-                            wheel_z[:2], dtype=np.float64))) >= _top0 - 0.05:
+                            wheel_z[:2], dtype=np.float64))) >= _top0 + 0.02:
+                        if _dbg:
+                            print(f"[MODE] front-on-top block: wz={np.round(wheel_z,3)} top0={_top0:.3f}", flush=True)
                         return
                 # doc §9 交付 RL 条件：距 riser<2m + yaw 对准 + 速度<2.0（S10_TK1=1 门控）
                 _first_s = float(self.stair_rises_s[0])
@@ -962,6 +982,7 @@ class AutoNavFollower:
                         return
                 self.mode = "STAIR"
                 self._stair_enter_s = float(getattr(self, "_s_cur", 0.0))
+                self._stair_nrisers = len(self.stair_rises_s)
                 self._stair_first_riser_xy = self._path_point_at(_first_s)[:2]
                 self._stair_first_heading = _first_head
                 self.stair_rises_tops = list(getattr(self,
