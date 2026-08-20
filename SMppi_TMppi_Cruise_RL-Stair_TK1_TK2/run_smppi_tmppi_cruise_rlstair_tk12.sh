@@ -60,3 +60,4 @@ export VMC_TRAJ="${VMC_TRAJ:-tmp_cruise_traj.npy}"
 mkdir -p tmp
 exec /home/wfx/DR_competition/.venv/bin/python cruise_main.py
 
+export S10_TK1_WP_MAX=4.0
