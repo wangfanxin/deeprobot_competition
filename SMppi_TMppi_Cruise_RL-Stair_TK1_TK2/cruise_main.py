@@ -102,7 +102,6 @@ def main():
     _tk1_align_t0 = None
     _tk2_t0 = None
     _roll_gate = False
-    _roll_gate_since = None
     _terr_raw = np.zeros(4, dtype=np.float64)
     _prev_bz = None
     _edge_lift = np.zeros(4)
@@ -581,14 +580,13 @@ def main():
                 # roll 门控期让位：hold 的 om 覆盖在门控之后，
                 # 门控 om=0 被顶掉持续喂转向（round207 台顶
                 # 交还 roll 0.76 卡 8.5s 实测根因）
-                if not _roll_gate:
-                    om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
+                om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
             om_c = float(np.clip(om_c, -omcap, omcap))
             # 台沿锁存期：cmd 级强制正对路径航向（经 MPPI 的弱 guide
             # 被其它代价压过，wp5 实测贴沿航向漂 0.3rad 侧滑）
             # 平顶出口后 2s 内锁存转向也让位（round212 台顶锁存
             # om0.8 转向激起 roll-1.12 侧翻实测）；低台锁存照旧
-            if (_lip_hold and not _roll_gate
+            if (_lip_hold
                     and (_post_stair_t is None
                          or t - _post_stair_t > 2.0)):
                 # 锁存期瞄当前 wp（不是航线航向）：爬升中若漂离航线，
@@ -602,7 +600,7 @@ def main():
                 # 不再提前压速：锁存期 vx 交给 MPPI（跨骑冲量在上游）
             # 锁存释放后 1s 航向保持：上台面瞬间 MPPI 会立刻拉偏
             # 航向（台面顶自旋侧翻实测），先稳 1s 再交还
-            if (_lip_rel_t is not None and not _roll_gate
+            if (_lip_rel_t is not None
                     and t - _lip_rel_t < 1.0
                     and (_post_stair_t is None
                          or t - _post_stair_t > 2.0)):
@@ -620,7 +618,7 @@ def main():
             # 2026-08-19 修复：必须让位 roll 门控（此前 TK 直接给 om
             # 会覆盖门控的 om=0，平台边 TK2 侧倾正反馈翻车实测）。
             if ('TK1' in _correction or 'TK2' in _correction) \
-                    and not _roll_gate:
+:
                 _om_tk = float(os.environ.get('S10_TK_OM_MAX', '2.0'))
                 # TK 转向也守侧向加速度上限：2m/s 时 om1.5=3.0>1.8
                 # 打滑致 roll 正反馈（round100 下台后 TK1 转侧翻）
