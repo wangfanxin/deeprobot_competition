@@ -704,10 +704,13 @@ def main():
                                pos2[1] - wp[15][1])) < 5.0:
                 vx_c = min(vx_c, 1.5)
             if (stair.drop_ahead_dist is not None
-                    and stair.drop_ahead_dist < 2.5):
-                # 高墙无缺口：3.0m/s + 前轮 hop 抬车头小轮跃（前腿冲量、
-                # 车身后轮支点抬头离沿、落地后轮先触车身回正）
-                vx_c = 3.0
+                    and stair.drop_ahead_dist < 1.5):
+                # 高墙无缺口：用户指示减速慢慢过——0.25m/s 爬行，
+                # 俯仰环顺台阶几何（pitch_tar=-0.4）不较劲
+                vx_c = 0.25
+            elif (stair.drop_ahead_dist is not None
+                    and stair.drop_ahead_dist < 3.0):
+                vx_c = min(vx_c, 0.6)
         if _hg == 16:
             # wp15->16：距 wp15<4m 限 1.5；落点低侧（z<0.55）后 2.5s 直行稳定窗
             # （yaw 万向节翻转后禁止转向，防 r216/r217 的 4.5m/s 硬转 roll 翻）
@@ -750,9 +753,9 @@ def main():
                    omega=(0.0 if _max_lift > 0.05 else
                           (0.3 if _lift_hold else om_c)),
                    roll_tar=_roll_tar_c,
-                   pitch_tar=(0.45 if (int(next_idx) in (15, 16)
+                   pitch_tar=(-0.4 if (int(next_idx) in (15, 16)
                               and ((stair.drop_ahead_dist is not None
-                                    and stair.drop_ahead_dist < 2.0)
+                                    and stair.drop_ahead_dist < 1.5)
                                    or globals().get('_landing', False)))
                               else 0.0),
                    att_scale=(2.5 if globals().get('_landing', False)
@@ -761,15 +764,11 @@ def main():
                    # 离地后 roll 力矩绕接触线失效（roll 0.66 悬停 4.7s），
                    # 回 40N（round201 同值可恢复）
                    step_lift=_step_lift, lift_swing=1.2,
-                   hop=(([35.0, 35.0, 0.0, 0.0]
-                          if (int(next_idx) in (15, 16)
-                              and stair.drop_ahead_dist is not None
-                              and stair.drop_ahead_dist < 1.2)
-                          else ([0.0, 0.0, 30.0, 30.0]
-                                if (int(next_idx) in (15, 16)
-                                    and float(np.max(terr[2:4]))
-                                    - float(np.min(terr)) >= 0.08)
-                                else None))),
+                   hop=([-20.0, -20.0, 0.0, 0.0] if (int(next_idx) in (15, 16)
+                                                   and stair.drop_ahead_dist
+                                                   is not None
+                                                   and stair.drop_ahead_dist < 1.5)
+                                          else None),
                    yaw_scale=1.0 - 0.6 * _max_lift,
                    ridge_dist=99.0,
                    lift_f_scale=(0.3 if _max_lift > 0.05 else 1.0),
