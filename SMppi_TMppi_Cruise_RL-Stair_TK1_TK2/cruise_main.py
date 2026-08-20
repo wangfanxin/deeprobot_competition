@@ -667,7 +667,7 @@ def main():
             # （round139/148 平顶实测）；短台阶保持默认
             _nr0 = len(getattr(stair.fol, 'stair_rises_s', []) or [])
             if _nr0 >= 3:
-                rl.set_cmd(1.2)
+                rl.set_cmd(0.8)
             # RL 速度目标保持策略默认（set_cmd 改写观测后两级台阶
             # 入口处策略南转 roll 1.30 侧翻 round134；round128 的
             # 两级台阶 wheel-clear 交还 vx 1.02 干净）
