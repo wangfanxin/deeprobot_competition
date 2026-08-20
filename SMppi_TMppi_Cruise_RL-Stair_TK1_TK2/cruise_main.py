@@ -172,6 +172,7 @@ def main():
             if stair.mode != 'STAIR' and _tk2_was_stair:
                 _post_stair_xy = np.asarray(pos2, dtype=np.float64)
                 _post_stair_t = t
+                globals()['_hb_wp'] = next_idx
                 if os.environ.get('S10_TK2', '0') == '1':
                     _tk2 = True
                     _tk2_t0 = t
@@ -244,20 +245,6 @@ def main():
                 if dist_wp < 0.5:
                     _des = float(np.arctan2(line['end'][1] - pos2[1],
                                             line['end'][0] - pos2[0]))
-                # over-point swing: past wp by 0.2m, dist<1.5m -> aim at next wp
-                # so the nose turns before the advance. Gated on no-stair-ahead:
-                # with the wp-clip the platform stair is invisible pre-advance,
-                # so this fires at wp2/wp3 and aligns the next leg; once the stair
-                # is visible (post-advance) TK1 owns the approach.
-                if (stair.mode == 'CRUISE'
-                        and stair.stair_ahead_dist is None
-                        and next_idx + 1 < len(wp)
-                        and _proj_cur > _segl + 0.2
-                        and dist_wp < 1.5):
-                    _des = float(np.arctan2(wp[next_idx + 1, 1] - pos2[1],
-                                            wp[next_idx + 1, 0] - pos2[0]))
-                    vx = min(vx, float(os.environ.get('S10_WP_SWING_VX',
-                                                     '1.2')))
                 line_head = _des
                 head_err = float(np.arctan2(np.sin(line_head - yaw),
                                             np.cos(line_head - yaw)))
@@ -798,18 +785,36 @@ def main():
                     _lip_t0 = None
             # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
             # 楼梯后：低倍率直接瞄当前目标 wp，直到距其足够近才放开
+            # 交还沉降门 v3（用户批准的最小全局状态规则）：交还后限速 1.5
+            # 直到航向误差<0.15 且 roll 连续 0.5s<0.2；转向只加 ±0.1 弱偏置
+            # （保留 round207 喂转向的意图，但让 MPPI 主导方向，避免 330
+            # 强偏置把车头压过窄脊西坡）
+            _ph2 = float(np.arctan2(wp[_ahead, 1] - body_pos[1],
+                                    wp[_ahead, 0] - body_pos[0]))
+            _hb_herr = abs(float(np.arctan2(np.sin(_ph2 - yaw),
+                                            np.cos(_ph2 - yaw))))
+            if '_hb_settle_t' not in globals():
+                globals()['_hb_settle_t'] = 0.0
+            if _hb_herr > 0.15 or abs(float(_body_roll)) > 0.2:
+                globals()['_hb_settle_t'] = t
+            _hb_settled = (t - globals()['_hb_settle_t'] >= 0.5)
             if (_post_stair_xy is not None and _ahead < len(wp)
                     and (t - _post_stair_t < float(os.environ.get(
                         'S10_POSTSTAIR_HOLD_T', '2.5'))
                          or float(np.linalg.norm(
                             body_pos[:2] - wp[_ahead, :2]))
                          > float(os.environ.get(
-                            'S10_POSTSTAIR_HOLD_DIST', '1.2')))):
+                            'S10_POSTSTAIR_HOLD_DIST', '1.2'))
+                         or ('_hb_wp' in globals()
+                             and next_idx <= globals()['_hb_wp']))):
                 # 交接瞬态限速：RL 快走交还时 MPPI 平滑刹车太弱
                 # （round175 台面 cmd0.2 实际 2.18->4.08m/s 加速），
                 # 前 1.0s 直接零指令硬停 + 禁止转向（台面 om-0.96
                 # 带角动量侧翻实测），之后 0.6 缓行过台面
                 _hv = float(os.environ.get('S10_POSTSTAIR_HOLD_VX', '0.6'))
+                if not _hb_settled:
+                    _hv = max(_hv, float(os.environ.get(
+                        'S10_HANDBACK_SETTLE_VX', '1.5')))
                 if t - _post_stair_t < 1.0:
                     vx_c = 0.0
                     om_c = 0.0
@@ -823,7 +828,8 @@ def main():
                 # 门控 om=0 被顶掉持续喂转向（round207 台顶
                 # 交还 roll 0.76 卡 8.5s 实测根因）
                 if not _roll_gate:
-                    om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
+                    _om_bias = 0.1
+                    om_c = float(np.clip(0.5 * _pe, -_om_bias, _om_bias))
             om_c = float(np.clip(om_c, -omcap, omcap))
             # 下沿/跨骑期 MPPI 的航向代价仍会给大 om（round142 两级
             # 台阶顶沿 om0.98 转向 roll-1.12 侧翻实测）：DROP 期

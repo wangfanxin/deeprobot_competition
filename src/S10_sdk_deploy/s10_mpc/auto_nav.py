@@ -853,12 +853,14 @@ class AutoNavFollower:
         # perception: on-path staircase riser arc-lengths ahead
         _wclip = None
         if next_idx < len(self.path_wp_s):
-            _wclip = float(self.path_wp_s[next_idx]) + float(os.environ.get(
-                "S10_ELEV_WP_CLIP", "0.8"))
-            # 过点盲区兜底（round315 实测）：机器人越过航点后 s_cur>裁剪界
-            # → 扫描直接为空 → 平台墙（wp 后 0.5m）在 STAIR 交付窗内不可见，
-            # 3.77m/s 盲撞墙 roll-1.28。裁剪下限 = 前方 1.2m 保底
-            # （STAIR 交付窗），仍不向航点后远处看。
+            # 用户指示 v2：扫描沿当前→航点方向，最远 8m；航点不足 8m 时
+            # 前视延伸到下一航点（下一 wp 的 s 为裁界）。
+            _smax = float(getattr(self, "_s_cur", 0.0)) + float(os.environ.get(
+                "S10_ELEV_LOOKAHEAD", "8.0"))
+            _wclip = _smax
+            if next_idx + 1 < len(self.path_wp_s):
+                _wclip = min(_wclip, float(self.path_wp_s[next_idx + 1]))
+            # 过点盲区兜底：至少看前方 1.2m（STAIR 交付窗）
             _wclip = max(_wclip, float(getattr(self, "_s_cur", 0.0))
                           + float(os.environ.get("S10_ELEV_WP_CLIP_MIN", "1.2")))
         self.stair_rises_s = self._elev_rises_on_path(

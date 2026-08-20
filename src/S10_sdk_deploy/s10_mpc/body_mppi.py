@@ -246,7 +246,7 @@ class BodyMPPI:
         _om_c = float(np.clip(u_new[1], -_om_out, _om_out))
         # v889: om 输出加速度限幅——过点瞬间 0→1.8 跳变引发角动量过冲
         # （wp3→4 实测过转 3 倍侧滑）。默认 6.0 rad/s²。
-        _om_slew = 6.0 * self.ctrl_dt
+        _om_slew = float(_mdbg_os.environ.get('S10_MPPI_OM_SLEW', '6.0')) * self.ctrl_dt
         _om_c = float(np.clip(
             _om_c,
             self._out_prev[1] - _om_slew,
