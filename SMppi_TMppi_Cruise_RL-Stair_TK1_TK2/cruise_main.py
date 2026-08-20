@@ -568,9 +568,6 @@ def main():
             * abs(vx_c),
             -float(os.environ.get('S10_CAR_ROLL_AMP', '0.06')),
             float(os.environ.get('S10_CAR_ROLL_AMP', '0.06'))))
-        # roll 门控期主动反向压弯：门控只限 om/vx，roll 动量仍会
-        # 把机器人推过侧翻点（round116 平顶转向 roll -0.86 实测）；
-        # 目标反向偏置把 CarVMC 内部 roll 环推向扶正方向
         _step_lift = np.zeros(4, dtype=np.float64)
         _max_lift = float(np.max(_step_lift))
         _last_lift = _step_lift.copy()
