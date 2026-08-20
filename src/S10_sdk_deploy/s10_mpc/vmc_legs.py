@@ -974,7 +974,7 @@ class CarVMC:
         # 姿态力矩（腿长差）——楼梯区 att_scale 加倍保持水平（载荷分配，
         # 防单轮着地 fn=[43,0,0,0]）
         _asc = float(cmd.get("att_scale", 1.0))
-        R = _asc * (self.kp_roll * (self._roll_f - body["roll"])
+        R = _asc * float(cmd.get("roll_k_scale", 1.0)) * (self.kp_roll * (self._roll_f - body["roll"])
                     - self.kd_roll * roll_rate)
         # v869: KD_PITCH split - base pitch damping + STARTUP anti-bounce
         # (added when longitudinal accel large; global 35 made body stiff).

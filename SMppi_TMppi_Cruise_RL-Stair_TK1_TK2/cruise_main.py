@@ -421,6 +421,15 @@ def main():
                 vx = min(vx, float(os.environ.get(
                     'S10_STAIR_APPROACH_VX', '1.5')))
                 v_ref = min(v_ref, vx)
+            # wp14->15/16 落沿规划前爬行（硬门控前置版）：0.38m 落沿下坡
+            # 冲速 7.7m/s 栽头 roll 翻（r218-221，cmd 级 0.5 无效——MPPI 仍按
+            # 4.0 规划致轮矩 ±13.5 极限环）；vx+v_ref 同步压 0.5 让 MPPI
+            # 一致规划，轮层平滑跟随
+            if int(next_idx) in (15, 16) and stair.mode == 'CRUISE':
+                if (stair.drop_ahead_dist is not None
+                        and stair.drop_ahead_dist < 2.5):
+                    vx = min(vx, 0.6)
+                    v_ref = min(v_ref, vx)
             # 机器人相对 riser 检测（路径扫描盲区：偏离路径时前方台阶）
             # 前方 0.3~1.2m 升高 0.08~0.25m => 正对直行低速骑上（不交 RL）
             _rf = float(os.environ.get('S10_EDGE_LOOKAHEAD', '1.2'))
@@ -717,6 +726,7 @@ def main():
                    omega=(0.0 if _max_lift > 0.05 else
                           (0.3 if _lift_hold else om_c)),
                    roll_tar=_roll_tar_c, pitch_tar=0.0,
+                   roll_k_scale=(1.8 if int(next_idx) in (15, 16) else 1.0),
                    # round205 实测 70N 反力反而卡死：卸载侧轮被抬起
                    # 离地后 roll 力矩绕接触线失效（roll 0.66 悬停 4.7s），
                    # 回 40N（round201 同值可恢复）
