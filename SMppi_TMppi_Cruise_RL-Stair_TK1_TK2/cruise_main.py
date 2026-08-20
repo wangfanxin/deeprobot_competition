@@ -716,7 +716,8 @@ def main():
         cmd = dict(vx=(0.6 if (_max_lift > 0.05 or _lift_hold) else vx_c),
                    omega=(0.0 if _max_lift > 0.05 else
                           (0.3 if _lift_hold else om_c)),
-                   roll_tar=_roll_tar_c, pitch_tar=0.0,
+                   roll_tar=_roll_tar_c,
+                   pitch_tar=0.0,
                    # round205 实测 70N 反力反而卡死：卸载侧轮被抬起
                    # 离地后 roll 力矩绕接触线失效（roll 0.66 悬停 4.7s），
                    # 回 40N（round201 同值可恢复）
