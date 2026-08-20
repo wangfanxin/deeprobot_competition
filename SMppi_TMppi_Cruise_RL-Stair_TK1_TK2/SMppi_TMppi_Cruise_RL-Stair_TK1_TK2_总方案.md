@@ -63,13 +63,13 @@
      ⑤ post-stair hold 0.6s(vx≤0.2,vyaw=0)/慢速瞄准(vx≤0.6,om=clip(0.5·err,±0.2))
      ⑥ LIP 骑坎锁存: 触发条件见 §5.3；锁存期 vx=1.2 冲量+正对航向
      ⑦ decel_request: vx=vx·(1−d)+dv·d（圈外 2.0；圈内航线对齐 1.2）
-     ⑧ DROP 四档 + EDGE 探针 + STOP_DX 硬刹车 -> vx/vyaw/v_ref 修正
+     ⑧ EDGE 探针 + 楼梯逼近限速 + STOP_DX 硬刹车 -> vx/vyaw/v_ref 修正
      ⑨ 参考路径: 航线投影点起、1m 间距、≤12m、末端精确=wp；wp_dx=dist_to_wp
      ⑩ 规划二选一:
           TMppi: dist<0.5 且 speed<0.8 且 |yaw_err|>10° 且无楼梯 -> vx=0.2, om=clip(3·err,±3.0)
           SMppi: BodyMPPI(v_ref, vyaw, wp_dx) -> [vx,om]
      ⑪ omcap: TMppi=min(3.0,1.8/max|vx|)；SMppi=min(1.0,1.8/|vx|)；高台 z>1.2→0.6、z>2.0→0.3
-     ⑫ roll 安全网 0.34/0.28（窄脊 0.22/0.18）: om≤±0.3、vx≤0.3；>2s 低台倒车 −0.4
+     ⑫ roll 安全网已删除（用户指示）；原 0.34/0.28 滞回/倒车脱困不再生效
      ⑬ post-stair 1.0s 硬停 / 高台分档 / SEG0 / 锁存转向 / 大偏航纠偏 / TK 直接对准
      ⑭ cmd{vx,omega,roll_tar,pitch_tar,...} -> STAIR?RLStairCtrl:CarVMC -> tau(16) -> mj_step(200Hz)
 
@@ -106,7 +106,7 @@
       | SMppi走线        | RL policy        | post-stair hold 0.6s
       | TMppi原地转       | PRETRANS 腿锁     | TK2 对准 -> 交回
       | TK1对准(不改模式)  |                    |
-      | DROP/EDGE 慢爬    |                    |
+      | EDGE 慢爬         |                    |
 
 ### 5.2 STAIR 入口 / 出口（全部条件）
 
@@ -125,51 +125,42 @@
 | --- | --- |
 | z < 0.12 | 摔倒终止 |
 | z ≤ 1.1 | TK1 激活；decel 减速生效；LIP 骑坎锁存触发 |
-| z ≤ 1.15（否则延迟 2.0s） | TK2 出楼梯立即对准；锁存强制转向让位 |
+| z ≤ 1.15（否则延迟 2.0s） | TK2 出楼梯立即对准；锁存转向在出口后 2s 让位 |
 | 最低轮心 z ≤ 1.2 | STAIR 入口允许（挡平顶假入口） |
-| z > 1.0 | roll 门控期 om=0；压弯 roll_tar=0；terr 钳制 min(terr, z−0.25)；roll 死锁不倒车 |
-| z > 1.2 | 判点半径放大 2.5m；平台限速 S10_PLAT_VX + omcap≤0.6；SEG0 段首纠偏；判点跳过对准门；TMppi omcap≤0.6；TK 转向 omcap≤0.4；大偏航 cte 阈值 0.8；卡死脱困启用；rock_kill=1 |
-| z > 1.3 | DROPW：drop<1.5m → vx≤1.0 |
-| z ≤ 1.3 | DDE（近沿落差≥0.25 → vx≤0.6）；DNW（Σ落差≥0.3 且每级≤0.08 → vx≤1.2） |
-| z ≤ 1.5 | 下沿 s 投影保护生效（>1.5 仅剩轮下跨骑兜底） |
-| z > 2.0 | 弱抓地高台：vx≤0.8、omcap≤0.3 |
+| z > 1.0 | 压弯 roll_tar=0（S10_CAR_ROLL_K=0，全速域关闭） |
+| z > 1.2 | SEG0 段首纠偏；大偏航 cte 阈值 0.8（瞄航线投影点） |
 
-平台限速（z>1.2）：S10_PLAT_VX=2.5（5.0 实测走廊撞墙 round297 回退），
-近楼梯（ad≤5.0m）或下沿（drop<2.5m）回退 1.8。
+平台高度分档限速与判点半径放大已按方案 v3 移除（无航点坐标干预）；S10_PLAT_VX 现为死参数。
+保留的高度门控仅 z≤1.1（TK1/EDGE）与 z>1.2（SEG0/大偏航阈值）。
 
 ### 5.4 按地形 / 几何 / 姿态 / 速度门控
 
 | 类别 | 条件 | 门控 |
 | --- | --- | --- |
 | 地形 | 前轮−最低轮 ≥0.08（z≤1.1 且 next_idx≥4） | LIP 骑坎锁存 |
-| 地形 | 后轮−最低轮 ≥0.08 | 跨骑 → DROP 兜底 |
 | 地形 | 锁存期前−最低 ≥0.04 且无 drop | vx=1.2 冲量把后轮拉过立面 |
-| 地形 | raw terr 中位 >1.2（对应 wp7→8 的 1.235 窄脊） | roll 门 0.22/0.18、vx≤1.0 |
 | 地形 | 前方 1.5m 升 0.08~0.25、平顶、1.5m−0.5m 差 ≥0.08 | EDGE：vx≤0.6；≥0.10 加锁存+前轮抬轮 |
 | 地形 | 单轮前探升 0.06~0.25（仅锁存期、前轮） | 抬轮前馈 |
 | 地形 | 轮间地形差 ≥0.04 | v595 骑坎找平（全抬到 max−0.02） |
-| 几何 | 距 wp≤0.5（平顶 2.5）；投影>len−0.5 且 lat<0.8；投影>len+0.8 | 判点/过点兜底推点 |
-| 几何 | dist<0.6 且 speed<2.2 且 |yaw_err|>10° | TMppi |
-| 几何 | dist_wp≤4.0（STOP_DX） | v_ref 线性归零硬刹车 |
+| 几何 | 距 wp≤0.5；投影>len−0.5 且 lat<0.8；投影>len+0.8 | 判点/过点兜底推点 |
+| 几何 | dist<0.6 且 speed<2.2 且 |yaw_err|>10° | TMppi（om=k·err−kd·ω 终端阻尼） |
+| 几何 | dist_wp≤5.0（STOP_DX） | v_ref 线性归零硬刹车 |
 | 几何 | 段首投影<−1 或段首 1m 内 |cte|>0.8（z>1.2） | SEG0 瞄段起点，om≤±0.6、vx≤1.0 |
 | 几何 | |cte|>1.2（平顶 0.8） | 大偏航直瞄 wp/航线投影点，om≤±1.2、vx≤1.0 |
-| 几何 | TK1：dist_wp≤2.5 且 |cte|≤0.8 且 ad≤2.0 | TK1 对准/交付速度 1.5 |
+| 几何 | TK1：dist_wp≤2.5 且 |cte|≤0.8 且 ad≤1.2 | TK1 对准/交付速度 1.5 |
 | 几何 | s_cur > wp_s(next_idx)+0.2 | TK2 改瞄 next_idx+1 |
 | 几何 | 过点甩头：投影>len+0.2 且 dist<1.5 且无楼梯 | 瞄下一 wp，vx≤1.2 |
-| 几何 | 4s 内 s 前进 <0.8（幻影 drop） | 下沿保护放行 2s |
 | 几何 | 距 wp≤0.8 且 2s 距离变化 <0.03 | 悬停死锁跳过对准门 |
-| 几何 | 5s 位移 <0.3m（z>1.2） | 卡死脱困：倒车 0.5（1.2s）→正东 0.8 前插（2.8s） |
-| 姿态 | roll 0.34 触发 / 0.28 释放（窄脊 0.22/0.18） | om≤±0.3、vx≤0.3；>2s 低台倒车 −0.4；release 经 sync_applied 慢升 |
+| 几何 | 5s 位移 <0.3m | 卡死脱困：倒车 0.5（1.2s）→沿当前航向 0.8 前插（2.8s） |
 | 姿态 | |roll|>0.9 | 侧翻终止 |
-| 姿态 | 出楼梯 |pitch|≤0.3、|roll|≤0.25、|vy|≤0.8、vx≤1.6 | STAIR 交还条件 |
+| 姿态 | 出楼梯 |pitch|≤0.3、|roll|≤0.25、|vy|≤0.8、vx≤1.0 | STAIR 交还条件 |
 | 姿态 | 判点对准门 |yaw−下一段|≤0.25 且 |ω|≤0.3 | 防抢跑（楼梯顶/平顶/悬停跳过） |
 | 速度 | 出楼梯 0.6s | vx≤0.2、vyaw=0；超 5.0s 清除 |
-| 速度 | 楼梯 2m 内且未跨骑 | 逼近全局 ≤1.5（STAIR_APPROACH_VX） |
-| 速度 | DROP：ad<0.8 或跨骑 | vx≤0.3、|vyaw|≤0.5、cmd om≤±0.5 |
+| 速度 | 楼梯 2m 内 | 逼近全局 ≤1.5（STAIR_APPROACH_VX） |
 
 无绝对 xy 坐标门控：代码不含任何 x>某值 / y>某值 分支；注释中的具体坐标
 （x=−4.79 柱、平台东角、wp14→15 缓坡等）均为历史失败记录，修复已写成通用规则。
-仅剩的方向硬编码：卡死脱困前插阶段固定朝正东（yaw=0），以及 RL 观测编码
+方向硬编码已清理：卡死脱困前插沿当前航向（方案 v3）；RL 观测编码
 TARGET_HEADING=1.5708 默认值（STAIR 入口由 set_heading 覆盖为 lidar riser 航向）。
 
 ## 6. 时序预算（验收口径）
@@ -180,32 +171,34 @@ TARGET_HEADING=1.5708 默认值（STAIR 入口由 set_heading 覆盖为 lidar ri
 | TK1 对准 | 交付圈内 |ey|>DB 首现 → 交付 | <1.0s | 同上 |
 | 交付状态 | 交付瞬间 | body_vx≈1.5、|ey|≤0.20 | [RL-DIAG] takeover pos/yaw/max_leg_err |
 | TK2 | 四轮过顶 → 对准下一 wp | <1.0s | [TK2] 上顶->对准 X.XXs |
-| TMppi | 触发（dist<0.5, speed<0.8）→ |err|≤10° | 尽量 <1.0s | plan=TMppi 段 |
+| TMppi | 触发（dist<0.6, speed<2.2）→ |err|≤10° | 尽量 <1.0s | plan=TMppi 段 |
 | post-stair hold | STAIR→CRUISE 后 | 0.6s 直线（vx≤0.2） | corr 字段 |
 
 ## 7. 模块细节
 
 ### 7.1 线控制器（只走线，不过弯）
-- line_head = 段 heading − 1.0·clip(cte,±1)；段起点后方投影<−1m、或段首 1m 内
+ - line_head = 段 heading − 0.4·clip(cte,±1)；段起点后方投影<−1m、或段首 1m 内
   横偏>0.8 且 z>1.2 → 直瞄段起点；dist_wp<0.5 → 直瞄 wp。
-- vyaw = 一阶低通(clip(2.5·head_err, ±1.0), α=0.4) → SMppi 的 guide_om。
+ - vyaw = 一阶低通(clip(2.0·head_err, ±1.0), α=0.4) → SMppi 的 guide_om。
 - vx = 4.0·√clip((dist_wp−0.2)/3.5, 0, 1)——sqrt 物理一致刹车剖面（线性剖面短段刹不住）。
+ - 过点甩头：投影>len+0.2 且 dist<1.5 且无楼梯 → 瞄下一 wp、vx≤1.2。
 - 已删除：head-err 降速、锐角预刹、MIN_VX 地板。
 
 ### 7.2 SMppi（BodyMPPI）
 - 状态 [x,y,yaw,vx,vy,ω]；dt=0.05；N=1024、H=40（2s）；ADA=1。
 - 采样中心 [v_ref, guide_om]；σvx=0.45 / σom=0.55。
 - rollout 约束：摩擦锥 |vx·ω|≤μ·g（μ=代码默认 0.75，run 脚本未设 S10_MPPI_MU）、
-  car_omega_limit 表（vx≤2→3.0；3→1.5；4→1.2；5→1.0）、加速度钳 3.5 m/s²、vx≥0。
-- 成本：2.0·路径距离 + 0.8·速度偏差 + 0.5·guide 偏差 + 0.05·控制平滑 + 终点代价
-  （wp_dx≤4.0 时 10·dist(末端,wp) + 10·(v_end−vref_t)²，vref_t 随 dx 线性归零）。
-- 输出：vx slew ≤3.5·0.025；om slew 6.0·0.025；om≤min(2.5, μg/|v|, car_omega_limit, 1.0)；
+  car_omega_limit 表（vx≤2→3.0；3→1.5；4→1.2；5→1.0）、加速度钳 4.5 m/s²、vx≥0。
+ - 成本：2.0·路径距离 + 0.8·速度偏差 + 2.0·航向偏差² + 1.5·guide 偏差 + 0.05·控制平滑 + 终点代价
+  （wp_dx≤5.0 时 10·dist(末端,wp) + 10·(v_end−vref_t)²，vref_t 随 dx 线性归零）。
+ - 输出：vx slew ≤4.5·0.025；om slew 6.0·0.025；om≤min(2.5, μg/|v|, car_omega_limit, 1.0)；
   vx≤min(vx_max, guide_vx)；sync_applied 使 slew 基准=真实施加指令（门控释放不阶跃）。
 
 ### 7.3 TMppi（原地转向）
-- 触发：dist<0.5（S10_TURN_ARRIVE_R，独立于判点半径）且世界速度<0.8（S10_TURN_V_MAX）
-  且 |yaw_err|>10° 且 stair_ahead_dist 为空。
-- 动作：vx=0.2，om=clip(3.0·err, ±3.0)；omcap=min(3.0, 1.8/max|vx|)，高台 z>1.2 再压 0.6。
+ - 触发：dist<0.6（S10_TURN_ARRIVE_R，独立于判点半径）且世界速度<2.2（S10_TURN_V_MAX）
+  且 |yaw_err|>10°。
+ - 动作：vx=0.2，om=clip(3.0·err − 1.5·ω, ±1.5)（S10_TURN_KD 终端角速度阻尼：转到停稳）；
+  omcap=min(1.5, 1.8/max|vx|)。
 - 释放：|err|≤10° 交回 SMppi。
 
 ### 7.4 CarVMC（巡航执行）
@@ -241,9 +234,9 @@ TARGET_HEADING=1.5708 默认值（STAIR 入口由 set_heading 覆盖为 lidar ri
 ### 7.7 TK2 / post-stair
 - 出楼梯 0.6s：vx≤0.2、vyaw=0（防平台边缘 yaw 反冲）；>5.0s 清除慢速态。
 - TK2：|yaw_err|>0.25 → vyaw=clip(2.5·err,±1.5)、vx≤1.2；≤0.25 打印耗时并释放；
-  直接执行（om 上限 2.0，守 1.8/|vx|，高台 0.4）。
+  直接执行（om 上限 1.5，守 1.8/|vx|）。
 - post-stair 慢速瞄准：出楼梯后 1.0s 硬停（vx=om=0），之后距下一 wp>1.2m 或 2.5s 内
-  vx≤0.6、om=clip(0.5·err,±0.2)；roll 门控期让位。
+  vx≤1.0、om=clip(0.5·err,±0.2)。
 
 ### 7.8 航点推进
 - 判点：水平距 ≤0.3（S10_WP_ADVANCE_DIST；平顶 z>1.2 放大 2.5m）。
@@ -261,10 +254,10 @@ TARGET_HEADING=1.5708 默认值（STAIR 入口由 set_heading 覆盖为 lidar ri
     S10_MPPI_A_MAX=4.5 S10_MPPI_OMAX=2.5 S10_MPPI_W_GUIDE=1.5 S10_MPPI_W_DIST=2.0 S10_MPPI_W_HEAD=2.0
     S10_SMppi_STOP_DX=5.0 S10_MPPI_W_TPOS=10.0 S10_MPPI_W_TV=10.0
     S10_TURN_SPLIT=1 S10_TURN_ERR_DEG=10 S10_TURN_K=3.0 S10_TURN_OM_MAX=1.5
-    S10_TURN_V_MAX=2.2 S10_WP_TURN_VX=0.2 S10_TURN_ARRIVE_R=0.6 S10_WP_SWING_VX=1.2
+    S10_TURN_V_MAX=2.2 S10_WP_TURN_VX=0.2 S10_TURN_ARRIVE_R=0.6 S10_TURN_KD=1.5 S10_WP_SWING_VX=1.2
     S10_CAR_SLIP_VX_GATE=0.5 S10_EDGE_LOOKAHEAD=1.5 S10_EDGE_VX=0.6
     S10_ELEV_HZ=4 S10_LIDAR_WALL=1 S10_STAIR_SINGLE_RISE=0.10 S10_ELEV_DROP_TH=0.10
-    S10_DROP_LOOKAHEAD=0.5 S10_DROP_OM_LOOKAHEAD=0.5 S10_DROP_VX=0.3 S10_ELEV_CLIMB_TH=0.2
+    S10_ELEV_CLIMB_TH=0.2（S10_DROP_* 已随 DROP 保护删除；ELEV_DROP_TH 仅保留供检测）
     S10_ELEV_LOOKAHEAD=8.0 S10_ELEV_WP_CLIP_MIN=1.2 S10_TK1_MIN_CELLS=40
     S10_TK1=1 S10_TK1_LOOKAHEAD=8.0 S10_ELEV_ENTER=2.0 S10_ELEV_DECEL_VX=2.0 S10_STAIR_ENTER_DIST=1.2
     S10_TK1_VX=1.5 S10_TK1_YAW_DB=0.30 S10_TK1_YAW_K=2.5 S10_TK1_YAW_MAX=1.5
@@ -288,16 +281,21 @@ TARGET_HEADING=1.5708 默认值（STAIR 入口由 set_heading 覆盖为 lidar ri
 相对上一版文档的关键变化：
 1. 高程扫描窗口 v2：沿当前→航点方向最远 8m，航点不足 8m 延伸到下一航点，下限 1.2m。
 2. SMppi 减速强化：A_MAX 3.5→4.5、STOP_DX 4.0→5.0、W_GUIDE 0.5→1.5、W_HEAD 0→2.0。
-3. TMppi：OM_MAX 3.0→1.5、V_MAX 0.8→2.2、触发半径 0.5→0.6；新增过点甩头（SWING_VX 1.2）。
-4. 平台限速 5.0 实测走廊撞墙（round297）→ 2.5 折中，近楼梯/下沿回退 1.8。
+3. TMppi：OM_MAX 3.0→1.5、V_MAX 0.8→2.2、触发半径 0.5→0.6、新增 KD=1.5 终端角速度阻尼；新增过点甩头（SWING_VX 1.2）。
+4. 平台高度分档限速与判点半径放大已按方案 v3 移除；S10_PLAT_VX 变为死参数。
 5. 压弯关闭（CAR_ROLL_K=0）；站高偏移 0.26；OM_ABS_MAX 2.0→1.6。
 6. STAIR：入口 2.0→1.2、TK1 YAW_DB 0.20→0.30、TK1_LOOKAHEAD 8.0、单级/下行阈值 0.08→0.10、
-   DROP 窗口 2.0→0.5、退出 wheel clear +0.02、exit vx 1.0、楼梯 2m 内逼近 ≤1.5。
+   退出 wheel clear +0.02、exit vx 1.0、楼梯 2m 内逼近 ≤1.5；DROP 保护族已整体删除。
 7. 判点半径 0.3→0.5；LINE_YAW_GAIN 2.5→2.0、CTE_K 1.0→0.4。
 8. S10_MPPI_MU 仍未显式设置 → μ=0.75（代码默认），0.36 标定待确认（§12）。
 
 ## 9. 已删除 / 禁用清单## 9. 已删除 / 禁用清单
 
+roll 门控（0.34/0.28 滞回+窄脊收紧+反向压弯+死锁倒车，用户指示删除）、
+DROP 保护族（下沿卡死释放锁存/ghost 滞回/DDE 深沿提前刹/DROPW 中窗缓行/DROP 爬行窗+om 锁，
+用户指示删除；跌落沿检测保留，仅供 STAIR 单级入口确认）、
+平台高度分档限速与判点半径放大（方案 v3 移除，无航点坐标干预）、
+卡死脱困固定朝东（改为沿当前航向前插）、
 避障 costmap（整体删除）、god-view mj_ray 预扫描（删除）、硬编码楼梯表
 STAIR_RISERS/TOPS（清空，lidar 在线检测替代）、航点 z 先验 step/stair 区域
 （_precompute 内删除）、s 弧长判点兜底（删除）、CRUISE_TK wp4→5 特殊段、
@@ -321,18 +319,20 @@ S10_STAIR_DIAG_AMP=0）、RL 轮制动暖机（回退，非对称制动力矩放
 traj（S10_TRAJ_DENSE=1，22 列）：t,x,y,z,yaw,next_idx,speed,mode(STAIR=1),roll,
 rollrate,om_c,vx_c,terr中位,roll_tar,四轮 z(4),前后轮 qvel(2),前后轮 tau(2),vx_c,vx_body。
 
-## 11. 当前状态（2026-08-19）
+## 11. 当前状态（2026-08-19，方案 v3）
 
-- 当前基线 = 恢复 324 状态（含 roll 门控/SEG0/大偏航纠偏/DROP 族/EDGE/卡死脱困）
-  + 高程扫描窗口 v2 + SMppi 减速强化（A_MAX 4.5 / STOP_DX 5.0）。
-- 已实测：py_compile、整链 import（cruise_main）、S10_track.xml 加载通过；
-  最新集成轮次已首次通过 wp14（round275）。全程 33 点连跑与 T1~T8 回归待跑。
-- 平台限速 5.0 实测走廊撞墙（round297），已回退 2.5（近楼梯/下沿 1.8）。
+- 方案 v3（用户约束）：微调 SMppi/TMppi/TK12、重点 CarVMC；无航点坐标干预、无世界 ray_cast。
+- 已按用户指示删除：roll 门控、DROP 保护族、平台高度分档限速与判点半径放大；
+  卡死脱困前插改为沿当前航向。
+- 保留：SMppi 减速强化（A_MAX 4.5 / STOP_DX 5.0）、高程扫描窗口 v2、LIP 锁存、
+  EDGE 探针、SEG0、大偏航纠偏、TK1/TK2、post-stair hold、过点甩头、TMppi 终端阻尼（KD=1.5）。
+- 已实测：py_compile、整链 import、S10_track.xml 加载通过；最新集成轮次已首过 wp14（round275）。
+  全程 33 点连跑与 T1~T8 回归待跑。
 ## 12. 待确认事项
 
 1. 模块命名口径：SMppi=走线 / TMppi=原地转（文档与实现一致）。
 2. RL 单级 12.5cm 上步未验证（课程 T1d 曾删除）——T8 先行。
-3. 下行 riser：当前 DROP 慢爬兜底（RL 未练下行）；若要 RL 接管下行需补课程微调。
+3. 下行 riser：DROP 保护族已删除（速度够快可落地）；下行不再限速，是否交 RL 待定。
 4. S10_MPPI_MU：代码默认 0.75 生效中，旧文档称 μ 标定 0.36——需确认是否在
    启动脚本显式加 S10_MPPI_MU=0.36（影响摩擦锥转向上限）。
 5. 平台限速 2.5（S10_PLAT_VX）：5.0 实测走廊撞墙（round297）已回退；若平台段
