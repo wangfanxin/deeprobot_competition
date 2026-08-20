@@ -662,12 +662,13 @@ def main():
                 _tk1_t0 = None
                 _tk1_align_t0 = None
             _rl_diag_done = True
-            # 六级楼梯给 RL 1.2m/s 速度目标：策略自由跑 2.85 时
-            # 越顶退出 vx 门永远不满足、兜底交还 roll 动量带翻
-            # （round139/148 平顶实测）；短台阶保持默认
+            # RL 爬升速度目标统一 0.8m/s（原 >=3 级才 set_cmd(1.2)，
+            # 退化 riser 表 _nr0<3 时门不触发、默认速度爬升致六级台阶
+            # 顶台 7m/s 飞跃翻滚 r37/r41 实测；0.8 使交还 vx 门
+            # (EXIT_VX 1.0) 在爬升中即可满足，退出提前到低速完成，
+            # 顶台不再带动量飞跃；两级台阶同步受益）
             _nr0 = len(getattr(stair.fol, 'stair_rises_s', []) or [])
-            if _nr0 >= 3:
-                rl.set_cmd(0.8)
+            rl.set_cmd(0.8)
             # RL 速度目标保持策略默认（set_cmd 改写观测后两级台阶
             # 入口处策略南转 roll 1.30 侧翻 round134；round128 的
             # 两级台阶 wheel-clear 交还 vx 1.02 干净）
