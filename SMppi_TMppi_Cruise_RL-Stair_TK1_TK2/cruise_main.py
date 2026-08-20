@@ -13,7 +13,7 @@ for _p in (HERE, PKG, REPO):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from nav_waypoint import extract_waypoints, WaypointLineNav
+from nav_waypoint import extract_waypoints, WaypointLineNav, wrap_angle
 from stair_mode import StairGate
 from perception_lidar import LidarPerception
 from smppi import SMppi
@@ -426,10 +426,31 @@ def main():
             # 4.0 规划致轮矩 ±13.5 极限环）；vx+v_ref 同步压 0.5 让 MPPI
             # 一致规划，轮层平滑跟随
             if int(next_idx) in (15, 16) and stair.mode == 'CRUISE':
-                if (stair.drop_ahead_dist is not None
-                        and stair.drop_ahead_dist < 2.5):
-                    vx = min(vx, 0.6)
-                    v_ref = min(v_ref, vx)
+                _strad = (float(np.max(terr[2:4]))
+                          - float(np.min(terr)) >= 0.08)
+                if ((stair.drop_ahead_dist is not None
+                        and stair.drop_ahead_dist < 2.5) or _strad):
+                    if '_drop_t0' not in globals():
+                        globals()['_drop_t0'] = None
+                        globals()['_drop_s0'] = 0.0
+                        globals()['_drop_rel_t'] = -1e9
+                    if globals()['_drop_t0'] is None:
+                        globals()['_drop_t0'] = t
+                        globals()['_drop_s0'] = float(stair.s_cur)
+                    if (t - globals()['_drop_t0'] > 4.0
+                            and float(stair.s_cur)
+                            - globals()['_drop_s0'] < 0.8):
+                        globals()['_drop_rel_t'] = t
+                    if t - globals()['_drop_rel_t'] < 2.0:
+                        vx = max(vx, 1.5)
+                        v_ref = max(v_ref, 1.5)
+                    else:
+                        vx = min(vx, 0.5)
+                        v_ref = min(v_ref, vx)
+                        vyaw = float(np.clip(vyaw, -0.4, 0.4))
+                else:
+                    if '_drop_t0' in globals():
+                        globals()['_drop_t0'] = None
             # 机器人相对 riser 检测（路径扫描盲区：偏离路径时前方台阶）
             # 前方 0.3~1.2m 升高 0.08~0.25m => 正对直行低速骑上（不交 RL）
             _rf = float(os.environ.get('S10_EDGE_LOOKAHEAD', '1.2'))
@@ -679,10 +700,24 @@ def main():
             elif (stair.drop_ahead_dist is not None
                     and stair.drop_ahead_dist < 2.0):
                 vx_c = min(vx_c, 2.0)
+        if _hg in (15, 16) and stair.mode == 'CRUISE':
+            # wp14->15/16 0.38m 落沿：落点后 2.5s 直行稳定窗（r216/r217 均为
+            # 落地后 yaw π 万向节翻转→SMppi 4.5m/s 硬转 roll 翻；落地瞬间
+            # 强制 vx<=1.0 + om 阻尼直行，姿态恢复后再正常走）
+            if '_land_t' not in globals():
+                globals()['_land_t'] = -1e9
+            if float(body_pos[2]) < 0.55:
+                if globals()['_land_t'] < -1e8:
+                    globals()['_land_t'] = t
+                if t - globals()['_land_t'] < 2.5:
+                    vx_c = min(vx_c, 1.0)
+                    om_c = float(np.clip(-2.0 * float(qvel[5]), -0.4, 0.4))
+            else:
+                globals()['_land_t'] = -1e9
         if _hg == 15:
             # wp14->15：wp15 前 0.38m 跌落沿 4.85m/s 冲下 + wp15 进点
             # 5.68m/s 冲出（r216/r217）→ 前方 3m 内有跌落沿限 1.5；
-            # 距 wp15<4m 压 2.0
+            # 距 wp15<4m 压 2.0（倒车下沿门在上方覆盖）
             if (stair.drop_ahead_dist is not None
                     and stair.drop_ahead_dist < 1.5):
                 vx_c = min(vx_c, 0.5)
@@ -726,7 +761,10 @@ def main():
                    omega=(0.0 if _max_lift > 0.05 else
                           (0.3 if _lift_hold else om_c)),
                    roll_tar=_roll_tar_c, pitch_tar=0.0,
-                   roll_k_scale=(1.8 if int(next_idx) in (15, 16) else 1.0),
+                   roll_k_scale=(2.5 if (int(next_idx) in (15, 16)
+                              and float(np.max(terr[2:4]))
+                              - float(np.min(terr)) >= 0.08) else 1.0),
+                   att_scale=1.0,
                    # round205 实测 70N 反力反而卡死：卸载侧轮被抬起
                    # 离地后 roll 力矩绕接触线失效（roll 0.66 悬停 4.7s），
                    # 回 40N（round201 同值可恢复）
