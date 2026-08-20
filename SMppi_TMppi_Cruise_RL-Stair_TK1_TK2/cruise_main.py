@@ -664,9 +664,9 @@ def main():
             if os.environ.get('S10_RISER_DEBUG', '0') == '1':
                 _rxy, _rtops = perc.riser_table(stair)
                 print('[RISER-ENTRY] n_s=%d tops=%s table_n=%d tops_t=%s'
-                      % (len(stair.stair_rises_s or []),
+                      % (len(getattr(stair.fol, 'stair_rises_s', []) or []),
                          [round(float(h), 2) for h in
-                          getattr(stair, '_elev_rises_tops', []) or []],
+                          getattr(stair.fol, '_elev_rises_tops', []) or []],
                          len(_rxy) if _rxy is not None else 0,
                          None if _rtops is None else
                          [round(float(h), 2) for h in _rtops]), flush=True)
@@ -690,9 +690,9 @@ def main():
                 and int(t * 2) % 2 == 0):
             _rxy, _rtops = perc.riser_table(stair)
             print('[RISERS] t=%.2f n_s=%d tops=%s table_n=%d tops_t=%s'
-                  % (t, len(stair.stair_rises_s or []),
+                  % (t, len(getattr(stair.fol, 'stair_rises_s', []) or []),
                      [round(float(h), 2) for h in
-                      getattr(stair, '_elev_rises_tops', []) or []],
+                      getattr(stair.fol, '_elev_rises_tops', []) or []],
                      len(_rxy) if _rxy is not None else 0,
                      None if _rtops is None else
                      [round(float(h), 2) for h in _rtops]), flush=True)
