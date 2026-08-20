@@ -504,7 +504,8 @@ def main():
             latmax = float(os.environ.get('S10_AUTO_LAT_MAX', '1.8'))
             if used_turn:
                 omcap = min(float(os.environ.get('S10_TURN_OM_MAX', '3.0')),
-                            latmax / max(abs(vx_c), 0.5))
+                            latmax / max(
+                                float(np.linalg.norm(d.cvel[1][0:3])), 0.5))
             else:
                 omcap = min(float(os.environ.get('S10_VMC_OM_CAP', '2.0')),
                             latmax / max(abs(vx_c), 0.5))
