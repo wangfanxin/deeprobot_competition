@@ -60,10 +60,6 @@ class TMppi:
                                   wp_next[0] - wp_cur[0]))
         err = wrap_angle(target - yaw)
         vx = self.vx_cmd
-        if wide:
-            _wm = float(os.environ.get("S10_TURN_WIDE_OM_MAX", "0.6"))
-            return True, vx, float(np.clip(
-                self.k * err - self.kd * float(omega), -_wm, _wm))
         # 终端角速度阻尼（用户指示）：转到目标角度时应收敛到停住，
         # 而不是带着角动量甩过——om = k·err − kd·ω，ω→0 时停稳
         om = float(np.clip(self.k * err - self.kd * float(omega),
