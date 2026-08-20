@@ -624,67 +624,8 @@ def main():
             else:
                 omcap = min(float(os.environ.get('S10_VMC_OM_CAP', '2.0')),
                             latmax / max(abs(vx_c), 0.5))
-            # 侧倾过大时停止转向并减速，防止 roll 正反馈翻车。
-            # 滞回门控（0.30 触发 / 0.15 释放）：防坡面抖振；
-            # 释放后经 sync_applied 从真实指令慢升，不 0.4->4.0 阶跃。
-            _body_roll = float(np.arctan2(
-                2.0 * (d.xquat[1][0] * d.xquat[1][1]
-                       + d.xquat[1][2] * d.xquat[1][3]),
-                1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
-            _rg_hi = float(os.environ.get('S10_ROLL_GATE_HI', '0.34'))
-            _rg_lo = float(os.environ.get('S10_ROLL_GATE_LO', '0.28'))
-            # 1.235 窄脊地形（raw terr>1.2）提前门控 0.22/0.18：
-            # 脊沿磕碰激起 roll 冲量不可逆（round221 实测 -4.2rad/s），
-            # 0.34 晚触发卡死 0.7 侧翻（round246）；统一地形规则，
-            # 非航点特判——开敞平顶 raw≈1.165 不受影响
-            if float(np.median(_terr_raw)) > 1.2:
-                _rg_hi = min(_rg_hi, 0.22)
-                _rg_lo = min(_rg_lo, 0.18)
-                # 窄脊段限速 1.0：round249 脊末 4.1m/s 转弯激起
-                # roll -2.83 侧翻实测；1.0 慢骑磕碰幅度减半
-                vx_c = min(float(vx_c), 1.0)
-            # wp7->8 是 1.235 窄脊骑行（脊宽~0.7m，两侧 1.166），
-            # 轮沿磕碰激起 roll 冲量（round221 实测 -4.2rad/s 侧翻）；
-            # 0.22 提前门控在冲量不可逆前爬行保位（round219 该段
-            # 0.22 下 19.6s 通过）；开敞平顶巡航 roll 摆动 ±0.2 会
-            # 误触 0.22 成 drive-crawl 极限环（round219 wp10 后 90s
-            # 不进点），故只在窄脊段收紧
+            _roll_gate = False  # roll门控已删除（用户指示：速度够快可落地，CarVMC边界待探索）
 
-            if abs(_body_roll) > _rg_hi:
-                if not _roll_gate:
-                    _roll_gate_since = t
-                _roll_gate = True
-            elif abs(_body_roll) < _rg_lo:
-                _roll_gate = False
-                _roll_gate_since = None
-            if _roll_gate:
-                # 允许 +/-0.3 慢转向脱困：此前 om=0 让机器人在
-                # 台沿侧倾死锁（wp5 实测 30s 卡死）；roll 力矩
-                # 主要靠 counter-roll 扶正（round121 六级楼梯底
-                # om=0 时原地自旋 roll 2.23 侧翻实测）
-                om_c = float(np.clip(om_c, -0.3, 0.3))
-                vx_c = min(float(vx_c), 0.3)
-                # 死锁脱困：门控持续 >2s => 直线倒车离开台阶边缘。
-                # 台沿锁存期不倒车：跨骑台阶时 roll 恒定超阈值，
-                # 倒车轮子打滑卡死（wp5 实测）；交给抬轮把后轮
-                # 拉上台面恢复水平。
-                if (_roll_gate_since is not None
-                        and t - _roll_gate_since > 2.0
-                        and float(np.max(terr)) - float(np.min(terr))
-                        < 0.08
-                        and stair.stair_ahead_dist is not None
-                        and stair.stair_ahead_dist <= 2.5):
-                    # 高台（平顶 z>1.0）不倒车：倒车在台沿反复
-                    # 打滑把稳态侧倾推成侧翻（round137 平顶实测）；
-                    # 跨骑（轮下高差>=0.08，如平台角窄条）也不倒车
-                    # ——round167 角部倒车-回冲 50s 死循环实测；
-                    # 平直段转向侧倾不倒车（round171 wp3 后倒车 7s
-                    # 浪费——ad=2.4 无台阶可脱困）
-                    vx_c = -0.4
-                    om_c = 0.0
-                    _lip_hold = False
-                    _lip_xy = None
-                    _lip_t0 = None
             # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
             # 楼梯后：低倍率直接瞄当前目标 wp，直到距其足够近才放开
             if (_post_stair_xy is not None and _ahead < len(wp)
@@ -876,8 +817,6 @@ def main():
         # roll 门控期主动反向压弯：门控只限 om/vx，roll 动量仍会
         # 把机器人推过侧翻点（round116 平顶转向 roll -0.86 实测）；
         # 目标反向偏置把 CarVMC 内部 roll 环推向扶正方向
-        if _roll_gate:
-            _roll_tar_c = float(np.clip(-2.0 * _body_roll, -0.25, 0.25))
         # 逐轮抬轮前馈（tune4 版恢复）：台阶/台沿由 CarVMC 巡航爬升。
         # RL 单级 12.5cm 未训练（T8 实测 policy 直接摔倒），
         # STAIR 只接管 6 级楼梯。
