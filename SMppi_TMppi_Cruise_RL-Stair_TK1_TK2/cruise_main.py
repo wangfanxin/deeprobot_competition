@@ -668,7 +668,7 @@ def main():
             # (EXIT_VX 1.0) 在爬升中即可满足，退出提前到低速完成，
             # 顶台不再带动量飞跃；两级台阶同步受益）
             _nr0 = len(getattr(stair.fol, 'stair_rises_s', []) or [])
-            rl.set_cmd(0.8)
+            rl.set_cmd(1.0)
             # RL 速度目标保持策略默认（set_cmd 改写观测后两级台阶
             # 入口处策略南转 roll 1.30 侧翻 round134；round128 的
             # 两级台阶 wheel-clear 交还 vx 1.02 干净）
