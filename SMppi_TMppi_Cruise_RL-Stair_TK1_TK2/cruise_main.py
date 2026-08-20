@@ -660,6 +660,12 @@ def main():
                   flush=True)
         # ===== 硬门控区（用户指示 2026-08-20：if wp==xx 特判，尽快打通 wp0-33）=====
         _hg = int(next_idx)
+        # ATT_TMAX 分段（全局 80 修 wp3-4 ±π 卡 r232；楼梯段 wp6->7 回 40，
+        # 80 下 RL 爬楼 roll 翻 r232）
+        if _hg in (7, 8, 9, 10, 11, 12):
+            os.environ['S10_CAR_ATT_TMAX'] = '40.0'
+        else:
+            os.environ['S10_CAR_ATT_TMAX'] = '80.0'
         if _hg == 8:
             # wp7->8 平顶：前方小阶连续触发 1.5m/s 压速致 15.7s 慢爬（r100）
             # → 距 wp8>2m 抬到 2.5m/s；距 wp8 0.8~2m 压回 1.5（过点速度
@@ -755,8 +761,9 @@ def main():
             # → 航向差>30° 时限速 1.2，转完再加速
             _hgt = float(np.arctan2(wp[10][1] - wp[9][1], wp[10][0] - wp[9][0]))
             _hge = float(np.arctan2(np.sin(_hgt - yaw), np.cos(_hgt - yaw)))
+            vx_c = min(vx_c, 2.2)
             if abs(_hge) > 0.7:
-                vx_c = min(vx_c, 2.0)
+                vx_c = min(vx_c, 1.5)
         cmd = dict(vx=(0.6 if (_max_lift > 0.05 or _lift_hold) else vx_c),
                    omega=(0.0 if _max_lift > 0.05 else
                           (0.3 if _lift_hold else om_c)),
