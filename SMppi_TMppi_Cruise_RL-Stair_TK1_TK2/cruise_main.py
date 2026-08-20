@@ -288,6 +288,7 @@ def main():
                     and stair.mode == 'CRUISE'
                     and _post_stair_xy is None
                     and not _tmppi_will
+                    and _edge_route_ok
                     and dist_wp <= float(os.environ.get(
                         'S10_TK1_WP_MAX', '2.5'))
                     and float(body_pos[2]) <= 1.1
