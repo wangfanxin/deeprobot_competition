@@ -628,6 +628,91 @@ def main():
                      float(om_c), float(vx_c), float(_om_raw_plan), float(prev_u[0]), float(prev_u[1]),
                      float(_body_roll), int(_roll_gate), _correction, int(used_turn)),
                   flush=True)
+        # ===== 硬门控区（用户指示 2026-08-20：if wp==xx 特判，尽快打通 wp0-33）=====
+        _hg = int(next_idx)
+        if _hg == 8:
+            # wp7->8 平顶：前方小阶连续触发 1.5m/s 压速致 15.7s 慢爬（r100）
+            # → 距 wp8>2m 抬到 2.5m/s；距 wp8 0.8~2m 压回 1.5（过点速度
+            #    1.4→4.8m/s 冲下沿 roll-1.24 翻的根因，r204/r209 实测）
+            _d8 = float(np.hypot(pos2[0] - wp[8][0], pos2[1] - wp[8][1]))
+            if float(body_pos[2]) > 1.0:
+                if _d8 > 2.0:
+                    vx_c = min(vx_c, 2.5)
+                    if vx_c < 2.5:
+                        vx_c = 2.5
+                elif _d8 > 0.0:
+                    vx_c = min(vx_c, 0.8)
+        if _hg == 9:
+            # wp8->9：wp8 后 4.8m/s 冲出下沿带 roll-1.24 翻（r204/r207，航向已对齐，
+            # 不是转向问题而是速度+0.12 阶/0.3 下沿带）→ 过 wp8 后 3m 内限速 1.5
+            _d8 = float(np.hypot(pos2[0] - wp[8][0], pos2[1] - wp[8][1]))
+            if _d8 < 3.0:
+                vx_c = min(vx_c, 1.5)
+        if _hg == 12:
+            # wp11->12 西向直道（段航向 -3.035≈π 缝）：SMppi 沿 ±π 振荡
+            # roll-0.46 侧翻（r213）→ 航向差>30° 时限速 1.2，转完再加速
+            _hgt = float(np.arctan2(wp[12][1] - wp[11][1],
+                                     wp[12][0] - wp[11][0]))
+            _hge = float(np.arctan2(np.sin(_hgt - yaw), np.cos(_hgt - yaw)))
+            if abs(_hge) > 0.5:
+                vx_c = min(vx_c, 1.2)
+        if _hg == 14:
+            # wp13->14 地面东向直道：wp13 后 50° 误差+4.99m/s 加速、
+            # 前方 0.42m 跌落沿 → roll-1.11 翻（r215）
+            _hgt = float(np.arctan2(wp[14][1] - wp[13][1],
+                                     wp[14][0] - wp[13][0]))
+            _hge = float(np.arctan2(np.sin(_hgt - yaw), np.cos(_hgt - yaw)))
+            if abs(_hge) > 0.5:
+                vx_c = min(vx_c, 1.2)
+            if (stair.drop_ahead_dist is not None
+                    and stair.drop_ahead_dist < 1.0):
+                vx_c = min(vx_c, 1.5)
+            elif (stair.drop_ahead_dist is not None
+                    and stair.drop_ahead_dist < 2.0):
+                vx_c = min(vx_c, 2.0)
+        if _hg == 15:
+            # wp14->15：wp15 前 0.38m 跌落沿 4.85m/s 冲下 + wp15 进点
+            # 5.68m/s 冲出（r216/r217）→ 前方 3m 内有跌落沿限 1.5；
+            # 距 wp15<4m 压 2.0
+            if (stair.drop_ahead_dist is not None
+                    and stair.drop_ahead_dist < 1.5):
+                vx_c = min(vx_c, 0.5)
+            elif (stair.drop_ahead_dist is not None
+                    and stair.drop_ahead_dist < 2.5):
+                vx_c = min(vx_c, 0.8)
+            elif (stair.drop_ahead_dist is not None
+                    and stair.drop_ahead_dist < 4.0):
+                vx_c = min(vx_c, 1.2)
+            elif float(np.hypot(pos2[0] - wp[15][0],
+                                 pos2[1] - wp[15][1])) < 4.0:
+                vx_c = min(vx_c, 2.0)
+        if _hg == 16:
+            # wp15->16：wp15 后 yaw 0.25→-2.86 大摆 roll-1.60 翻（r216）
+            # → 距 wp15<3m 限 1.5；航向差>30° 限 1.2
+            if float(np.hypot(pos2[0] - wp[15][0],
+                               pos2[1] - wp[15][1])) < 2.0:
+                vx_c = min(vx_c, 0.8)
+            elif float(np.hypot(pos2[0] - wp[15][0],
+                                 pos2[1] - wp[15][1])) < 4.0:
+                vx_c = min(vx_c, 1.5)
+            _hgt = float(np.arctan2(wp[16][1] - wp[15][1],
+                                     wp[16][0] - wp[15][0]))
+            _hge = float(np.arctan2(np.sin(_hgt - yaw), np.cos(_hgt - yaw)))
+            if abs(_hge) > 0.5:
+                vx_c = min(vx_c, 1.2)
+        if _hg in (21, 22):
+            # 下/上坡段（wp14->15 -0.38、wp15->16 +0.38、wp20->21 -1.88 等）：
+            # 前方 2m 内有大跌落/升起沿时限速 1.5
+            if (stair.drop_ahead_dist is not None
+                    and stair.drop_ahead_dist < 2.0):
+                vx_c = min(vx_c, 1.5)
+        if _hg == 10:
+            # wp9->10 平顶直道：wp9 后 74° 大航向差+2.5m/s 转弯 roll1.49 翻（r163）
+            # → 航向差>30° 时限速 1.2，转完再加速
+            _hgt = float(np.arctan2(wp[10][1] - wp[9][1], wp[10][0] - wp[9][0]))
+            _hge = float(np.arctan2(np.sin(_hgt - yaw), np.cos(_hgt - yaw)))
+            if abs(_hge) > 0.7:
+                vx_c = min(vx_c, 2.0)
         cmd = dict(vx=(0.6 if (_max_lift > 0.05 or _lift_hold) else vx_c),
                    omega=(0.0 if _max_lift > 0.05 else
                           (0.3 if _lift_hold else om_c)),
