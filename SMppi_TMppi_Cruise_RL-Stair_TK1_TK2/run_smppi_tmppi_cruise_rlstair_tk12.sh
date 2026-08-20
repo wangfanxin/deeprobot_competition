@@ -36,7 +36,7 @@ export S10_STAIR_SINGLE_RISE=0.10 S10_ELEV_DROP_TH=0.10 S10_ELEV_CLIMB_TH=0.2  #
 
 # TK1：减速由 SMppi 终点代价+decel 负责；TK1 只做对准 <1s（总预算 <2s），交付 1.5 m/s，对准目标 = lidar riser 航向
 export S10_TK1=1 S10_TK1_LOOKAHEAD=8.0 S10_ELEV_ENTER=2.0 S10_ELEV_DECEL_VX=2.0
-export S10_STAIR_ENTER_DIST=1.2 S10_TK1_VX=1.5 S10_TK1_YAW_DB=0.30 S10_TK1_YAW_K=2.5 S10_TK1_YAW_MAX=1.5 S10_TK_OM_MAX=1.5 S10_TK_VX=1.0
+export S10_STAIR_ENTER_DIST=1.2 S10_TK1_VX=1.5 S10_TK1_YAW_DB=0.45 S10_TK1_YAW_K=2.5 S10_TK1_YAW_MAX=1.5 S10_TK_OM_MAX=1.5 S10_TK_VX=1.0
 
 # RL-Stair（lidar 在线 riser 表 + 距离式 PRETRANS）
 export S10_RL_ELEV=1 S10_RL_POLICY=policy.pt S10_RL_VX=1.5 S10_RL_WARMUP=200
@@ -58,5 +58,5 @@ export S10_VMC_WHEEL_TMAX=13.5 S10_VMC_MU=0.8
 export S10_TRAJ_DENSE="${S10_TRAJ_DENSE:-1}"
 export VMC_TRAJ="${VMC_TRAJ:-tmp_cruise_traj.npy}"
 mkdir -p tmp
-export S10_TK1_WP_MAX=8.0
+export S10_TK1_WP_MAX=2.5
 exec /home/wfx/DR_competition/.venv/bin/python cruise_main.py
