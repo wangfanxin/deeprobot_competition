@@ -937,18 +937,21 @@ class CarVMC:
         if wheel_xyz is not None and terrain_h is not None:
             _lift_amt = float(np.mean(
                 wheel_xyz[:, 2] - (np.asarray(terrain_h) + self.fk.r)))
-            # v872 候选2：腾空判据加轮地接触力次级信号——任一车轮真实
-            # 接触力>阈值即判定着地，gf=1.0 不按 lift 衰减（平顶 terr
-            # 参考抖动使 _lift_amt 误报 0.003~0.088 → gf=0 → 差速+
-            # 偏航反馈全灭、wp8 反滑自旋 round199-201 实测）；只有四轮
-            # 接触力全为 0（真离地）才按 lift 公式衰减（v870 启动腾空
-            # 自旋保护逻辑不变）。
+            # v872 候选2：腾空判据加轮地接触力次级信号。
+            # r73 实测：任一轮接触即锁 gf=1.0 会在山脊等部分接触时刻不再衰减
+            # （抬起轮仍有接触）→ wp0-1 动力学重掷（6.1→9.8s）→ wp3 拐角
+            # 连锁卡死。改为全四轮接触才锁 gf=1.0：平顶误报（四轮全接地，
+            # terr 参考抖动使 _lift_amt 0.003~0.088 → gf=0 差速+偏航反馈全灭，
+            # wp8 反滑自旋 round199-201 实测）不再衰减；任一轮离地（该轮接触力 0）
+            # 则按 lift 公式衰减（保留 v870 启动/过脊/跳跃保护，与 r67 基线一致）。
             _gf_cf_thr = float(os.environ.get("S10_GF_CF_THR", "0.0"))
+            _cf_min = 0.0
             _cf_max = 0.0
             if wheel_fz is not None:
-                _cf_max = float(np.max(np.asarray(wheel_fz,
-                                                  dtype=np.float64)))
-            if _cf_max > _gf_cf_thr:
+                _wfz = np.asarray(wheel_fz, dtype=np.float64)
+                _cf_min = float(np.min(_wfz))
+                _cf_max = float(np.max(_wfz))
+            if _cf_min > _gf_cf_thr:
                 self._ground_f = 1.0
             else:
                 _gf_on = float(os.environ.get("S10_GF_LIFT_ONSET", "0.01"))
@@ -959,10 +962,10 @@ class CarVMC:
             if os.environ.get("S10_GF_DEBUG", "0") == "1":
                 self._gf_dbg_n = getattr(self, "_gf_dbg_n", 0) + 1
                 if self._gf_dbg_n % 100 == 0:
-                    print("[GF] lift=%.4f gf=%.3f cfmax=%.1f "
+                    print("[GF] lift=%.4f gf=%.3f cfmin=%.1f cfmax=%.1f "
                           "terrmin=%.3f terrmax=%.3f"
                           % (float(_lift_amt), float(self._ground_f),
-                             _cf_max,
+                             _cf_min, _cf_max,
                              float(np.min(np.asarray(terrain_h))),
                              float(np.max(np.asarray(terrain_h)))), flush=True)
         else:
