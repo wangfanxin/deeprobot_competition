@@ -947,8 +947,11 @@ class CarVMC:
             # v870: ground_f more sensitive (0.01m onset, 0.04m zero) - MU=0.8
             # MPPI outputs bigger omega at startup; airborne 0.04m kept 60%
             # differential and spun (om -4.16 flip). Cruise lift<0.01 unaffected.
+            _gf_on = float(os.environ.get("S10_GF_LIFT_ONSET", "0.03"))
+            _gf_span = float(os.environ.get("S10_GF_LIFT_ZERO", "0.10"))
             self._ground_f = float(np.clip(
-                1.0 - max(0.0, _lift_amt - 0.01) / 0.03, 0.0, 1.0))
+                1.0 - max(0.0, _lift_amt - _gf_on)
+                / max(_gf_span - _gf_on, 1e-3), 0.0, 1.0))
             if os.environ.get("S10_GF_DEBUG", "0") == "1":
                 self._gf_dbg_n = getattr(self, "_gf_dbg_n", 0) + 1
                 if self._gf_dbg_n % 100 == 0:
