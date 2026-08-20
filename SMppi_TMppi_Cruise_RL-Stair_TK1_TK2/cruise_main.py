@@ -698,29 +698,25 @@ def main():
                     and stair.drop_ahead_dist < 2.0):
                 vx_c = min(vx_c, 2.0)
         if _hg == 15:
-            # wp14->15：落沿探测器会漏（r217 4.85m/s 冲下）→ 距离兜底：
-            # 距 wp15<5m 直接限 1.5，落沿前 1.5m 限 0.5（爬行过沿）
-            if float(np.hypot(pos2[0] - wp[15][0],
-                               pos2[1] - wp[15][1])) < 5.0:
-                vx_c = min(vx_c, 1.5)
+            # wp14->15：高速掠过（用户指示 r286/r289）：落沿前 3m 锁定 >=4.0m/s
+            # （r287 4.0 四轮平落沟底翻点=硬刹；r288 3.5 被 wp15 终点代价
+            # 压到 1.44 出沿慢翻——4.0 出沿姿态更好，配合缓刹+抬头落地窗）
             if (stair.drop_ahead_dist is not None
-                    and stair.drop_ahead_dist < 1.5):
-                # 高墙无缺口：用户指示减速慢慢过——0.25m/s 爬行，
-                # 俯仰环顺台阶几何（pitch_tar=-0.4）不较劲
-                vx_c = 0.25
-            elif (stair.drop_ahead_dist is not None
                     and stair.drop_ahead_dist < 3.0):
-                vx_c = min(vx_c, 0.6)
+                vx_c = max(vx_c, 4.0)
         if _hg == 16:
-            # wp15->16：距 wp15<4m 限 1.5；落点低侧（z<0.55）后 2.5s 直行稳定窗
-            # （yaw 万向节翻转后禁止转向，防 r216/r217 的 4.5m/s 硬转 roll 翻）
+            # wp15->16：距 wp15<4m 限 1.5；落点低侧后 2.5s 直行稳定窗
+            # （r277 取证：翻点 z 尚 0.70 时 roll 已 3.07，z<0.55 触发太晚
+            # → 改为轮下 terr<0.15 四轮过沿即触发；yaw 万向节翻转后禁止
+            # 转向，防 r216/r217 的 4.5m/s 硬转 roll 翻）
             if '_land_t' not in globals():
                 globals()['_land_t'] = -1e9
-            if float(body_pos[2]) < 0.55:
+            if (float(body_pos[2]) < 0.55
+                    or float(np.min(terr)) < 0.15):
                 if globals()['_land_t'] < -1e8:
                     globals()['_land_t'] = t
                 if t - globals()['_land_t'] < 2.5:
-                    vx_c = min(vx_c, 0.3)
+                    vx_c = min(vx_c, 0.8)
                     om_c = float(np.clip(-2.0 * float(qvel[5]), -0.4, 0.4))
                     globals()['_landing'] = True
                 else:
@@ -744,7 +740,7 @@ def main():
                 vx_c = min(vx_c, 1.5)
         if _hg == 10:
             # wp9->10 平顶直道：wp9 后 74° 大航向差+2.5m/s 转弯 roll1.49 翻（r163）
-            # → 航向差>30° 时限速 1.2，转完再加速
+            # → 航向差>30° 时限速 2.0，转完再加速（r284 全 40 基线直通 7.68s）
             _hgt = float(np.arctan2(wp[10][1] - wp[9][1], wp[10][0] - wp[9][0]))
             _hge = float(np.arctan2(np.sin(_hgt - yaw), np.cos(_hgt - yaw)))
             if abs(_hge) > 0.7:
@@ -753,22 +749,27 @@ def main():
                    omega=(0.0 if _max_lift > 0.05 else
                           (0.3 if _lift_hold else om_c)),
                    roll_tar=_roll_tar_c,
-                   pitch_tar=(-0.4 if (int(next_idx) in (15, 16)
-                              and ((stair.drop_ahead_dist is not None
-                                    and stair.drop_ahead_dist < 1.5)
-                                   or globals().get('_landing', False)))
-                              else 0.0),
-                   att_scale=(2.5 if globals().get('_landing', False)
+                   pitch_tar=(0.45 if globals().get('_landing', False)
+                              else (0.35 if (int(next_idx) in (15, 16)
+                                             and stair.drop_ahead_dist
+                                             is not None
+                                             and stair.drop_ahead_dist < 1.5)
+                                    else 0.0)),
+                   att_scale=(3.0 if globals().get('_landing', False)
                               else 1.0),
                    # round205 实测 70N 反力反而卡死：卸载侧轮被抬起
                    # 离地后 roll 力矩绕接触线失效（roll 0.66 悬停 4.7s），
                    # 回 40N（round201 同值可恢复）
                    step_lift=_step_lift, lift_swing=1.2,
-                   hop=([-20.0, -20.0, 0.0, 0.0] if (int(next_idx) in (15, 16)
-                                                   and stair.drop_ahead_dist
-                                                   is not None
-                                                   and stair.drop_ahead_dist < 1.5)
-                                          else None),
+                   hop=(([35.0, 35.0, 0.0, 0.0]
+                          if (int(next_idx) in (15, 16)
+                              and stair.drop_ahead_dist is not None
+                              and stair.drop_ahead_dist < 1.2)
+                          else ([0.0, 0.0, 30.0, 30.0]
+                                if (int(next_idx) in (15, 16)
+                                    and float(np.max(terr[2:4]))
+                                    - float(np.min(terr)) >= 0.08)
+                                else None))),
                    yaw_scale=1.0 - 0.6 * _max_lift,
                    ridge_dist=99.0,
                    lift_f_scale=(0.3 if _max_lift > 0.05 else 1.0),
@@ -934,7 +935,51 @@ def main():
                   flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[T] *** 侧翻/摔倒 ***', flush=True)
-                break
+                # 跌倒重生（用户指示：跌倒重生都行，赶紧打通 33 点）：
+                # 把机器人立正放到当前目标航点后方 1m（沿来向），清速度续跑；
+                # 时钟不停（摔倒+重生自然计入耗时）。次数上限防死循环。
+                if (os.environ.get('S10_FALL_RESPAWN', '1') == '1'
+                        and globals().get('_respawns', 0)
+                        < int(os.environ.get('S10_FALL_RESPAWN_MAX', '8'))):
+                    globals()['_respawns'] = globals().get('_respawns', 0) + 1
+                    _ri = int(next_idx)
+                    _pj = max(_ri - 1, 0)
+                    _dx = float(wp[_ri][0] - wp[_pj][0])
+                    _dy = float(wp[_ri][1] - wp[_pj][1])
+                    _dl = float(np.hypot(_dx, _dy)) or 1.0
+                    _ux, _uy = _dx / _dl, _dy / _dl
+                    _ryaw = float(np.arctan2(_uy, _ux))
+                    _rx = float(wp[_ri][0]) - _ux * 1.0
+                    _ry = float(wp[_ri][1]) - _uy * 1.0
+                    # 重生点地面高：god 射线直测（perc 是局部 tile，
+                    # r290 实测远离车体处返回 fallback 导致 0.20 落地即翻）
+                    _rgid = np.zeros(1, dtype=np.int32)
+                    _rd = mujoco.mj_ray(m, d,
+                                        np.array([_rx, _ry, 8.0]),
+                                        np.array([0.0, 0.0, -1.0]),
+                                        np.full(6, 255, dtype=np.uint8),
+                                        True, -1, _rgid)
+                    _rg = (8.0 - float(_rd) if float(_rd) >= 0
+                           else float(wp[_ri][2]))
+                    _rz = _rg + 0.28
+                    d.qpos[0:3] = [_rx, _ry, _rz]
+                    d.qpos[3:7] = [np.cos(_ryaw / 2), 0.0, 0.0,
+                                   np.sin(_ryaw / 2)]
+                    d.qpos[7:23] = np.array([-0.438, -1.16, 2.45, 0.0,
+                                             0.438, -1.16, 2.45, 0.0,
+                                             -0.438, 1.16, -2.45, 0.0,
+                                             0.438, 1.16, -2.45, 0.0])
+                    d.qvel[:] = 0.0
+                    d.ctrl[:] = 0.0
+                    mujoco.mj_forward(m, d)
+                    prev_u[:] = 0.0
+                    globals()['_land_t'] = -1e9
+                    globals()['_landing'] = False
+                    print('[T] *** 重生#%d @wp%d 前1m (%.1f,%.1f,%.2f) yaw=%.2f ***'
+                          % (globals()['_respawns'], _ri, _rx, _ry, _rz,
+                             _ryaw), flush=True)
+                else:
+                    break
             if os.environ.get('S10_STUCK_TIMEOUT', '90') != '0' and \
                     t - last_adv_t > float(os.environ.get(
                         'S10_STUCK_TIMEOUT', '90')):
