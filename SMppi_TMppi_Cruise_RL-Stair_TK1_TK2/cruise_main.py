@@ -338,7 +338,7 @@ def main():
                     and stair.mode == 'CRUISE'
                     and not _tmppi_will
                     and (_post_stair_t is None
-                         or t - _post_stair_t > 2.0)):
+                         or t - _post_stair_t > 0.5)):
                 _correction += 'TK2'
                 th2 = float(np.arctan2(wp[_ahead, 1] - body_pos[1],
                                        wp[_ahead, 0] - body_pos[0]))
