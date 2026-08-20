@@ -661,6 +661,15 @@ def main():
                       flush=True)
                 _tk1_t0 = None
                 _tk1_align_t0 = None
+            if os.environ.get('S10_RISER_DEBUG', '0') == '1':
+                _rxy, _rtops = perc.riser_table(stair)
+                print('[RISER-ENTRY] n_s=%d tops=%s table_n=%d tops_t=%s'
+                      % (len(stair.stair_rises_s or []),
+                         [round(float(h), 2) for h in
+                          getattr(stair, '_elev_rises_tops', []) or []],
+                         len(_rxy) if _rxy is not None else 0,
+                         None if _rtops is None else
+                         [round(float(h), 2) for h in _rtops]), flush=True)
             _rl_diag_done = True
             # 六级楼梯给 RL 1.2m/s 速度目标：策略自由跑 2.85 时
             # 越顶退出 vx 门永远不满足、兜底交还 roll 动量带翻
@@ -676,6 +685,17 @@ def main():
                   'max_leg_err=%.3f'
                   % (body_pos[0], body_pos[1], body_pos[2], yaw,
                      float(np.abs(dq[rl.idx['leg_idx']]).max())), flush=True)
+        if (stair.mode == 'STAIR'
+                and os.environ.get('S10_RISER_DEBUG', '0') == '1'
+                and int(t * 2) % 2 == 0):
+            _rxy, _rtops = perc.riser_table(stair)
+            print('[RISERS] t=%.2f n_s=%d tops=%s table_n=%d tops_t=%s'
+                  % (t, len(stair.stair_rises_s or []),
+                     [round(float(h), 2) for h in
+                      getattr(stair, '_elev_rises_tops', []) or []],
+                     len(_rxy) if _rxy is not None else 0,
+                     None if _rtops is None else
+                     [round(float(h), 2) for h in _rtops]), flush=True)
         _rl_was_stair = (stair.mode == 'STAIR')
 
         if stair.mode == 'STAIR':
