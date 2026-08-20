@@ -608,12 +608,22 @@ def main():
                                  float(body_pos[2]) - 0.55)
             if _ahead2 < float(np.max(terr)) - 0.05:
                 terr = 0.4 * terr + 0.6 * _ahead2
+            # 跨骑时把后轮地形参考压到低侧：后腿立刻伸展下台，
+            # 消除后轮悬沿口车身绕前轮前翻（r273/r275 取证）
+            if (float(np.max(terr[2:4]))
+                    - float(np.min(terr)) >= 0.08):
+                terr[2:4] = np.minimum(terr[2:4],
+                                        float(np.min(terr)) + 0.05)
+
         # v595 骑坎找平：任意轮间地形差 >=0.04 时把所有低轮参考抬到
         # 最高轮附近——消除骑坎对角扭振（平台沿逆指令左旋的根因），
         # 同时把后轮拉过立面。
         _tmax = float(np.max(terr))
         if (_tmax - float(np.min(terr)) >= 0.04
-                and stair.mode == 'CRUISE'):
+                and stair.mode == 'CRUISE'
+                and int(next_idx) not in (15, 16)):
+            # wp15/16 落沿段禁用骑坎找平：找平把后轮参考抬到高侧，
+            # 后腿不伸展、后轮悬沿口车身绕前轮翻（r273 取证）
             terr = np.maximum(terr, _tmax - 0.02)
         _roll_tar_c = float(np.clip(
             -float(os.environ.get('S10_CAR_ROLL_K', '0.06')) * om_c
@@ -691,9 +701,9 @@ def main():
                 vx_c = min(vx_c, 1.5)
             if (stair.drop_ahead_dist is not None
                     and stair.drop_ahead_dist < 2.5):
-                # 高墙无缺口：强制 3.5m/s 冲跳（整车跨过 0.38m 落沿，
-                # 四轮同时落地 + 预伸腿 + 落点稳定窗）
-                vx_c = 3.5
+                # 高墙无缺口：3.0m/s + 前轮 hop 抬车头小轮跃（前腿冲量、
+                # 车身后轮支点抬头离沿、落地后轮先触车身回正）
+                vx_c = 3.0
         if _hg == 16:
             # wp15->16：距 wp15<4m 限 1.5；落点低侧（z<0.55）后 2.5s 直行稳定窗
             # （yaw 万向节翻转后禁止转向，防 r216/r217 的 4.5m/s 硬转 roll 翻）
@@ -747,10 +757,10 @@ def main():
                    # 离地后 roll 力矩绕接触线失效（roll 0.66 悬停 4.7s），
                    # 回 40N（round201 同值可恢复）
                    step_lift=_step_lift, lift_swing=1.2,
-                   hop=([25.0, 25.0, 0.0, 0.0] if (int(next_idx) in (15, 16)
+                   hop=([35.0, 35.0, 0.0, 0.0] if (int(next_idx) in (15, 16)
                                                    and stair.drop_ahead_dist
                                                    is not None
-                                                   and stair.drop_ahead_dist < 1.0)
+                                                   and stair.drop_ahead_dist < 1.2)
                                           else None),
                    yaw_scale=1.0 - 0.6 * _max_lift,
                    ridge_dist=99.0,
