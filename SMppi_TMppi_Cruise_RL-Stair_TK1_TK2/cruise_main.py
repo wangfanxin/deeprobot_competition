@@ -13,7 +13,7 @@ for _p in (HERE, PKG, REPO):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from nav_waypoint import extract_waypoints, WaypointLineNav, wrap_angle
+from nav_waypoint import extract_waypoints, WaypointLineNav
 from stair_mode import StairGate
 from perception_lidar import LidarPerception
 from smppi import SMppi
@@ -421,36 +421,6 @@ def main():
                 vx = min(vx, float(os.environ.get(
                     'S10_STAIR_APPROACH_VX', '1.5')))
                 v_ref = min(v_ref, vx)
-            # wp14->15/16 落沿规划前爬行（硬门控前置版）：0.38m 落沿下坡
-            # 冲速 7.7m/s 栽头 roll 翻（r218-221，cmd 级 0.5 无效——MPPI 仍按
-            # 4.0 规划致轮矩 ±13.5 极限环）；vx+v_ref 同步压 0.5 让 MPPI
-            # 一致规划，轮层平滑跟随
-            if int(next_idx) in (15, 16) and stair.mode == 'CRUISE':
-                _strad = (float(np.max(terr[2:4]))
-                          - float(np.min(terr)) >= 0.08)
-                if ((stair.drop_ahead_dist is not None
-                        and stair.drop_ahead_dist < 2.5) or _strad):
-                    if '_drop_t0' not in globals():
-                        globals()['_drop_t0'] = None
-                        globals()['_drop_s0'] = 0.0
-                        globals()['_drop_rel_t'] = -1e9
-                    if globals()['_drop_t0'] is None:
-                        globals()['_drop_t0'] = t
-                        globals()['_drop_s0'] = float(stair.s_cur)
-                    if (t - globals()['_drop_t0'] > 4.0
-                            and float(stair.s_cur)
-                            - globals()['_drop_s0'] < 0.8):
-                        globals()['_drop_rel_t'] = t
-                    if t - globals()['_drop_rel_t'] < 2.0:
-                        vx = max(vx, 1.5)
-                        v_ref = max(v_ref, 1.5)
-                    else:
-                        vx = min(vx, 0.5)
-                        v_ref = min(v_ref, vx)
-                        vyaw = float(np.clip(vyaw, -0.4, 0.4))
-                else:
-                    if '_drop_t0' in globals():
-                        globals()['_drop_t0'] = None
             # 机器人相对 riser 检测（路径扫描盲区：偏离路径时前方台阶）
             # 前方 0.3~1.2m 升高 0.08~0.25m => 正对直行低速骑上（不交 RL）
             _rf = float(os.environ.get('S10_EDGE_LOOKAHEAD', '1.2'))
@@ -660,12 +630,6 @@ def main():
                   flush=True)
         # ===== 硬门控区（用户指示 2026-08-20：if wp==xx 特判，尽快打通 wp0-33）=====
         _hg = int(next_idx)
-        # ATT_TMAX 分段（全局 80 修 wp3-4 ±π 卡 r232；楼梯段 wp6->7 回 40，
-        # 80 下 RL 爬楼 roll 翻 r232）
-        if _hg in (7, 8, 9, 10, 11, 12):
-            os.environ['S10_CAR_ATT_TMAX'] = '40.0'
-        else:
-            os.environ['S10_CAR_ATT_TMAX'] = '80.0'
         if _hg == 8:
             # wp7->8 平顶：前方小阶连续触发 1.5m/s 压速致 15.7s 慢爬（r100）
             # → 距 wp8>2m 抬到 2.5m/s；距 wp8 0.8~2m 压回 1.5（过点速度
@@ -706,9 +670,18 @@ def main():
             elif (stair.drop_ahead_dist is not None
                     and stair.drop_ahead_dist < 2.0):
                 vx_c = min(vx_c, 2.0)
-        if _hg in (15, 16) and stair.mode == 'CRUISE':
-            # wp14->15/16 0.38m 落沿：落点后 2.5s 直行稳定窗（r244 版本，
-            # 正向下沿 12 种方案实测：跨骑 roll 侧翻为执行层极限）
+        if _hg == 15:
+            # wp14->15：落沿探测器会漏（r217 4.85m/s 冲下）→ 距离兜底：
+            # 距 wp15<5m 直接限 1.5，落沿前 1.5m 限 0.5（爬行过沿）
+            if float(np.hypot(pos2[0] - wp[15][0],
+                               pos2[1] - wp[15][1])) < 5.0:
+                vx_c = min(vx_c, 1.5)
+            if (stair.drop_ahead_dist is not None
+                    and stair.drop_ahead_dist < 1.5):
+                vx_c = min(vx_c, 0.5)
+        if _hg == 16:
+            # wp15->16：距 wp15<4m 限 1.5；落点低侧（z<0.55）后 2.5s 直行稳定窗
+            # （yaw 万向节翻转后禁止转向，防 r216/r217 的 4.5m/s 硬转 roll 翻）
             if '_land_t' not in globals():
                 globals()['_land_t'] = -1e9
             if float(body_pos[2]) < 0.55:
@@ -719,30 +692,8 @@ def main():
                     om_c = float(np.clip(-2.0 * float(qvel[5]), -0.4, 0.4))
             else:
                 globals()['_land_t'] = -1e9
-        if _hg == 15:
-            # wp14->15：wp15 前 0.38m 跌落沿 4.85m/s 冲下 + wp15 进点
-            # 5.68m/s 冲出（r216/r217）→ 前方 3m 内有跌落沿限 1.5；
-            # 距 wp15<4m 压 2.0（倒车下沿门在上方覆盖）
-            if (stair.drop_ahead_dist is not None
-                    and stair.drop_ahead_dist < 1.5):
-                vx_c = min(vx_c, 0.5)
-            elif (stair.drop_ahead_dist is not None
-                    and stair.drop_ahead_dist < 2.5):
-                vx_c = min(vx_c, 0.8)
-            elif (stair.drop_ahead_dist is not None
-                    and stair.drop_ahead_dist < 4.0):
-                vx_c = min(vx_c, 1.2)
-            elif float(np.hypot(pos2[0] - wp[15][0],
-                                 pos2[1] - wp[15][1])) < 4.0:
-                vx_c = min(vx_c, 2.0)
-        if _hg == 16:
-            # wp15->16：wp15 后 yaw 0.25→-2.86 大摆 roll-1.60 翻（r216）
-            # → 距 wp15<3m 限 1.5；航向差>30° 限 1.2
             if float(np.hypot(pos2[0] - wp[15][0],
-                               pos2[1] - wp[15][1])) < 2.0:
-                vx_c = min(vx_c, 0.8)
-            elif float(np.hypot(pos2[0] - wp[15][0],
-                                 pos2[1] - wp[15][1])) < 4.0:
+                               pos2[1] - wp[15][1])) < 4.0:
                 vx_c = min(vx_c, 1.5)
             _hgt = float(np.arctan2(wp[16][1] - wp[15][1],
                                      wp[16][0] - wp[15][0]))
@@ -760,25 +711,17 @@ def main():
             # → 航向差>30° 时限速 1.2，转完再加速
             _hgt = float(np.arctan2(wp[10][1] - wp[9][1], wp[10][0] - wp[9][0]))
             _hge = float(np.arctan2(np.sin(_hgt - yaw), np.cos(_hgt - yaw)))
-            vx_c = min(vx_c, 2.2)
             if abs(_hge) > 0.7:
-                vx_c = min(vx_c, 1.5)
+                vx_c = min(vx_c, 2.0)
         cmd = dict(vx=(0.6 if (_max_lift > 0.05 or _lift_hold) else vx_c),
                    omega=(0.0 if _max_lift > 0.05 else
                           (0.3 if _lift_hold else om_c)),
                    roll_tar=_roll_tar_c, pitch_tar=0.0,
-                   roll_k_scale=(2.5 if (int(next_idx) in (15, 16)
-                              and float(np.max(terr[2:4]))
-                              - float(np.min(terr)) >= 0.08) else 1.0),
-                   att_scale=1.0,
                    # round205 实测 70N 反力反而卡死：卸载侧轮被抬起
                    # 离地后 roll 力矩绕接触线失效（roll 0.66 悬停 4.7s），
                    # 回 40N（round201 同值可恢复）
                    step_lift=_step_lift, lift_swing=1.2,
-                   yaw_scale=(0.0 if (int(next_idx) in (15, 16)
-                             and float(np.max(terr[2:4]))
-                             - float(np.min(terr)) >= 0.08)
-                             else 1.0 - 0.6 * _max_lift),
+                   yaw_scale=1.0 - 0.6 * _max_lift,
                    ridge_dist=99.0,
                    lift_f_scale=(0.3 if _max_lift > 0.05 else 1.0),
                    wheel_press=(0.1 if _max_lift > 0.05 else 0.0),
