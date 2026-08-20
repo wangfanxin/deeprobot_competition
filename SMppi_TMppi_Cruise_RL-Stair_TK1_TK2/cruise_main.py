@@ -614,6 +614,10 @@ def main():
                     - float(np.min(terr)) >= 0.08):
                 terr[2:4] = np.minimum(terr[2:4],
                                         float(np.min(terr)) + 0.05)
+                os.environ['S10_CAR_ATT_TMAX'] = '100.0'
+            else:
+                os.environ['S10_CAR_ATT_TMAX'] = '40.0'
+
 
         # v595 骑坎找平：任意轮间地形差 >=0.04 时把所有低轮参考抬到
         # 最高轮附近——消除骑坎对角扭振（平台沿逆指令左旋的根因），
@@ -757,11 +761,15 @@ def main():
                    # 离地后 roll 力矩绕接触线失效（roll 0.66 悬停 4.7s），
                    # 回 40N（round201 同值可恢复）
                    step_lift=_step_lift, lift_swing=1.2,
-                   hop=([35.0, 35.0, 0.0, 0.0] if (int(next_idx) in (15, 16)
-                                                   and stair.drop_ahead_dist
-                                                   is not None
-                                                   and stair.drop_ahead_dist < 1.2)
-                                          else None),
+                   hop=(([35.0, 35.0, 0.0, 0.0]
+                          if (int(next_idx) in (15, 16)
+                              and stair.drop_ahead_dist is not None
+                              and stair.drop_ahead_dist < 1.2)
+                          else ([0.0, 0.0, 30.0, 30.0]
+                                if (int(next_idx) in (15, 16)
+                                    and float(np.max(terr[2:4]))
+                                    - float(np.min(terr)) >= 0.08)
+                                else None))),
                    yaw_scale=1.0 - 0.6 * _max_lift,
                    ridge_dist=99.0,
                    lift_f_scale=(0.3 if _max_lift > 0.05 else 1.0),
