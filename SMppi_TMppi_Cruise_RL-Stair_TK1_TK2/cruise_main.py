@@ -871,13 +871,10 @@ def main():
                     vx_c = -0.5
                     om_c = 0.0
                 else:
-                    # 前插相位：固定朝正东（yaw=0）直行——障碍场的
-                    # 横墙/柱都有东端，东行绕过后再交还 MPPI 南转；
-                    # 投影点跟踪在轮滑状态下目标翻转、yaw 3rad 甩动
-                    # 侧翻（round238 第二障碍实测）
+                    # 前插相位：沿当前航向直行 0.8（无世界系方向硬编码，
+                    # 用户约束：不得用航点坐标/世界系知识做特殊干预）
                     vx_c = 0.8
-                    _eee = float(np.arctan2(np.sin(-yaw), np.cos(-yaw)))
-                    om_c = float(np.clip(2.0 * _eee, -0.6, 0.6))
+                    om_c = 0.0
                 prev_u = np.asarray([vx_c, om_c])
                 smppi.sync_applied(prev_u)
             else:
