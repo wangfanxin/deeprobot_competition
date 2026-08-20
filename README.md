@@ -112,6 +112,13 @@ deeprobot_competition/
 cd ~/DR_competition/0810new/deeprobot_competition
 bash SMppi_TMppi_Cruise_RL-Stair_TK1_TK2/run_smppi_tmppi_cruise_rlstair_tk12.sh
 
+# 有头（MuJoCo viewer 实时跟随机器人，需 WSLg/X11；
+#  S10_VIEWER_STEP 为渲染间隔，默认 5 步=40FPS，关闭窗口即退出）
+S10_USE_VIEWER=1 bash SMppi_TMppi_Cruise_RL-Stair_TK1_TK2/run_smppi_tmppi_cruise_rlstair_tk12.sh
+# 或直接跑主循环（短测可加 S10_TEST_MAX_SIM=60 S10_AUTO_MAX_WP=8）
+cd SMppi_TMppi_Cruise_RL-Stair_TK1_TK2
+S10_USE_VIEWER=1 ~/DR_competition/.venv/bin/python cruise_main.py
+
 # RL-Stair 训练 / 评估 / 导出 / sim2sim
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 ~/DR_competition/.venv/bin/python \
   rl_stair/train.py --num_envs 1024 --max_iters 3000 --logdir rl_stair/logs

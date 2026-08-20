@@ -66,6 +66,30 @@ def main():
                               0.438,  1.16, -2.45, 0.0])
     mujoco.mj_forward(m, d)
 
+    # ---- 有头 viewer（S10_USE_VIEWER=1 启用，默认无头）----
+    _viewer = None
+    _viewer_step = max(1, int(os.environ.get("S10_VIEWER_STEP", "5")))
+    if os.environ.get("S10_USE_VIEWER", "0") == "1":
+        try:
+            from mujoco import viewer as _mjviewer
+            _viewer = _mjviewer.launch_passive(m, d)
+            _viewer.cam.azimuth = 90.0
+            _viewer.cam.elevation = -25.0
+            _viewer.cam.distance = 8.0
+            print("[VIEWER] 有头模式已启动（S10_VIEWER_STEP=%d，关闭窗口即退出）"
+                  % _viewer_step, flush=True)
+        except Exception as _ve:
+            print("[VIEWER] 无法打开窗口（无显示/WSLg 未启用），退回无头: %s"
+                  % _ve, flush=True)
+            _viewer = None
+
+    def _render_viewer(step_count):
+        if _viewer is None or step_count % _viewer_step != 0:
+            return
+        if not _viewer.is_running():
+            raise SystemExit("[VIEWER] 窗口已关闭，退出")
+        _viewer.cam.lookat[:] = d.xpos[1]
+        _viewer.sync()
     wp = extract_waypoints(m, d)
     nav = WaypointLineNav(wp)
     stair = StairGate(wp)
@@ -75,6 +99,7 @@ def main():
     carvmc = CarVMCExecutor()
     rl = RLStairCtrl(m)
 
+    _move_hist = []
     t = 0.0
     while t < 0.5:
         qpos = np.asarray(d.qpos, dtype=np.float64)
@@ -91,6 +116,7 @@ def main():
                                       pitch_tar=0.0), terr, DT)
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
+        _render_viewer(int(round(t * 200)))
         t += DT
 
     next_idx = 0
@@ -98,6 +124,41 @@ def main():
     traj = []
     wp_times = {}
     t_start = None
+
+    def _respawn(reason, skip=0):
+        # 跌倒/卡死重生（用户指示：不管多少次重生，跑通 33 点）：
+        # 立正放到目标航点（skip=1 则放到下一航点=跳过本腿）正上方、
+        # 朝向下一段航向，清速度续跑；时钟不停；过点判定随后推进
+        # next_idx。次数不限。
+        nonlocal next_idx
+        globals()['_respawns'] = globals().get('_respawns', 0) + 1
+        _ri = min(int(next_idx) + int(skip), len(wp) - 1)
+        next_idx = _ri
+        _rx = float(wp[_ri][0])
+        _ry = float(wp[_ri][1])
+        _rz = float(wp[_ri][2]) + 0.28
+        if _ri + 1 < len(wp):
+            _dx = float(wp[_ri + 1][0] - wp[_ri][0])
+            _dy = float(wp[_ri + 1][1] - wp[_ri][1])
+        else:
+            _dx = float(wp[_ri][0] - wp[_ri - 1][0])
+            _dy = float(wp[_ri][1] - wp[_ri - 1][1])
+        _ryaw = float(np.arctan2(_dy, _dx))
+        d.qpos[0:3] = [_rx, _ry, _rz]
+        d.qpos[3:7] = [np.cos(_ryaw / 2), 0.0, 0.0, np.sin(_ryaw / 2)]
+        d.qpos[7:23] = np.array([-0.438, -1.16, 2.45, 0.0,
+                                 0.438, -1.16, 2.45, 0.0,
+                                 -0.438, 1.16, -2.45, 0.0,
+                                 0.438, 1.16, -2.45, 0.0])
+        d.qvel[:] = 0.0
+        d.ctrl[:] = 0.0
+        mujoco.mj_forward(m, d)
+        prev_u[:] = 0.0
+        globals()['_land_t'] = -1e9
+        globals()['_landing'] = False
+        print('[T] *** 重生#%d @wp%d (%.1f,%.1f,%.2f) yaw=%.2f [%s] ***'
+              % (globals()['_respawns'], _ri, _rx, _ry, _rz, _ryaw, reason),
+              flush=True)
     last_adv_t = t
     _rl_was_stair = False
     _tk2 = False
@@ -902,6 +963,7 @@ def main():
 
         d.ctrl[:] = tau
         mujoco.mj_step(m, d)
+        _render_viewer(int(round(t * 200)))
         if os.environ.get('S10_DUMP_STOP', '0') == '1' and t > 6.5:
             print('[T] dump-stop t=%.2f' % t, flush=True)
             break
@@ -935,55 +997,33 @@ def main():
                   flush=True)
             if abs(roll) > 0.9 or body_pos[2] < 0.12:
                 print('[T] *** 侧翻/摔倒 ***', flush=True)
-                # 跌倒重生（用户指示：跌倒重生都行，赶紧打通 33 点）：
-                # 把机器人立正放到当前目标航点后方 1m（沿来向），清速度续跑；
-                # 时钟不停（摔倒+重生自然计入耗时）。次数上限防死循环。
-                if (os.environ.get('S10_FALL_RESPAWN', '1') == '1'
-                        and globals().get('_respawns', 0)
-                        < int(os.environ.get('S10_FALL_RESPAWN_MAX', '8'))):
-                    globals()['_respawns'] = globals().get('_respawns', 0) + 1
-                    _ri = int(next_idx)
-                    _pj = max(_ri - 1, 0)
-                    _dx = float(wp[_ri][0] - wp[_pj][0])
-                    _dy = float(wp[_ri][1] - wp[_pj][1])
-                    _dl = float(np.hypot(_dx, _dy)) or 1.0
-                    _ux, _uy = _dx / _dl, _dy / _dl
-                    _ryaw = float(np.arctan2(_uy, _ux))
-                    _rx = float(wp[_ri][0]) - _ux * 1.0
-                    _ry = float(wp[_ri][1]) - _uy * 1.0
-                    # 重生点地面高：god 射线直测（perc 是局部 tile，
-                    # r290 实测远离车体处返回 fallback 导致 0.20 落地即翻）
-                    _rgid = np.zeros(1, dtype=np.int32)
-                    _rd = mujoco.mj_ray(m, d,
-                                        np.array([_rx, _ry, 8.0]),
-                                        np.array([0.0, 0.0, -1.0]),
-                                        np.full(6, 255, dtype=np.uint8),
-                                        True, -1, _rgid)
-                    _rg = (8.0 - float(_rd) if float(_rd) >= 0
-                           else float(wp[_ri][2]))
-                    _rz = _rg + 0.28
-                    d.qpos[0:3] = [_rx, _ry, _rz]
-                    d.qpos[3:7] = [np.cos(_ryaw / 2), 0.0, 0.0,
-                                   np.sin(_ryaw / 2)]
-                    d.qpos[7:23] = np.array([-0.438, -1.16, 2.45, 0.0,
-                                             0.438, -1.16, 2.45, 0.0,
-                                             -0.438, 1.16, -2.45, 0.0,
-                                             0.438, 1.16, -2.45, 0.0])
-                    d.qvel[:] = 0.0
-                    d.ctrl[:] = 0.0
-                    mujoco.mj_forward(m, d)
-                    prev_u[:] = 0.0
-                    globals()['_land_t'] = -1e9
-                    globals()['_landing'] = False
-                    print('[T] *** 重生#%d @wp%d 前1m (%.1f,%.1f,%.2f) yaw=%.2f ***'
-                          % (globals()['_respawns'], _ri, _rx, _ry, _rz,
-                             _ryaw), flush=True)
-                else:
-                    break
+                if os.environ.get('S10_FALL_RESPAWN', '1') == '1':
+                    _respawn('摔倒')
+                    continue
+                break
+            # 4s 卡死检测（用户指示：卡不动 4s 直接重生下一航点）：
+            # 位移窗口 <0.25m 即视为卡死（含 STAIR 模式），跳过本腿
+            _move_hist.append((t, float(pos2[0]), float(pos2[1])))
+            while _move_hist and _move_hist[0][0] < t - 4.2:
+                _move_hist.pop(0)
+            if (len(_move_hist) > 30 and _move_hist[0][0] <= t - 3.8
+                    and float(np.hypot(pos2[0] - _move_hist[0][1],
+                                       pos2[1] - _move_hist[0][2])) < 0.25
+                    and os.environ.get('S10_FALL_RESPAWN', '1') == '1'):
+                print('[T] *** 卡死4s wp=%d -> 重生下一航点 ***'
+                      % next_idx, flush=True)
+                _respawn('卡4s', skip=1)
+                _move_hist.clear()
+                last_adv_t = t
+                continue
             if os.environ.get('S10_STUCK_TIMEOUT', '90') != '0' and \
                     t - last_adv_t > float(os.environ.get(
                         'S10_STUCK_TIMEOUT', '90')):
                 print('[T] *** 卡死超时 wp=%d ***' % next_idx, flush=True)
+                if os.environ.get('S10_FALL_RESPAWN', '1') == '1':
+                    _respawn('卡死')
+                    last_adv_t = t
+                    continue
                 break
 
         if os.environ.get('S10_TRAJ_DENSE', '0') == '1':
@@ -1027,6 +1067,9 @@ def main():
                 if next_idx >= int(os.environ.get('S10_AUTO_MAX_WP', '33')):
                     print('[T] 到达最大航点，结束', flush=True)
                     break
+
+    if _viewer is not None:
+        _viewer.close()
 
     print('=== result ===')
     print('完成: %s, 最终 wp=%d/%d'
