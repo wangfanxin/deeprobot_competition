@@ -707,9 +707,8 @@ def main():
                     and stair.drop_ahead_dist < 2.0):
                 vx_c = min(vx_c, 2.0)
         if _hg in (15, 16) and stair.mode == 'CRUISE':
-            # wp14->15/16 0.38m 落沿：落点后 2.5s 直行稳定窗（r216/r217 均为
-            # 落地后 yaw π 万向节翻转→SMppi 4.5m/s 硬转 roll 翻；落地瞬间
-            # 强制 vx<=1.0 + om 阻尼直行，姿态恢复后再正常走）
+            # wp14->15/16 0.38m 落沿：落点后 2.5s 直行稳定窗（r244 版本，
+            # 正向下沿 12 种方案实测：跨骑 roll 侧翻为执行层极限）
             if '_land_t' not in globals():
                 globals()['_land_t'] = -1e9
             if float(body_pos[2]) < 0.55:
@@ -776,7 +775,10 @@ def main():
                    # 离地后 roll 力矩绕接触线失效（roll 0.66 悬停 4.7s），
                    # 回 40N（round201 同值可恢复）
                    step_lift=_step_lift, lift_swing=1.2,
-                   yaw_scale=1.0 - 0.6 * _max_lift,
+                   yaw_scale=(0.0 if (int(next_idx) in (15, 16)
+                             and float(np.max(terr[2:4]))
+                             - float(np.min(terr)) >= 0.08)
+                             else 1.0 - 0.6 * _max_lift),
                    ridge_dist=99.0,
                    lift_f_scale=(0.3 if _max_lift > 0.05 else 1.0),
                    wheel_press=(0.1 if _max_lift > 0.05 else 0.0),
