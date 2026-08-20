@@ -276,6 +276,15 @@ def main():
                 # 物理一致刹车剖面 v∝sqrt(剩余距离)：配合 A_MAX 保证
                 # 到点前可刹停（线性剖面短段刹不住，wp3 过冲侧翻实测）
                 vx = float(os.environ.get('S10_LINE_VMAX', '4.0')) * float(np.sqrt(_brk))
+                # 航向误差降速（全局连续门控，S10_HEAD_VX_K>0 开启，默认 0=关）：
+                # 大航向误差+高速 = 侧滑/roll 翻（wp9-10 74°@2.5m/s roll1.49 翻、
+                # wp3-4 38° 滑转 5.5s 实测）；误差大时降速转向，误差收敛后自然恢复。
+                _hvk = float(os.environ.get('S10_HEAD_VX_K', '0.0'))
+                if _hvk > 0.0:
+                    _hvf = float(np.clip(
+                        1.0 - _hvk * abs(head_err),
+                        float(os.environ.get('S10_HEAD_VX_MIN', '0.3')), 1.0))
+                    vx *= _hvf
 
             # 航线夹角门（用户指示）：只对爬升轴与航线夹角小的台阶
             # 生效——平台东角在 wp4 前 0.44m、爬升轴与航线差 60°+，

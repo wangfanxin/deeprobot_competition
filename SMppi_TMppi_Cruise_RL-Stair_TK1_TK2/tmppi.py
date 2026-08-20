@@ -43,6 +43,19 @@ class TMppi:
                                       wp_next[0] - wp_cur[0]))
             err = wrap_angle(target - yaw)
             return abs(err) > np.radians(10.0)
+        # 近下一 wp 低速转向门（全局，S10_TURN_NEXT_R>0 开启，默认 0=关）：
+        # wp3-4 实测 10.8s ±π 自旋卡——机器人 1.2~1.5m 外接近下一 wp、
+        # 航向差大且低速时，原触发只看距上一 wp 距离（已远离>1.2m），
+        # 永不接管，SMppi 沿 π 边界极限环滑转。此门与判点/段无关，
+        # 对所有 wp 统一生效。
+        _next_r = float(os.environ.get('S10_TURN_NEXT_R', '0.0'))
+        if _next_r > 0.0:
+            d_next = float(np.linalg.norm(body - wp_next[:2]))
+            if d_next < _next_r and speed < self.v_max:
+                _t2 = float(np.arctan2(wp_next[1] - body[1],
+                                       wp_next[0] - body[0]))
+                if abs(wrap_angle(_t2 - yaw)) > np.radians(self.err_deg):
+                    return True
         if d_cur >= self.trig_r or speed >= self.v_max:
             return False
         target = float(np.arctan2(wp_next[1] - wp_cur[1],
@@ -53,12 +66,41 @@ class TMppi:
     def try_plan(self, body_xy, yaw, speed, omega, wp_cur, wp_next,
                  wide=False):
         """满足触发条件时返回 (True, vx, omega)，否则 (False, None, None)。"""
-        if not self.will_fire(body_xy, yaw, speed, wp_cur, wp_next,
-                              wide=wide):
+        _hold = os.environ.get('S10_TURN_HOLD', '0') == '1'
+        _fired = self.will_fire(body_xy, yaw, speed, wp_cur, wp_next,
+                                wide=wide)
+        if _hold and not _fired and getattr(self, '_turn_active', False) \
+                and speed < self.v_max:
+            # 转向完成保持（全局，S10_TURN_HOLD=1 开启，默认关）：
+            # wp3 后 104° 残余转向实测——TMppi 在距当前 wp>1.2m 即退出，
+            # 剩余 25-40° 误差交还 SMppi，wp4 前慢转滑移 5.5s（r100 10.8s）。
+            # 保持到 |err|<err_deg/2 才交还，对所有 wp 统一。
+            target = float(np.arctan2(wp_next[1] - wp_cur[1],
+                                      wp_next[0] - wp_cur[0]))
+            err = wrap_angle(target - yaw)
+            _hold_deg = float(os.environ.get('S10_TURN_HOLD_DEG', '30.0'))
+            if abs(err) > np.radians(_hold_deg):
+                _fired = True
+        if not _fired:
+            self._turn_active = False
             return False, None, None
+        body = np.asarray(body_xy)
+        self._turn_active = True
         target = float(np.arctan2(wp_next[1] - wp_cur[1],
                                   wp_next[0] - wp_cur[0]))
+        _next_r = float(os.environ.get('S10_TURN_NEXT_R', '0.0'))
+        if _next_r > 0.0:
+            d_next = float(np.linalg.norm(body - wp_next[:2]))
+            if d_next < _next_r and speed < self.v_max:
+                target = float(np.arctan2(wp_next[1] - body[1],
+                                          wp_next[0] - body[0]))
         err = wrap_angle(target - yaw)
+        if os.environ.get('S10_TURN_DBG','0')=='1':
+            print('[TURN] pos=(%.2f,%.2f) yaw=%.3f spd=%.2f dcur=%.2f target=%.3f err=%.3f om=%.3f'
+                  % (float(body_xy[0]), float(body_xy[1]), float(yaw),
+                     float(speed), float(np.linalg.norm(body - wp_cur[:2])),
+                     float(target), float(err), float(self.k*err - self.kd*float(omega))),
+                  flush=True)
         vx = self.vx_cmd
         # 终端角速度阻尼（用户指示）：转到目标角度时应收敛到停住，
         # 而不是带着角动量甩过——om = k·err − kd·ω，ω→0 时停稳
