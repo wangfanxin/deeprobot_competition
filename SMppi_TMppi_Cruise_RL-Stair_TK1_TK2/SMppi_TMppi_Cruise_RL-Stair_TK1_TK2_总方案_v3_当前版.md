@@ -105,7 +105,46 @@ DROP 全部保护（爬行/中窗/深沿/om锁/ghost/卡死释放）、roll 门�
 供 TK1 门/TK2 延迟/PRETRANS 退出混合读取，不做任何 hold 动作。
 逐轮抬轮 step_lift 恒 0（原唯一写入者=已删除的 LIP 门控块），ground_f 降载支路随之惰化。
 
-## 5. 关键参数（run 脚本当前值）
+## 5. 关键参数（run 脚本当前值，2026-08-20 r42 实测链）
+
+    判点:  WP_ADVANCE_DIST=0.6（纯半径；0.62 差 0.02 漏点曾致 wp6 回找侧翻）
+    线控:  VMAX=4.0 YAW_GAIN=2.0 YAW_MAX=1.0 CTE_K=0.4 BRAKE_DIST=3.0 VYAW_LP=0.4
+    TMppi: ERR_DEG=15 K=3.0 KD=1.5 OM_MAX=1.5 V_MAX=4.5 TURN_VX=0.2 ARRIVE_R=1.2
+           omcap 用实际速度（vx_c 帽致 3.5m/s 硬转打滑的根因）
+    TK1:   WP_MAX=3.5 YAW_DB=0.45 YAW_K=2.5 YAW_MAX=1.5 VX=1.0 LOOKAHEAD=8.0
+           方向门：爬升轴 vs 航线 <=0.45 rad；仅 SMppi 模式进入（_tmppi_will 门）
+    TK2:   交还延迟 0.5s YAW_DB=0.25 YAW_K=2.5 YAW_MAX=1.2 VX=1.2
+           omcap 用实际速度；仅 SMppi 模式进入
+    STAIR: ENTER_DIST=2.0（瓦片退化前交 RL）EXIT_VX=1.0 SINGLE_RISE=0.10
+           WHEEL_CLEAR=-0.02 REENTRY_GUARD=1.0；多级兜底退出 span+2.0
+           虚拟 riser 合成：任意级数+远沿 drop 补末级
+    SMppi: N=1024 H=40 dt=0.05 CTRL_DT=0.025 ADA=1 A_MAX=8.0 OMAX=2.5
+           W_GUIDE=2.5 W_DIST=2.0 W_HEAD=2.0 STOP_DX=3.5 W_TPOS=10 W_TV=10
+           LAT_MAX=3.6 MU=0.36（规划物理=标定摩擦）
+    CarVMC: KPH=300 KDH=60 WHEEL_K=12 WHEEL_D=0.02 TERRAIN_LP=0.4
+            TERRAIN_LOOKAHEAD=0.35 TERRAIN_AHEAD_W=0.6 KP_ROLL=150 KD_ROLL=20
+            ROLL_K=0.05 ROLL_AMP=0.10 Z_DES_OFFSET=0.26 YAW_K_WHEEL=80
+            OM_ABS_MAX=1.6 OM_CAP=1.0 WHEEL_TMAX=13.5 MU=0.8 SQUAT=1
+    RL:    RL_VX=1.5 WARMUP=200 PRETRANS 3.0/1.5/3.0/2.0（六级台阶默认速度爬升）
+    感知:  ELEV_HZ=4 LOOKAHEAD=8.0 CLIMB_TH=0.2（sh）裁剪=min(s+8,下一航点s)
+
+## 5b. 参数演进关键记录（r 轮次归档）
+
+    r4  MU 0.36 + LAT_MAX 3.6：wp1 角部打通（4m/s 时 omcap 0.45 是宽弧根因）
+    r8  判点 0.6：wp1/wp2 推进
+    r11 TK1 方向门 + ROLL_K 0.05：wp3 平台东角 2.85s 攻破
+    r13 TK omcap 实际速度：RL 交还 3.55m/s 硬转打滑修复
+    r15 TK1_WP_MAX 2.5 + YAW_DB 0.45：wp5-6 两级台阶通过
+    r16 TMppi omcap 实际速度：wp6 前 0.7m 硬转打滑修复
+    r20 判点 0.62 尝试：wp2 走廊恰在 0.60-0.62，提前推点翻转角部→回 0.6
+    r27 TK2 交还延迟 2.0->0.5：wp6 首次推进
+    r29-31 ELEVPROF 取证：六级台阶瓦片只读前 2 踏面（上方读废值）
+    r33 ENTER_DIST 2.0：六级台阶首次交 RL（1.2 时检测已死）
+    r37 TK1_VX 1.0：wp0-6 全腿时达标（27.5s），六级台阶登顶 z1.26，
+         RL 顶台 7m/s 飞跃翻滚（当前断点）
+
+## 5c. 原参数表（历史基线）
+
 
     SMppi: N=1024 H=40 dt=0.05 CTRL_DT=0.025 ADA=1 A_MAX=4.5 OMAX=2.5
            W_GUIDE=1.5 W_DIST=2.0 W_HEAD=2.0 STOP_DX=5.0 W_TPOS=10 W_TV=10 LAT_MAX=1.8
@@ -174,11 +213,15 @@ DROP 全部保护（爬行/中窗/深沿/om锁/ghost/卡死释放）、roll 门�
 → 只动一个全局参数（优先级 SMppi/TMppi/TK1/2，重点 CarVMC）→ 立即重跑；
 每小时向用户汇报；轨迹 xy 图（颜色=速度）随轮次传 git。
 
-## 9. 当前链状态与断点
+## 9. 当前链状态与断点（r42，2026-08-20）
 
-- 大删除后首测（判点 0.2m，提交 35803da）：t=25.0s wp1→2 坡道侧翻
-  （roll −1.29，cmd 3.5m/s）。根因：0.2m 判点圆漏 wp1（最近 0.34m），
-  机器人持续瞄身后 wp1、yaw 1.36↔2.59 摆振侧翻。
-- 修复：推进半径 0.45（提交 0cebc37），r2 测试进行中。
-- 历史：删除前链状态 wp0-7 通过 66.4s（wp7→8 平顶 3.3m/s 横摆侧翻），
-  大删除后链状态未知，需从头重建。
+- **wp0→6 全通且全腿达标（27.5s）**：wp0-1 6.1s / wp1-2 3.2s / wp2-3 4.4s /
+  wp3-4 3.6s / wp4-5 4.8s / wp5-6 5.4s（验收 5s，>5m 段 8s）。
+- **断点：wp6→7 六级台阶顶台**：RL 登顶 z1.26 后 7m/s 飞跃翻滚（roll −2.05）。
+  根因链：lidar 瓦片远单元欠填充（掠射余量 1-3cm，上方踏面读废值）→ riser
+  表退化 2/6 级 → RL 出分布，顶台步态暴力；post-stair hold 已删，无动量吸收。
+  修复候选：(a) lidar 桅杆 0.6→1.0m（实测会使 wp2-3 角部翻转，需重调链）；
+  (b) 最小化全局交还动量阻尼（待用户确认是否恢复，证据 r37/r41 7m/s 翻滚）。
+- 历史断点已全部攻克：wp1 角宽弧（MU/LAT）、wp1/wp2 漏点（判点 0.6+TMppi
+  高速触发）、平台东角（TK1 方向门+ROLL_K）、wp5-6 台阶（YAW_DB+ENTER）、
+  wp6 漏点（TK2 延迟 0.5s）、六级台阶入口（ENTER 2.0）。
