@@ -1136,7 +1136,7 @@ class AutoNavFollower:
                         best = hv
             if best is not None:
                 prof.append((ds, best))
-        if os.environ.get("S10_ELEV_DEBUG") and 31.0 <= s_cur <= 33.8:
+        if os.environ.get("S10_ELEV_DEBUG") and 31.0 <= s_cur <= 42.0:
             print(f"[ELEVPROF] sc={s_cur:.2f} " +
                   " ".join(f"{d:.1f}:{h:.2f}" for d, h in prof), flush=True)
         if len(prof) < 3:
