@@ -51,7 +51,7 @@ ROS + colcon 只用于官方 ROS 仿真接口（rl_deploy ↔ mujoco_simulation 
 | `smppi.py` + `s10_mpc/body_mppi.py` | numpy | SMppi 走线采样（N=1024, H=40） |
 | `tmppi.py` | numpy | TMppi 原地转向 |
 | `carvmc.py` + `s10_mpc/vmc_legs.py` | numpy | CarVMC 轮足执行 |
-| `stair_mode.py` + `s10_mpc/auto_nav.py` | numpy | CRUISE/STAIR/DROP 门控 |
+| `stair_mode.py` + `s10_mpc/auto_nav.py` | numpy | CRUISE/STAIR 模式判定与楼梯交接 |
 | `perception_lidar.py` + `s10_mpc/lidar_terrain_v2.py` + `rl_stair/deploy/elev_tile.py` | numpy | lidar 高程图 / riser 检测 |
 | `rlstair_ctrl.py` / `rlstair_obs.py` | numpy, torch | RL 策略推理（`torch.jit.load`，CPU 即可） |
 | `plot_traj_speed.py`（可选，画图用） | numpy, matplotlib | 轨迹 xy-速度图 |
