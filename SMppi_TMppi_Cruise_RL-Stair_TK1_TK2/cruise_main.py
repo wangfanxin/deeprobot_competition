@@ -494,121 +494,10 @@ def main():
             # cmd 3.94 → RL 冲 6.94m/s 侧翻）；跨骑=正在登阶入口，保持
             # 275 式动量（round322 入口 2.26m/s 时 RL yaw 突跳 2.43 侧翻）
             if (stair.stair_ahead_dist is not None
-                    and stair.stair_ahead_dist <= 2.0
-                    and not _drop_straddle):
+                    and stair.stair_ahead_dist <= 2.0):
                 vx = min(vx, float(os.environ.get(
                     'S10_STAIR_APPROACH_VX', '1.5')))
                 v_ref = min(v_ref, vx)
-            # 下沿保护卡死释放（round286 实测）：wp13→14 高程图幻影沿
-            # （0.42 假 drop）方向不随航向变化，DDE/DROP 提前爬行后
-            # 机器人在幻影沿上原地自旋 120s（s 投影不前进 → 幻影不消
-            # 失 → 保护永不释放）。保护连续 >4s 且 s 前进 <0.8m 时
-            # 强制放行 2s 冲过（真实下沿跨骑 ~2s 内 s 前进，不误放）。
-            _drop_rel = False
-            if '_dropact_t0' not in globals():
-                globals()['_dropact_t0'] = None
-                globals()['_dropact_s0'] = 0.0
-                globals()['_droprel_t0'] = -1e9
-            if stair.drop_ahead_dist is not None:
-                if globals()['_dropact_t0'] is None:
-                    globals()['_dropact_t0'] = t
-                    globals()['_dropact_s0'] = float(stair.s_cur)
-                if (t - globals()['_dropact_t0'] > 4.0
-                        and float(stair.s_cur)
-                        - globals()['_dropact_s0'] < 0.8):
-                    globals()['_droprel_t0'] = t
-            else:
-                globals()['_dropact_t0'] = None
-            if t - globals()['_droprel_t0'] < 2.0:
-                _drop_rel = True
-            # DROP 释放滞回（round318 实测）：台阶顶交还瞬间 dA 闪断为
-            # None，爬行立即释放 → 2.85m/s 冲出台沿 roll-2.19 侧翻。
-            # 保护消失后维持 0.5s 爬行（覆盖沿口跨骑时间）。
-            _drop_ghost = False
-            if '_drop_last_t' not in globals():
-                globals()['_drop_last_t'] = -1e9
-            if stair.drop_ahead_dist is not None:
-                globals()['_drop_last_t'] = t
-            elif t - globals()['_drop_last_t'] < float(os.environ.get(
-                    'S10_DROP_GHOST_T', '1.0')):
-                _drop_ghost = True
-            # 楼梯可见时 ghost 让位：STAIR 接管自有交付节奏
-            # （round321 窄脊入口 ghost 爬行改变 RL 入口状态 → yaw 突跳
-            # 2.43、roll 3.13 侧翻实测）
-            if stair.stair_ahead_dist is not None:
-                _drop_ghost = False
-            # 深沿提前缓行 DDE（低台 z≤1.3）：前方 1.5m 内出现 ≥0.25 深
-            # 跌落沿时提前限 0.6——wp14→15 缓坡底 0.38 深沿只在 0.4m 处
-            # 才进 0.5 爬行窗，1.0m/s 冲沿栽头侧翻（round275/285 实测）；
-            # 0.125 平台沿/六级台阶不触发（常规 DROP 处理）
-            if (not _drop_rel
-                    and stair.drop_ahead_dist is not None
-                    and _drop_s_ok
-                    and stair.drop_ahead_dist < 1.5):
-                _dds3 = getattr(stair.fol, '_elev_drop_ds', None) or []
-                _dds3f = [(float(d), float(dh)) for d, dh in _dds3
-                          if float(d) <= stair.drop_ahead_dist + 0.5]
-                _dmax3 = max((dh for d, dh in _dds3f), default=0.0)
-                if _dmax3 >= 0.25:
-                    vx = min(vx, 0.6)
-                    v_ref = min(v_ref, vx)
-                    _correction += 'DDE'
-                        # 中窗口缓行（仅高台 z>1.0 的下行）：0.5-1.5m 的六级下行前
-            # 限 1.0——round267 实测 dA 0.7-1.2 时 0.5 窗不触发、
-            # 1.8-2.75m/s 冲阶侧翻；低台（平台爬升 z<1.0）不触发
-            # （round268-270 平台爬升侧翻回退——平台区 drops 检测同样
-            # 多级，但 z 0.77 与高台下行的 z 1.4+ 可区分）
-            if (not _drop_rel
-                    and ((stair.drop_ahead_dist is not None
-                         and stair.drop_ahead_dist < 1.5)
-                        or _drop_ghost)
-                    and _drop_s_ok
-                    and not _drop_straddle):
-                vx = min(vx, 1.0)
-                v_ref = min(v_ref, vx)
-                _correction += 'DROPW'
-            # 下行落差保护：前方检测到 >=0.08m 跌落沿时强制低速直行，
-            # 避免高速下台栽头（下行不交 RL，先慢速爬行兜底）。
-            # 轮下兜底：s 投影越过跌落后扫描变空（round93 台沿前
-            # drops=[] 失保、0.6m/s 下台栽头实测）——后轮上台前轮
-            # 已下的跨骑状态也强制低速直行
-            # 下沿双窗口：om 锁止用大窗口（0.8m，防转弯动量带进
-            # 沿口，round142 顶沿 om0.98 侧翻实测），vx 爬行用小窗口
-            # （0.5m，1.2m 大窗口在平台角提前爬行致入口劣化 round144）
-            _drop_om_w = float(os.environ.get(
-                'S10_DROP_OM_LOOKAHEAD', '0.8'))
-            _drop_straddle = (float(np.max(terr[2:4]))
-                             - float(np.min(terr)) >= 0.08)
-            # 平顶（z>1.2）s 投影假 drop 连续触发 18s（round199 实测
-            # 平顶爬行 0.3 + roll 累积侧翻）——只保留轮下跨骑兜底，
-            # 真下行台阶的跨骑保护不受影响
-            # 1.5：下行台阶顶（z≈1.45）的 s 投影保护不能被 1.2 挡掉
-            # （round252 wp12→13 六级下行 1.8-2.75m/s 冲阶侧翻实测——
-            # 顶段 z>1.2 时 s 保护不生效，只有跨骑兜底）；平顶假 drop
-            # 若回归再收紧
-            _drop_s_ok = True
-            _drop_active = False
-            _drop_real = (stair.drop_ahead_dist is not None
-                          and _drop_s_ok
-                          and stair.drop_ahead_dist < _drop_om_w)
-            if (not _drop_rel and ((_drop_real or _drop_ghost)
-                    or _drop_straddle)):
-                # om 锁只对真实下沿/跨骑：ghost 期锁 om 会压死
-                # TK1 对准（round320 窄脊入口 yaw 2.42 vs 爬升 1.7
-                # 侧滚 3.13 实测）
-                _drop_active = bool(_drop_real or _drop_straddle)
-                if (((stair.drop_ahead_dist is not None
-                        and _drop_s_ok
-                        and stair.drop_ahead_dist < float(os.environ.get(
-                            'S10_DROP_LOOKAHEAD', '2.0')))
-                        or _drop_ghost)
-                        or _drop_straddle):
-                    vx = min(vx, float(os.environ.get(
-                        'S10_DROP_VX', '0.3')))
-                    if _drop_real or _drop_straddle:
-                        vyaw = float(np.clip(vyaw, -0.5, 0.5))
-                    v_ref = min(v_ref, vx)
-                    _correction += 'DROP'
             # 机器人相对 riser 检测（路径扫描盲区：偏离路径时前方台阶）
             # 前方 0.3~1.2m 升高 0.08~0.25m => 正对直行低速骑上（不交 RL）
             _rf = float(os.environ.get('S10_EDGE_LOOKAHEAD', '1.2'))
@@ -825,11 +714,6 @@ def main():
                 if not _roll_gate:
                     om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
             om_c = float(np.clip(om_c, -omcap, omcap))
-            # 下沿/跨骑期 MPPI 的航向代价仍会给大 om（round142 两级
-            # 台阶顶沿 om0.98 转向 roll-1.12 侧翻实测）：DROP 期
-            # cmd 级限 ±0.5
-            if _drop_active:
-                om_c = float(np.clip(om_c, -0.5, 0.5))
             # 平顶段首横向纠偏：推进后机器人东偏/西偏 >0.8m 且沿程
             # <1m 时，cmd 级直瞄段起点 wp（guide 级被 MPPI 终点代价
             # 压过——round242 瞄 wp12 的终点代价仍拉机器人西行撞
