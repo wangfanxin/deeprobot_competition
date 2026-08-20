@@ -3,7 +3,7 @@
 > 目标：wp0→33 全程通关。验收标准：每两航点间用时 <5s；该段直线距离 >5m 放宽至 <8s；
 > 整场 ≤120s；力矩合规（腿 ≤48/50 Nm、轮 ≤13.5/14 Nm、连续超限 ≤0.5s）；全程无侧翻。
 > 设计原则：全部策略全局统一——SMppi / TMppi / TK1 / TK2 / RL-Stair 同一套参数覆盖整条赛道，
-> 不设任何局部特判。方案已定稿，代码、参数与文档对齐。
+> 不设任何局部特判。方案已定稿，代码、参数与文档对齐；wp0→33 全链贯通验证已完成。
 
 ## 1. 系统组成
 
@@ -46,7 +46,7 @@ LidarTerrainV2（4Hz）高程图 → 多级 / 单级 riser 检测 → 在线 ris
             W_HEAD=2.0 STOP_DX=3.5 W_TPOS=10 W_TV=10 LAT_MAX=3.6 MU=0.36
     TMppi:  K=3.0 KD=1.5 OM_MAX=1.5 V_MAX=4.5 TURN_VX=0.2
     TK1:    VX=1.0 YAW_K=2.5 YAW_MAX=1.5 LOOKAHEAD=8.0
-    TK2:    VX=1.2 YAW_K=2.5 YAW_MAX=1.0
+    TK2:    VX=1.2 YAW_K=2.5 YAW_MAX=1.2
     RL-Stair: RL_VX=2.0 WARMUP=200 ENTER_DIST=2.0 EXIT_VX=1.0 PRETRANS 3.0/1.5/3.0/2.0
     CarVMC: KPH=300 KDH=60 WHEEL_K=12 WHEEL_D=0.02 TERRAIN_LP=0.4 TERRAIN_LOOKAHEAD=0.35
             KP_ROLL=150 KD_ROLL=20 ROLL_K=0.05 ROLL_AMP=0.10 Z_DES_OFFSET=0.26

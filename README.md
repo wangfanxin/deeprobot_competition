@@ -2,7 +2,7 @@
 
 > 技术路线：33 航点直线路径 + **SMppi 走线 / TMppi 原地转** + **CarVMC 巡航执行** +
 > **RL-Stair 爬梯** + **TK1/TK2 楼梯交接**，纯 Python + MuJoCo，无需 ROS。
-> 方案已定稿（2026-08-20），代码、参数与文档对齐。完整方案见
+> 方案已定稿（2026-08-20），代码、参数与文档对齐，wp0→33 全链贯通验证已完成。完整方案见
 > [总体方案（定稿）](SMppi_TMppi_Cruise_RL-Stair_TK1_TK2/SMppi_TMppi_Cruise_RL-Stair_TK1_TK2_总方案_v3_当前版.md)。
 
 ## 1. 技术方案
@@ -107,7 +107,7 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 ~/DR_competition/.venv/bin/python \
 | SMppi | N=1024 H=40 dt=0.05 STOP_DX=3.5 A_MAX=8.0 OMAX=2.5 W_GUIDE=2.5 W_DIST=2.0 W_HEAD=2.0 MU=0.36 |
 | TMppi | K=3.0 KD=1.5 OM_MAX=1.5 V_MAX=4.5 TURN_VX=0.2 |
 | TK1 | VX=1.0 YAW_K=2.5 YAW_MAX=1.5 LOOKAHEAD=8.0 |
-| TK2 | VX=1.2 YAW_K=2.5 YAW_MAX=1.0 |
+| TK2 | VX=1.2 YAW_K=2.5 YAW_MAX=1.2 |
 | RL-Stair | RL_VX=2.0 WARMUP=200 ENTER_DIST=2.0 EXIT_VX=1.0 PRETRANS 3.0/1.5/3.0/2.0 |
 | CarVMC | KPH=300 KDH=60 WHEEL_K=12 WHEEL_D=0.02 TERRAIN_LP=0.4 TERRAIN_LOOKAHEAD=0.35 KP_ROLL=150 KD_ROLL=20 ROLL_K=0.05 ROLL_AMP=0.10 Z_DES_OFFSET=0.26 YAW_K_WHEEL=80 WHEEL_TMAX=13.5 |
 | 感知/判点 | ELEV_HZ=4 LOOKAHEAD=8.0 CLIMB_TH=0.2 WP_ADVANCE_DIST=0.6 |
