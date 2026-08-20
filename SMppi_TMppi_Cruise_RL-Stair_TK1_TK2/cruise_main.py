@@ -282,7 +282,7 @@ def main():
             if next_idx + 1 < len(wp):
                 _tmppi_will = tmppi.will_fire(
                     pos2, yaw, float(np.linalg.norm(d.cvel[1][0:3])),
-                    wp[next_idx], wp[next_idx + 1])
+                    wp[next_idx], wp[next_idx + 1], wide=_tk2)
             if (os.environ.get('S10_TK1', '0') == '1'
                     and os.environ.get('S10_RL_ELEV', '0') == '1'
                     and stair.mode == 'CRUISE'
@@ -493,7 +493,7 @@ def main():
             wp_next = wp[next_idx + 1] if next_idx + 1 < len(wp) else None
             used_turn, vx_c, om_c = tmppi.try_plan(
                 pos2, yaw, float(np.linalg.norm(d.cvel[1][0:3])),
-                float(qvel[5]), wp[next_idx], wp_next)
+                float(qvel[5]), wp[next_idx], wp_next, wide=_tk2)
             if used_turn:
                 _planner = 'TMppi'
             else:

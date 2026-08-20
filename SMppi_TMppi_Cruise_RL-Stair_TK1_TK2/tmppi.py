@@ -22,22 +22,39 @@ class TMppi:
         self.om_max = float(os.environ.get('S10_TURN_OM_MAX', '2.0'))
         self.err_deg = float(os.environ.get('S10_TURN_ERR_DEG', '10.0'))
 
-    def will_fire(self, body_xy, yaw, speed, wp_cur, wp_next):
+    def will_fire(self, body_xy, yaw, speed, wp_cur, wp_next, wide=False):
         """触发条件镜像：TK1/TK2 门控用，判断当前拍是否 TMppi 模式
-        （TMppi 只与 SMppi 互切，不切其它）。"""
+        （TMppi 只与 SMppi 互切，不切其它）。
+
+        wide（楼梯交还期，用户指示）：出楼梯后由 TMppi 转过身子对准
+        下一段航线——距当前 wp 2.5m 内或距下一 wp 6m 内且航向差>10°
+        即触发，低速原地转（vx=0.2）对齐航线后再交还 SMppi。"""
         if not self.split or wp_next is None:
             return False
-        dist = float(np.linalg.norm(np.asarray(body_xy) - wp_cur[:2]))
-        if dist >= self.trig_r or speed >= self.v_max:
+        body = np.asarray(body_xy)
+        d_cur = float(np.linalg.norm(body - wp_cur[:2]))
+        if wide:
+            d_next = float(np.linalg.norm(body - wp_next[:2]))
+            if d_cur >= 2.5 and d_next >= 6.0:
+                return False
+            if speed >= self.v_max:
+                return False
+            target = float(np.arctan2(wp_next[1] - wp_cur[1],
+                                      wp_next[0] - wp_cur[0]))
+            err = wrap_angle(target - yaw)
+            return abs(err) > np.radians(10.0)
+        if d_cur >= self.trig_r or speed >= self.v_max:
             return False
         target = float(np.arctan2(wp_next[1] - wp_cur[1],
                                   wp_next[0] - wp_cur[0]))
         err = wrap_angle(target - yaw)
         return abs(err) > np.radians(self.err_deg)
 
-    def try_plan(self, body_xy, yaw, speed, omega, wp_cur, wp_next):
+    def try_plan(self, body_xy, yaw, speed, omega, wp_cur, wp_next,
+                 wide=False):
         """满足触发条件时返回 (True, vx, omega)，否则 (False, None, None)。"""
-        if not self.will_fire(body_xy, yaw, speed, wp_cur, wp_next):
+        if not self.will_fire(body_xy, yaw, speed, wp_cur, wp_next,
+                              wide=wide):
             return False, None, None
         target = float(np.arctan2(wp_next[1] - wp_cur[1],
                                   wp_next[0] - wp_cur[0]))
