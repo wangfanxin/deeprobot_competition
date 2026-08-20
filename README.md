@@ -3,7 +3,6 @@
 > 当前主线（方案 v3，2026-08-19 代码基线）：33 航点直线路径 + **SMppi 走线 / TMppi 原地转** +
 > **CarVMC 巡航执行** + **RL-Stair 爬梯** + **TK1/TK2 交接**，纯 Python + MuJoCo，无需 ROS。
 > 详细门控与参数见 [总方案.md](SMppi_TMppi_Cruise_RL-Stair_TK1_TK2/SMppi_TMppi_Cruise_RL-Stair_TK1_TK2_总方案.md)；
-> 参赛口径文字见 [doc/作品技术方案_20260820.md](doc/作品技术方案_20260820.md)。
 
 ## 1. 技术方案
 
@@ -157,7 +156,6 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 ~/DR_competition/.venv/bin/python \
 ## 9. 相关文档
 
 - [SMppi_TMppi_Cruise_RL-Stair_TK1_TK2_总方案.md](SMppi_TMppi_Cruise_RL-Stair_TK1_TK2/SMppi_TMppi_Cruise_RL-Stair_TK1_TK2_总方案.md) —— 工程口径方案（门控/参数/数据管线全表）
-- [doc/作品技术方案_20260820.md](doc/作品技术方案_20260820.md) —— 参赛口径文字（任务/架构/算法/部署/评测/开源）
 - [doc/requirements.md](doc/requirements.md) —— 环境安装
 - [doc/RL_stair_方案_20260814.md](doc/RL_stair_方案_20260814.md) / 最终验收 / 迁移达标 / 参数审计 / 奖励增强
 - doc/比赛规则_赛道四_具身未来.md / 赛道四_具身未来.pdf —— 官方规则与计分
