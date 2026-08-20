@@ -35,6 +35,7 @@ class CarVMCExecutor:
     def body_state(self, qpos, qvel):
         return self.vmc._body_state(qpos, qvel)
 
-    def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, dt):
+    def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel, cmd, terr, dt,
+                    wheel_fz=None):
         return self.vmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd,
-                                    terr, dt)
+                                    terr, dt, wheel_fz=wheel_fz)

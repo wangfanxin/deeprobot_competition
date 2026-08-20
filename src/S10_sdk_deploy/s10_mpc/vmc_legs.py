@@ -917,7 +917,7 @@ class CarVMC:
         return q1, q2
 
     def compute_tau(self, qpos, qvel, wheel_xyz, wheel_vel,
-                    cmd, terrain_h, dt=0.005):
+                    cmd, terrain_h, dt=0.005, wheel_fz=None):
         body = self._body_state(qpos, qvel)
         k = min(1.0, dt / 0.10)
         self._vx_f += (float(cmd["vx"]) - self._vx_f) * k
@@ -937,26 +937,32 @@ class CarVMC:
         if wheel_xyz is not None and terrain_h is not None:
             _lift_amt = float(np.mean(
                 wheel_xyz[:, 2] - (np.asarray(terrain_h) + self.fk.r)))
-            # 高台（terr>1.0）无跳跃工况：terr 钳制与台面高度差有
-            # 固定偏差，腾空检测误报（平顶 _lift_amt≈+0.05 →
-            # ground_f=0 → 差速+偏航反馈全灭，wp8 转弯转不动、
-            # 直线漂移侧翻 round199-201 实测）——高台直接视作着地
-            # unified: no z-tier override; _lift_amt always measured
-            # (old plateau clamp caused the false-airborne bias that the
-            # override was compensating; clamp is deleted)
-            # v870: ground_f more sensitive (0.01m onset, 0.04m zero) - MU=0.8
-            # MPPI outputs bigger omega at startup; airborne 0.04m kept 60%
-            # differential and spun (om -4.16 flip). Cruise lift<0.01 unaffected.
-            _gf_on = float(os.environ.get("S10_GF_LIFT_ONSET", "0.01"))
-            _gf_span = float(os.environ.get("S10_GF_LIFT_ZERO", "0.03"))
-            self._ground_f = float(np.clip(
-                1.0 - max(0.0, _lift_amt - _gf_on)
-                / max(_gf_span - _gf_on, 1e-3), 0.0, 1.0))
+            # v872 候选2：腾空判据加轮地接触力次级信号——任一车轮真实
+            # 接触力>阈值即判定着地，gf=1.0 不按 lift 衰减（平顶 terr
+            # 参考抖动使 _lift_amt 误报 0.003~0.088 → gf=0 → 差速+
+            # 偏航反馈全灭、wp8 反滑自旋 round199-201 实测）；只有四轮
+            # 接触力全为 0（真离地）才按 lift 公式衰减（v870 启动腾空
+            # 自旋保护逻辑不变）。
+            _gf_cf_thr = float(os.environ.get("S10_GF_CF_THR", "0.0"))
+            _cf_max = 0.0
+            if wheel_fz is not None:
+                _cf_max = float(np.max(np.asarray(wheel_fz,
+                                                  dtype=np.float64)))
+            if _cf_max > _gf_cf_thr:
+                self._ground_f = 1.0
+            else:
+                _gf_on = float(os.environ.get("S10_GF_LIFT_ONSET", "0.01"))
+                _gf_span = float(os.environ.get("S10_GF_LIFT_ZERO", "0.03"))
+                self._ground_f = float(np.clip(
+                    1.0 - max(0.0, _lift_amt - _gf_on)
+                    / max(_gf_span - _gf_on, 1e-3), 0.0, 1.0))
             if os.environ.get("S10_GF_DEBUG", "0") == "1":
                 self._gf_dbg_n = getattr(self, "_gf_dbg_n", 0) + 1
                 if self._gf_dbg_n % 100 == 0:
-                    print("[GF] lift=%.4f gf=%.3f terrmin=%.3f terrmax=%.3f"
+                    print("[GF] lift=%.4f gf=%.3f cfmax=%.1f "
+                          "terrmin=%.3f terrmax=%.3f"
                           % (float(_lift_amt), float(self._ground_f),
+                             _cf_max,
                              float(np.min(np.asarray(terrain_h))),
                              float(np.max(np.asarray(terrain_h)))), flush=True)
         else:

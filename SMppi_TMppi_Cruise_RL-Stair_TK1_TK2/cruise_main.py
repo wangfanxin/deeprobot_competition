@@ -28,6 +28,24 @@ XML = os.environ.get('S10_XML',
                      os.path.join(PKG, 'S10_description/s10_mjcf/mjcf/S10_track.xml'))
 
 
+def wheel_contact_fz(m, d):
+    # 四轮轮地真实接触力 z 分量模（N）——候选2 次级信号。
+    # 逐接触对取 mj_contactForce，任一侧属于 WHEEL_BODY 的车轮累加 |fz|。
+    _fz = np.zeros(4)
+    _cf = np.zeros(6)
+    _wb = [int(b) for b in WHEEL_BODY]
+    for _ci in range(int(d.ncon)):
+        _g1 = int(d.contact.geom1[_ci])
+        _g2 = int(d.contact.geom2[_ci])
+        _b1 = int(m.geom_bodyid[_g1])
+        _b2 = int(m.geom_bodyid[_g2])
+        for _wi in range(4):
+            if _b1 == _wb[_wi] or _b2 == _wb[_wi]:
+                mujoco.mj_contactForce(m, d, _ci, _cf)
+                _fz[_wi] += abs(float(_cf[2]))
+    return _fz
+
+
 def quat_yaw(q):
     qw, qx, qy, qz = q[0], q[1], q[2], q[3]
     return float(np.arctan2(2.0 * (qw * qz + qx * qy),
@@ -703,7 +721,8 @@ def main():
                                  terr, DT)
         else:
             tau = carvmc.compute_tau(qpos, qvel, wheel_xyz, wheel_vel, cmd,
-                                     terr, DT)
+                                     terr, DT,
+                                     wheel_fz=wheel_contact_fz(m, d))
 
         # PRETRANS 腿 PD：进入前锁定 RL 高站姿；退出时按距离平滑交还 CarVMC
         if (os.environ.get('S10_PRETRANS', '1') == '1'
