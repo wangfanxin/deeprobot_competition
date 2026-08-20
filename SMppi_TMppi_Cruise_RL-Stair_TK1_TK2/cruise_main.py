@@ -103,9 +103,6 @@ def main():
     _tk2_t0 = None
     _roll_gate = False
     _roll_gate_since = None
-    _stuck_chk_t = 0.0
-    _stuck_chk_xy = None
-    _stuck_escape_until = None
     _terr_raw = np.zeros(4, dtype=np.float64)
     _prev_bz = None
     _edge_lift = np.zeros(4)
@@ -587,9 +584,6 @@ def main():
                 if not _roll_gate:
                     om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
             om_c = float(np.clip(om_c, -omcap, omcap))
-            # 下沿/跨骑期 MPPI 的航向代价仍会给大 om（round142 两级
-            # 台阶顶沿 om0.98 转向 roll-1.12 侧翻实测）：DROP 期
-            # cmd 级限 ±0.5
             # 台沿锁存期：cmd 级强制正对路径航向（经 MPPI 的弱 guide
             # 被其它代价压过，wp5 实测贴沿航向漂 0.3rad 侧滑）
             # 平顶出口后 2s 内锁存转向也让位（round212 台顶锁存
@@ -687,11 +681,6 @@ def main():
             * abs(vx_c),
             -float(os.environ.get('S10_CAR_ROLL_AMP', '0.06')),
             float(os.environ.get('S10_CAR_ROLL_AMP', '0.06'))))
-        # roll 门控期主动反向压弯：门控只限 om/vx，roll 动量仍会
-        # 把机器人推过侧翻点（round116 平顶转向 roll -0.86 实测）；
-        # 目标反向偏置把 CarVMC 内部 roll 环推向扶正方向
-        if _roll_gate:
-            _roll_tar_c = float(np.clip(-2.0 * _body_roll, -0.25, 0.25))
         # 逐轮抬轮前馈（tune4 版恢复）：台阶/台沿由 CarVMC 巡航爬升。
         # RL 单级 12.5cm 未训练（T8 实测 policy 直接摔倒），
         # STAIR 只接管 6 级楼梯。
@@ -721,42 +710,6 @@ def main():
         _last_lift = _step_lift.copy()
         if _max_lift > 0.05:
             _last_lift_t = t
-        # 卡死脱困（平顶）：5s 位置推进 <0.3m 且指令仍要求前进——
-        # 压墙/压障碍空转自持摇振（round222 wp10 后 2.2m 横墙实测：
-        # 轮速 ±25rad/s 交替、车身零位移）；先倒车 1.2s 离开墙面，
-        # 再朝航线投影点（东行绕过墙端 x>-4.75）0.8m/s 前插，
-        # 4s 后交还 MPPI
-        if _stuck_chk_xy is None:
-            _stuck_chk_xy = np.asarray(pos2, dtype=np.float64).copy()
-            _stuck_chk_t = t
-        if t - _stuck_chk_t >= 5.0:
-            _stuck_moved = float(np.linalg.norm(
-                pos2 - np.asarray(_stuck_chk_xy)))
-            if (_stuck_moved < 0.3 and float(vx_c) >= 0.8
-                    and stair.mode == 'CRUISE'
-                    and not _roll_gate):
-                _stuck_escape_until = t + 4.0
-                print('[STUCK] escape t=%.1f pos=(%.1f,%.1f) moved=%.2f'
-                      % (t, pos2[0], pos2[1], _stuck_moved), flush=True)
-            _stuck_chk_xy = np.asarray(pos2, dtype=np.float64).copy()
-            _stuck_chk_t = t
-        if _stuck_escape_until is not None:
-            if t < _stuck_escape_until:
-                if t < _stuck_escape_until - 2.8:
-                    vx_c = -0.5
-                    om_c = 0.0
-                else:
-                    # 前插相位：固定朝正东（yaw=0）直行——障碍场的
-                    # 横墙/柱都有东端，东行绕过后再交还 MPPI 南转；
-                    # 投影点跟踪在轮滑状态下目标翻转、yaw 3rad 甩动
-                    # 侧翻（round238 第二障碍实测）
-                    vx_c = 0.8
-                    _eee = float(np.arctan2(np.sin(-yaw), np.cos(-yaw)))
-                    om_c = float(np.clip(2.0 * _eee, -0.6, 0.6))
-                prev_u = np.asarray([vx_c, om_c])
-                smppi.sync_applied(prev_u)
-            else:
-                _stuck_escape_until = None
 
         _lift_hold = (t - _last_lift_t
                       < float(os.environ.get('S10_LIFT_HOLD_T', '1.0')))
