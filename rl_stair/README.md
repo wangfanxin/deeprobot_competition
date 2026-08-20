@@ -8,7 +8,7 @@
 # 训练（256 env，课程 T0→T6）
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 python rl_stair/train.py --num_envs 256 \
     --max_iters 30000 --steps_per_env 24 --logdir rl_stair/logs
-# 断点续训
+# 续训
 python rl_stair/train.py ... --resume rl_stair/logs/model_latest.pt
 # 评估 checkpoint（只读）
 python rl_stair/eval.py --ckpt rl_stair/logs/model_latest.pt \
