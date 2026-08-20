@@ -926,13 +926,14 @@ class AutoNavFollower:
                 if int(getattr(self, '_stair_nrisers', 2)) == 1:
                     _min_climb = 1.2
                 else:
-                    # 多级：兜底退出必须越过整个楼梯段（末级之后
-                    # 2m）——固定 2.5m 在六级楼梯上只到第 3-4 级，
-                    # wheel-clear 因 vx>1.6 未触发时中途交还，
-                    # 2.03m/s 跨步姿态侧翻（round124 实测）
+                    # 多级：兜底退出必须越过整个楼梯段——固定 2.5m 在
+                    # 六级楼梯上只到第 3-4 级（round124）；span+1.0 在
+                    # lidar 瓦片退化（只读前 2 级踏面，span 0.6）时
+                    # 1.6m 即中途交还，CRUISE 2.6m/s 上第 5-6 级侧翻
+                    # （r33 实测）。span+2.0 保证退化表也越过六级顶。
                     _span = float(getattr(self, '_stair_riser_span', 0.0))
                     if _span > 0.0:
-                        _min_climb = _span + 1.0
+                        _min_climb = _span + 2.0
                 # 兜底退出姿态收敛：round138 的失败是 pitch 公式
                 # 错误（已修），round139/148 六级楼梯 2.85m/s 跨步
                 # roll0.55 交还、平顶 roll 门锁死后侧翻实测——
