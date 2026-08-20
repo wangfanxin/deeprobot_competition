@@ -626,10 +626,14 @@ def main():
             ta = np.asarray([-0.05, -0.60, 1.20, 0.05, -0.60, 1.20,
                              -0.05, 0.60, -1.20, 0.05, 0.60, -1.20])
             if _post_stair_xy is not None:
-                elen = float(os.environ.get('S10_PRETRANS_EXIT_LEN', '2.0'))
-                dex = float(np.hypot(body_pos[0] - _post_stair_xy[0],
-                                     body_pos[1] - _post_stair_xy[1]))
-                tpr = float(np.clip(1.0 - dex / max(elen, 1e-3), 0.0, 1.0))
+                if _tk2:
+                    # 用户指示：TK2 转体期间姿势原地切回巡航半蹲
+                    tpr = 0.0
+                else:
+                    elen = float(os.environ.get('S10_PRETRANS_EXIT_LEN', '2.0'))
+                    dex = float(np.hypot(body_pos[0] - _post_stair_xy[0],
+                                         body_pos[1] - _post_stair_xy[1]))
+                    tpr = float(np.clip(1.0 - dex / max(elen, 1e-3), 0.0, 1.0))
             else:
                 enter = float(os.environ.get('S10_PRETRANS_ENTER_DIST', '2.0'))
                 blend = float(os.environ.get('S10_PRETRANS_BLEND_LEN', '1.0'))
