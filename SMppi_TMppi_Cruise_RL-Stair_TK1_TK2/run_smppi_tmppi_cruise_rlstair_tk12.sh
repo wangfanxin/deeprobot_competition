@@ -58,5 +58,5 @@ export S10_VMC_WHEEL_TMAX=13.5 S10_VMC_MU=0.8
 export S10_TRAJ_DENSE="${S10_TRAJ_DENSE:-1}"
 export VMC_TRAJ="${VMC_TRAJ:-tmp_cruise_traj.npy}"
 mkdir -p tmp
-export S10_TK1_WP_MAX=2.5
+export S10_TK1_WP_MAX=3.5
 exec /home/wfx/DR_competition/.venv/bin/python cruise_main.py
