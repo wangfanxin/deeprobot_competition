@@ -156,7 +156,7 @@ def main():
 
             if os.environ.get('S10_RL_ELEV', '0') == '1':
                 rxy, rtops = perc.riser_table(stair)
-                if (rxy is not None and len(rxy) == 1
+                if (rxy is not None and len(rxy) >= 1
                         and stair.drop_ahead_dist is not None):
                     # 单级台面：把远侧跌落沿补成第二级 riser——
                     # RL 训练分布是连续台阶，单 riser 观测外分布
@@ -167,7 +167,7 @@ def main():
                     _k2 = min(max(_k2, 0), len(stair.path_pts) - 1)
                     _xy2 = np.asarray(stair.path_pts[_k2][:2])
                     rxy = np.vstack([rxy, _xy2])
-                    rtops = np.append(rtops, rtops[0])
+                    rtops = np.append(rtops, rtops[-1])
                 if rxy is not None and len(rxy) >= 2:
                     h = stair.climb_heading
                     rl.set_risers(rxy, rtops, heading=h)
