@@ -18,10 +18,11 @@ class TMppi:
         self.v_max = float(os.environ.get('S10_TURN_V_MAX', '0.2'))
         self.vx_cmd = float(os.environ.get('S10_WP_TURN_VX', '0.2'))
         self.k = float(os.environ.get('S10_TURN_K', '3.0'))
+        self.kd = float(os.environ.get('S10_TURN_KD', '1.5'))
         self.om_max = float(os.environ.get('S10_TURN_OM_MAX', '2.0'))
         self.err_deg = float(os.environ.get('S10_TURN_ERR_DEG', '10.0'))
 
-    def try_plan(self, body_xy, yaw, speed, wp_cur, wp_next):
+    def try_plan(self, body_xy, yaw, speed, omega, wp_cur, wp_next):
         """满足触发条件时返回 (True, vx, omega)，否则 (False, None, None)。"""
         if not self.split or wp_next is None:
             return False, None, None
@@ -34,5 +35,8 @@ class TMppi:
         if abs(err) <= np.radians(self.err_deg):
             return False, None, None
         vx = self.vx_cmd
-        om = float(np.clip(self.k * err, -self.om_max, self.om_max))
+        # 终端角速度阻尼（用户指示）：转到目标角度时应收敛到停住，
+        # 而不是带着角动量甩过——om = k·err − kd·ω，ω→0 时停稳
+        om = float(np.clip(self.k * err - self.kd * float(omega),
+                           -self.om_max, self.om_max))
         return True, vx, om

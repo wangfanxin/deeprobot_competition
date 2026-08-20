@@ -609,7 +609,7 @@ def main():
             wp_next = wp[next_idx + 1] if next_idx + 1 < len(wp) else None
             used_turn, vx_c, om_c = tmppi.try_plan(
                 pos2, yaw, float(np.linalg.norm(d.cvel[1][0:3])),
-                wp[next_idx], wp_next)
+                float(qvel[5]), wp[next_idx], wp_next)
             if used_turn:
                 _planner = 'TMppi'
             else:

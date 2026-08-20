@@ -80,10 +80,10 @@
          新命中横向左右各填 1 格；法向 |nz|≥0.6 滤竖直面
       -> wall 通道（|nz|<0.4 竖直面，61×13 近平射线，2.5Hz）
       -> build_local_tile: 16×16m hmax 瓦片 + step_flag=|梯度|>0.08
-      -> _elev_rises_on_path（沿路径前方 0.1~5m、横向 ±1.2m 最高剖面）:
-           多级: 跳变≥0.10 且 0.5m 确认、≥2 级、跨度≤3m、总爬升≥0.4
-           单级: 跳变≥0.08 且 0.2~0.6m 台面持续（含台面沿）
-           下行: 下降≥0.08 且 0.2~0.6m 低位持续 -> drop_ahead_dist/_elev_drops/_elev_drop_ds
+      -> _elev_rises_on_path（扫描窗口 v2：s_cur+0.1 → min(s_cur+8.0, 下一wp弧长)，下限 s_cur+1.2；横向 ±1.2m 最高剖面）:
+           多级: 跳变≥0.10 且 0.5m 确认、≥2 级、跨度≤3m、总爬升≥0.2
+           单级: 跳变≥0.10 且 0.2~0.6m 台面持续（含台面沿）
+           下行: 下降≥0.10 且 0.2~0.6m 低位持续 -> drop_ahead_dist/_elev_drops/_elev_drop_ds
          -> stair_rises_s / stair_ahead_dist / decel_request / stair_first_heading
       -> perc.riser_table: detect_risers（hmax 跳变 0.05~0.16m，台面顶=跳变后 0.30m 窗内 max）
          单级台面：远侧跌落沿补成虚拟第二级 riser（补 RL 观测分布）
@@ -110,12 +110,12 @@
 
 ### 5.2 STAIR 入口 / 出口（全部条件）
 
-- CRUISE→STAIR：stair_ahead_dist≤2.0 且（riser≥2 级，或单级 riser 且 drop 可见）
+- CRUISE→STAIR：stair_ahead_dist≤1.2 且（riser≥2 级，或单级 riser 且 drop 可见）
   且距航线横向 ≤1.0 且最低轮心 z≤1.2 且前轮未已上台（前轮心 < top0+0.02）
   且重入保护通过（s_cur > 出口 s + 2.0）且 TK1 门（|yaw−riser航向|≤0.20、
   body_vx≤1.5、|riser航向−路径航向|≤0.45）。
-- STAIR→CRUISE：四轮 z ≥ max(riser tops)−0.05 且 s_cur > 末级 riser s + 0.8
-  且 body_vx≤1.6、|pitch|≤0.3、|roll|≤0.25、|vy|≤0.8。
+- STAIR→CRUISE：四轮 z ≥ max(riser tops)+0.02 且 s_cur > 末级 riser s + 0.8
+  且 body_vx≤1.0、|pitch|≤0.3、|roll|≤0.25、|vy|≤0.8。
   兜底：沿爬升轴前进 >1.2m（单级）/ span+1.0m（多级）且姿态收敛。
 - drift-abort：STAIR 中 |cte|>1.2 且进入 >1.0s → 强退 CRUISE 自救（西漂 6m 实测修复）。
 
@@ -134,8 +134,8 @@
 | z ≤ 1.5 | 下沿 s 投影保护生效（>1.5 仅剩轮下跨骑兜底） |
 | z > 2.0 | 弱抓地高台：vx≤0.8、omcap≤0.3 |
 
-平台限速（z>1.2）：默认 S10_PLAT_VX=1.8；工作区已改为 5.0，但
-楼梯 ahead≤5.0m 或 drop<2.5m 时回退 1.8（窄脊入口 RL 冲量侧翻 round292 修复）。
+平台限速（z>1.2）：S10_PLAT_VX=2.5（5.0 实测走廊撞墙 round297 回退），
+近楼梯（ad≤5.0m）或下沿（drop<2.5m）回退 1.8。
 
 ### 5.4 按地形 / 几何 / 姿态 / 速度门控
 
@@ -148,13 +148,14 @@
 | 地形 | 前方 1.5m 升 0.08~0.25、平顶、1.5m−0.5m 差 ≥0.08 | EDGE：vx≤0.6；≥0.10 加锁存+前轮抬轮 |
 | 地形 | 单轮前探升 0.06~0.25（仅锁存期、前轮） | 抬轮前馈 |
 | 地形 | 轮间地形差 ≥0.04 | v595 骑坎找平（全抬到 max−0.02） |
-| 几何 | 距 wp≤0.3（平顶 2.5）；投影>len−0.5 且 lat<0.8；投影>len+0.8 | 判点/过点兜底推点 |
-| 几何 | dist<0.5 且 speed<0.8 且 |yaw_err|>10° 且无楼梯 | TMppi |
+| 几何 | 距 wp≤0.5（平顶 2.5）；投影>len−0.5 且 lat<0.8；投影>len+0.8 | 判点/过点兜底推点 |
+| 几何 | dist<0.6 且 speed<2.2 且 |yaw_err|>10° | TMppi |
 | 几何 | dist_wp≤4.0（STOP_DX） | v_ref 线性归零硬刹车 |
 | 几何 | 段首投影<−1 或段首 1m 内 |cte|>0.8（z>1.2） | SEG0 瞄段起点，om≤±0.6、vx≤1.0 |
 | 几何 | |cte|>1.2（平顶 0.8） | 大偏航直瞄 wp/航线投影点，om≤±1.2、vx≤1.0 |
 | 几何 | TK1：dist_wp≤2.5 且 |cte|≤0.8 且 ad≤2.0 | TK1 对准/交付速度 1.5 |
 | 几何 | s_cur > wp_s(next_idx)+0.2 | TK2 改瞄 next_idx+1 |
+| 几何 | 过点甩头：投影>len+0.2 且 dist<1.5 且无楼梯 | 瞄下一 wp，vx≤1.2 |
 | 几何 | 4s 内 s 前进 <0.8（幻影 drop） | 下沿保护放行 2s |
 | 几何 | 距 wp≤0.8 且 2s 距离变化 <0.03 | 悬停死锁跳过对准门 |
 | 几何 | 5s 位移 <0.3m（z>1.2） | 卡死脱困：倒车 0.5（1.2s）→正东 0.8 前插（2.8s） |
@@ -163,6 +164,7 @@
 | 姿态 | 出楼梯 |pitch|≤0.3、|roll|≤0.25、|vy|≤0.8、vx≤1.6 | STAIR 交还条件 |
 | 姿态 | 判点对准门 |yaw−下一段|≤0.25 且 |ω|≤0.3 | 防抢跑（楼梯顶/平顶/悬停跳过） |
 | 速度 | 出楼梯 0.6s | vx≤0.2、vyaw=0；超 5.0s 清除 |
+| 速度 | 楼梯 2m 内且未跨骑 | 逼近全局 ≤1.5（STAIR_APPROACH_VX） |
 | 速度 | DROP：ad<0.8 或跨骑 | vx≤0.3、|vyaw|≤0.5、cmd om≤±0.5 |
 
 无绝对 xy 坐标门控：代码不含任何 x>某值 / y>某值 分支；注释中的具体坐标
