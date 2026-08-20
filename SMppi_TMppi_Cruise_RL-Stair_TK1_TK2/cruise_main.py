@@ -154,6 +154,7 @@ def main():
         d.ctrl[:] = 0.0
         mujoco.mj_forward(m, d)
         prev_u[:] = 0.0
+        _move_hist.clear()
         globals()['_land_t'] = -1e9
         globals()['_landing'] = False
         print('[T] *** 重生#%d @wp%d (%.1f,%.1f,%.2f) yaw=%.2f [%s] ***'
@@ -970,6 +971,22 @@ def main():
         t += DT
         _ctrl_cnt += 1
 
+        # 4s 卡死检测（用户指示：卡不动 4s 直接重生下一航点）：
+        # 40Hz 采样（r293 bug：原放在 2Hz 打印块内 len>30 实际要 15.5s），
+        # 4s 窗口位移 <0.25m 即视为卡死（含 STAIR 模式），跳过本腿
+        _move_hist.append((t, float(body_pos[0]), float(body_pos[1])))
+        while _move_hist and _move_hist[0][0] < t - 4.2:
+            _move_hist.pop(0)
+        if (len(_move_hist) > 60 and _move_hist[0][0] <= t - 3.8
+                and float(np.hypot(body_pos[0] - _move_hist[0][1],
+                                   body_pos[1] - _move_hist[0][2])) < 0.25
+                and os.environ.get('S10_FALL_RESPAWN', '1') == '1'):
+            print('[T] *** 卡死4s wp=%d -> 重生下一航点 ***'
+                  % next_idx, flush=True)
+            _respawn('卡4s', skip=1)
+            last_adv_t = t
+            continue
+
         if int(t * 200) % 100 == 0:
             roll = float(np.arctan2(
                 2.0 * (d.xquat[1][0] * d.xquat[1][1]
@@ -1001,21 +1018,6 @@ def main():
                     _respawn('摔倒')
                     continue
                 break
-            # 4s 卡死检测（用户指示：卡不动 4s 直接重生下一航点）：
-            # 位移窗口 <0.25m 即视为卡死（含 STAIR 模式），跳过本腿
-            _move_hist.append((t, float(pos2[0]), float(pos2[1])))
-            while _move_hist and _move_hist[0][0] < t - 4.2:
-                _move_hist.pop(0)
-            if (len(_move_hist) > 30 and _move_hist[0][0] <= t - 3.8
-                    and float(np.hypot(pos2[0] - _move_hist[0][1],
-                                       pos2[1] - _move_hist[0][2])) < 0.25
-                    and os.environ.get('S10_FALL_RESPAWN', '1') == '1'):
-                print('[T] *** 卡死4s wp=%d -> 重生下一航点 ***'
-                      % next_idx, flush=True)
-                _respawn('卡4s', skip=1)
-                _move_hist.clear()
-                last_adv_t = t
-                continue
             if os.environ.get('S10_STUCK_TIMEOUT', '90') != '0' and \
                     t - last_adv_t > float(os.environ.get(
                         'S10_STUCK_TIMEOUT', '90')):

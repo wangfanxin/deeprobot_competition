@@ -122,10 +122,16 @@ class LidarPerception:
     def riser_table(self, fol):
         """沿原始折线在线检测 riser，返回 (xy(N,2), top(N,))。"""
         sc = float(fol.s_cur)
-        lo = sc + 0.3
-        hi = sc + max(6.0, float(os.environ.get('S10_TK1_LOOKAHEAD', '5.0')))
+        # 重生/高架 XY 重叠区 s_cur 可能跳到路径末端附近（wp24 附近 argmin
+        # 命中 wp30 上层点，r292 IndexError path_cum[4484] 崩）——钳到路径内
+        if sc >= float(fol.path_cum[-1]) - 0.05:
+            return None, None
+        lo = min(sc + 0.3, float(fol.path_cum[-1]) - 0.05)
+        hi = min(sc + max(6.0, float(os.environ.get('S10_TK1_LOOKAHEAD', '5.0'))),
+                 float(fol.path_cum[-1]))
         k0 = int(np.searchsorted(fol.path_cum, lo))
-        k1 = int(np.searchsorted(fol.path_cum, hi))
+        k1 = min(int(np.searchsorted(fol.path_cum, hi)),
+                 len(fol.path_cum) - 1)
         if k1 <= k0 + 3:
             return None, None
         # 稠密重采样（r65 取证根因）：原路径点间距过大，0.25m 踏面
