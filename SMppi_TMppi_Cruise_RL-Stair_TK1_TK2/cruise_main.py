@@ -276,10 +276,18 @@ def main():
             # TK1：CRUISE 中检测到前方楼梯，只做“对准”，不改模式。
             # 减速由 SMppi 终点代价 + decel_request 负责；TK1 只在进入
             # 交付圈（S10_STAIR_ENTER_DIST）后补 1.5m/s 交付速度上限。
+            # TMppi 触发镜像（用户指示）：TK1/TK2 只在 SMppi 模式下
+            # 进入；TMppi 只与 SMppi 互切，不切 TK1/TK2
+            _tmppi_will = False
+            if next_idx + 1 < len(wp):
+                _tmppi_will = tmppi.will_fire(
+                    pos2, yaw, float(np.linalg.norm(d.cvel[1][0:3])),
+                    wp[next_idx], wp[next_idx + 1])
             if (os.environ.get('S10_TK1', '0') == '1'
                     and os.environ.get('S10_RL_ELEV', '0') == '1'
                     and stair.mode == 'CRUISE'
                     and _post_stair_xy is None
+                    and not _tmppi_will
                     and dist_wp <= float(os.environ.get(
                         'S10_TK1_WP_MAX', '2.5'))
                     and float(body_pos[2]) <= 1.1
@@ -327,6 +335,7 @@ def main():
             # 致窄脊骑偏掉脊 round263/265 实测，回 2.0）
             if (os.environ.get('S10_TK2', '0') == '1' and _tk2
                     and stair.mode == 'CRUISE'
+                    and not _tmppi_will
                     and (_post_stair_t is None
                          or t - _post_stair_t > 2.0)):
                 _correction += 'TK2'
@@ -507,7 +516,7 @@ def main():
             # 2026-08-19 修复：必须让位 roll 门控（此前 TK 直接给 om
             # 会覆盖门控的 om=0，平台边 TK2 侧倾正反馈翻车实测）。
             if ('TK1' in _correction or 'TK2' in _correction) \
-                    and not _roll_gate:
+                    and not _roll_gate and not used_turn:
                 _om_tk = float(os.environ.get('S10_TK_OM_MAX', '2.0'))
                 # TK 转向也守侧向加速度上限：2m/s 时 om1.5=3.0>1.8
                 # 打滑致 roll 正反馈（round100 下台后 TK1 转侧翻）

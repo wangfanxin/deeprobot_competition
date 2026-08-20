@@ -22,18 +22,26 @@ class TMppi:
         self.om_max = float(os.environ.get('S10_TURN_OM_MAX', '2.0'))
         self.err_deg = float(os.environ.get('S10_TURN_ERR_DEG', '10.0'))
 
-    def try_plan(self, body_xy, yaw, speed, omega, wp_cur, wp_next):
-        """满足触发条件时返回 (True, vx, omega)，否则 (False, None, None)。"""
+    def will_fire(self, body_xy, yaw, speed, wp_cur, wp_next):
+        """触发条件镜像：TK1/TK2 门控用，判断当前拍是否 TMppi 模式
+        （TMppi 只与 SMppi 互切，不切其它）。"""
         if not self.split or wp_next is None:
-            return False, None, None
+            return False
         dist = float(np.linalg.norm(np.asarray(body_xy) - wp_cur[:2]))
         if dist >= self.trig_r or speed >= self.v_max:
+            return False
+        target = float(np.arctan2(wp_next[1] - wp_cur[1],
+                                  wp_next[0] - wp_cur[0]))
+        err = wrap_angle(target - yaw)
+        return abs(err) > np.radians(self.err_deg)
+
+    def try_plan(self, body_xy, yaw, speed, omega, wp_cur, wp_next):
+        """满足触发条件时返回 (True, vx, omega)，否则 (False, None, None)。"""
+        if not self.will_fire(body_xy, yaw, speed, wp_cur, wp_next):
             return False, None, None
         target = float(np.arctan2(wp_next[1] - wp_cur[1],
                                   wp_next[0] - wp_cur[0]))
         err = wrap_angle(target - yaw)
-        if abs(err) <= np.radians(self.err_deg):
-            return False, None, None
         vx = self.vx_cmd
         # 终端角速度阻尼（用户指示）：转到目标角度时应收敛到停住，
         # 而不是带着角动量甩过——om = k·err − kd·ω，ω→0 时停稳
