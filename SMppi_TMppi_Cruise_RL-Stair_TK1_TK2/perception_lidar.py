@@ -128,10 +128,20 @@ class LidarPerception:
         k1 = int(np.searchsorted(fol.path_cum, hi))
         if k1 <= k0 + 3:
             return None, None
+        # 稠密重采样（r65 取证根因）：原路径点间距过大，0.25m 踏面
+        # 落在相邻点之间，六级台阶的 RL 表只检出 2 级（s-扫描同期
+        # 0.1m 步距检出 5 级 [0.65,0.78,0.9,1.03,1.15]）；把窗口按
+        # 0.05m 重采样后再做跳变检测
+        _hi = float(min(hi, fol.path_cum[k1]))
+        _ss = np.arange(lo, _hi - 1e-6, 0.05)
+        if len(_ss) < 4:
+            return None, None
+        _xs = np.interp(_ss, fol.path_cum, fol.path_pts[:, 0])
+        _ys = np.interp(_ss, fol.path_cum, fol.path_pts[:, 1])
+        _pts = np.stack([_xs, _ys], axis=1)
         try:
             rs = self.lterr.detect_risers(
-                fol.path_pts[k0:k1], fol.path_cum[k0:k1], lo, hi,
-                rise=0.05, max_dh=0.16)
+                _pts, _ss, lo, _hi, rise=0.05, max_dh=0.16)
         except Exception:
             return None, None
         if not rs:
