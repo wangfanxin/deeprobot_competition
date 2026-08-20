@@ -521,7 +521,8 @@ def main():
                 _om_tk = float(os.environ.get('S10_TK_OM_MAX', '2.0'))
                 # TK 转向也守侧向加速度上限：2m/s 时 om1.5=3.0>1.8
                 # 打滑致 roll 正反馈（round100 下台后 TK1 转侧翻）
-                _om_tk = min(_om_tk, latmax / max(abs(vx_c), 0.5))
+                _om_tk = min(_om_tk, latmax / max(
+                    float(np.linalg.norm(d.cvel[1][0:3])), 0.5))
                 om_c = float(np.clip(vyaw, -_om_tk, _om_tk))
                 vx_c = min(float(vx_c), float(os.environ.get(
                     'S10_TK_VX', '1.5')))
