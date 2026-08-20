@@ -102,6 +102,10 @@ def main():
     _tk1_align_t0 = None
     _tk2_t0 = None
     _roll_gate = False
+    _roll_gate_since = None
+    _stuck_chk_t = 0.0
+    _stuck_chk_xy = None
+    _stuck_escape_until = None
     _terr_raw = np.zeros(4, dtype=np.float64)
     _prev_bz = None
     _edge_lift = np.zeros(4)
@@ -240,6 +244,20 @@ def main():
                 if dist_wp < 0.5:
                     _des = float(np.arctan2(line['end'][1] - pos2[1],
                                             line['end'][0] - pos2[0]))
+                # over-point swing: past wp by 0.2m, dist<1.5m -> aim at next wp
+                # so the nose turns before the advance. Gated on no-stair-ahead:
+                # with the wp-clip the platform stair is invisible pre-advance,
+                # so this fires at wp2/wp3 and aligns the next leg; once the stair
+                # is visible (post-advance) TK1 owns the approach.
+                if (stair.mode == 'CRUISE'
+                        and stair.stair_ahead_dist is None
+                        and next_idx + 1 < len(wp)
+                        and _proj_cur > _segl + 0.2
+                        and dist_wp < 1.5):
+                    _des = float(np.arctan2(wp[next_idx + 1, 1] - pos2[1],
+                                            wp[next_idx + 1, 0] - pos2[0]))
+                    vx = min(vx, float(os.environ.get('S10_WP_SWING_VX',
+                                                     '1.2')))
                 line_head = _des
                 head_err = float(np.arctan2(np.sin(line_head - yaw),
                                             np.cos(line_head - yaw)))
@@ -481,6 +499,180 @@ def main():
                 vx = min(vx, float(os.environ.get(
                     'S10_STAIR_APPROACH_VX', '1.5')))
                 v_ref = min(v_ref, vx)
+            # 下沿保护卡死释放（round286 实测）：wp13→14 高程图幻影沿
+            # （0.42 假 drop）方向不随航向变化，DDE/DROP 提前爬行后
+            # 机器人在幻影沿上原地自旋 120s（s 投影不前进 → 幻影不消
+            # 失 → 保护永不释放）。保护连续 >4s 且 s 前进 <0.8m 时
+            # 强制放行 2s 冲过（真实下沿跨骑 ~2s 内 s 前进，不误放）。
+            _drop_rel = False
+            if '_dropact_t0' not in globals():
+                globals()['_dropact_t0'] = None
+                globals()['_dropact_s0'] = 0.0
+                globals()['_droprel_t0'] = -1e9
+            if stair.drop_ahead_dist is not None:
+                if globals()['_dropact_t0'] is None:
+                    globals()['_dropact_t0'] = t
+                    globals()['_dropact_s0'] = float(stair.s_cur)
+                if (t - globals()['_dropact_t0'] > 4.0
+                        and float(stair.s_cur)
+                        - globals()['_dropact_s0'] < 0.8):
+                    globals()['_droprel_t0'] = t
+            else:
+                globals()['_dropact_t0'] = None
+            if t - globals()['_droprel_t0'] < 2.0:
+                _drop_rel = True
+            # DROP 释放滞回（round318 实测）：台阶顶交还瞬间 dA 闪断为
+            # None，爬行立即释放 → 2.85m/s 冲出台沿 roll-2.19 侧翻。
+            # 保护消失后维持 0.5s 爬行（覆盖沿口跨骑时间）。
+            _drop_ghost = False
+            if '_drop_last_t' not in globals():
+                globals()['_drop_last_t'] = -1e9
+            if stair.drop_ahead_dist is not None:
+                globals()['_drop_last_t'] = t
+            elif t - globals()['_drop_last_t'] < float(os.environ.get(
+                    'S10_DROP_GHOST_T', '1.0')):
+                _drop_ghost = True
+            # 楼梯可见时 ghost 让位：STAIR 接管自有交付节奏
+            # （round321 窄脊入口 ghost 爬行改变 RL 入口状态 → yaw 突跳
+            # 2.43、roll 3.13 侧翻实测）
+            if stair.stair_ahead_dist is not None:
+                _drop_ghost = False
+            # 深沿提前缓行 DDE（低台 z≤1.3）：前方 1.5m 内出现 ≥0.25 深
+            # 跌落沿时提前限 0.6——wp14→15 缓坡底 0.38 深沿只在 0.4m 处
+            # 才进 0.5 爬行窗，1.0m/s 冲沿栽头侧翻（round275/285 实测）；
+            # 0.125 平台沿/六级台阶不触发（常规 DROP 处理）
+            if (not _drop_rel
+                    and stair.drop_ahead_dist is not None
+                    and _drop_s_ok
+                    and stair.drop_ahead_dist < 1.5):
+                _dds3 = getattr(stair.fol, '_elev_drop_ds', None) or []
+                _dds3f = [(float(d), float(dh)) for d, dh in _dds3
+                          if float(d) <= stair.drop_ahead_dist + 0.5]
+                _dmax3 = max((dh for d, dh in _dds3f), default=0.0)
+                if _dmax3 >= 0.25:
+                    vx = min(vx, 0.6)
+                    v_ref = min(v_ref, vx)
+                    _correction += 'DDE'
+                        # 中窗口缓行（仅高台 z>1.0 的下行）：0.5-1.5m 的六级下行前
+            # 限 1.0——round267 实测 dA 0.7-1.2 时 0.5 窗不触发、
+            # 1.8-2.75m/s 冲阶侧翻；低台（平台爬升 z<1.0）不触发
+            # （round268-270 平台爬升侧翻回退——平台区 drops 检测同样
+            # 多级，但 z 0.77 与高台下行的 z 1.4+ 可区分）
+            if (not _drop_rel
+                    and ((stair.drop_ahead_dist is not None
+                         and stair.drop_ahead_dist < 1.5)
+                        or _drop_ghost)
+                    and _drop_s_ok
+                    and not _drop_straddle):
+                vx = min(vx, 1.0)
+                v_ref = min(v_ref, vx)
+                _correction += 'DROPW'
+            # 下行落差保护：前方检测到 >=0.08m 跌落沿时强制低速直行，
+            # 避免高速下台栽头（下行不交 RL，先慢速爬行兜底）。
+            # 轮下兜底：s 投影越过跌落后扫描变空（round93 台沿前
+            # drops=[] 失保、0.6m/s 下台栽头实测）——后轮上台前轮
+            # 已下的跨骑状态也强制低速直行
+            # 下沿双窗口：om 锁止用大窗口（0.8m，防转弯动量带进
+            # 沿口，round142 顶沿 om0.98 侧翻实测），vx 爬行用小窗口
+            # （0.5m，1.2m 大窗口在平台角提前爬行致入口劣化 round144）
+            _drop_om_w = float(os.environ.get(
+                'S10_DROP_OM_LOOKAHEAD', '0.8'))
+            _drop_straddle = (float(np.max(terr[2:4]))
+                             - float(np.min(terr)) >= 0.08)
+            # 平顶（z>1.2）s 投影假 drop 连续触发 18s（round199 实测
+            # 平顶爬行 0.3 + roll 累积侧翻）——只保留轮下跨骑兜底，
+            # 真下行台阶的跨骑保护不受影响
+            # 1.5：下行台阶顶（z≈1.45）的 s 投影保护不能被 1.2 挡掉
+            # （round252 wp12→13 六级下行 1.8-2.75m/s 冲阶侧翻实测——
+            # 顶段 z>1.2 时 s 保护不生效，只有跨骑兜底）；平顶假 drop
+            # 若回归再收紧
+            _drop_s_ok = True
+            _drop_active = False
+            _drop_real = (stair.drop_ahead_dist is not None
+                          and _drop_s_ok
+                          and stair.drop_ahead_dist < _drop_om_w)
+            if (not _drop_rel and ((_drop_real or _drop_ghost)
+                    or _drop_straddle)):
+                # om 锁只对真实下沿/跨骑：ghost 期锁 om 会压死
+                # TK1 对准（round320 窄脊入口 yaw 2.42 vs 爬升 1.7
+                # 侧滚 3.13 实测）
+                _drop_active = bool(_drop_real or _drop_straddle)
+                if (((stair.drop_ahead_dist is not None
+                        and _drop_s_ok
+                        and stair.drop_ahead_dist < float(os.environ.get(
+                            'S10_DROP_LOOKAHEAD', '2.0')))
+                        or _drop_ghost)
+                        or _drop_straddle):
+                    vx = min(vx, float(os.environ.get(
+                        'S10_DROP_VX', '0.3')))
+                    if _drop_real or _drop_straddle:
+                        vyaw = float(np.clip(vyaw, -0.5, 0.5))
+                    v_ref = min(v_ref, vx)
+                    _correction += 'DROP'
+            # 机器人相对 riser 检测（路径扫描盲区：偏离路径时前方台阶）
+            # 前方 0.3~1.2m 升高 0.08~0.25m => 正对直行低速骑上（不交 RL）
+            _rf = float(os.environ.get('S10_EDGE_LOOKAHEAD', '1.2'))
+            if (_rf > 0.0 and stair.mode == 'CRUISE'
+                    and _edge_route_ok
+                    and float(body_pos[2]) <= 1.1
+                    and abs(_cte) <= float(os.environ.get(
+                        'S10_EDGE_CTE_MAX', '0.8'))):
+                # 探针沿路径航向（机器人实际航向偏移时也能看到前方台阶）
+                _ehd = line_head if line is not None else yaw
+                _cf = np.array([np.cos(_ehd), np.sin(_ehd)])
+                _ch0e = float(body_pos[2]) - 0.55
+                _hfn = perc.height(body_pos[0] + _cf[0] * 0.3,
+                                    body_pos[1] + _cf[1] * 0.3, t,
+                                    float(body_pos[2]), _ch0e)
+                _hff = perc.height(body_pos[0] + _cf[0] * _rf,
+                                    body_pos[1] + _cf[1] * _rf, t,
+                                    float(body_pos[2]), _ch0e)
+                _h05 = perc.height(body_pos[0] + _cf[0] * 0.5,
+                                    body_pos[1] + _cf[1] * 0.5, t,
+                                    float(body_pos[2]), _ch0e)
+                # 基准用 min(terr)（后轮未上台前保持地面高）：
+                # 前轮贴台阶时 max(terr) 已升高导致抬轮失效
+                _rise_edge = float(_hff - float(np.min(terr)))
+                # 双探针：rise 取 2.5m（提前刹停距离），平顶判别
+                # 1.5m vs 2.5m 差 <=0.05（台面 2.1m 长，2.6m 探针
+                # 会越过远沿致平顶误判；缓坡 1m 内升 0.07 排除）
+                _hff2 = perc.height(body_pos[0] + _cf[0] * 2.5,
+                                     body_pos[1] + _cf[1] * 2.5, t,
+                                     float(body_pos[2]), _ch0e)
+                # rise 取 1.5m 探针；允许 2.5m 探针更低（台面只有
+                # 2.1m 长，贴近沿时远探针越过对侧沿）但不允许更高
+                # （缓坡 1m 升 0.07 > 0.05 => 排除坡道误触发）
+                _flat_top = (float(_hff2) <= float(_hff) + 0.05)
+                _rise_edge = float(_hff - float(np.min(terr)))
+                # 台阶判别：1.5m 与 0.5m 探针高差 >=0.08（坡面 1m
+                # 升 0.07、坡顶 0.03 均排除，wp0-1 坡顶误触发实测）
+                _step_rise = float(_hff - _h05)
+                if (0.08 <= _rise_edge <= 0.25 and _flat_top
+                        and _step_rise >= 0.08):
+                    vx = min(vx, float(os.environ.get('S10_EDGE_VX', '0.6')))
+                    v_ref = min(v_ref, vx)
+                    _correction += 'EDGE'
+                    # EDGE 锁存只认 >=10cm 的真台阶：坡顶 0.05 的
+                    # 边界误锁 + om 强制正对 = 坡顶自旋侧翻（round46）
+                    if (os.environ.get('S10_LIP_LATCH', '1') == '1'
+                                            and _past_wp
+                                            and stair.stair_ahead_dist is not None
+                            and _rise_edge >= 0.10):
+                        if not _lip_hold:
+                            _lip_g0 = float(np.min(terr))
+                            _lip_xy = np.asarray(pos2, dtype=np.float64).copy()
+                            _lip_wp_idx = next_idx
+                            _lip_t0 = t
+                        _lip_hold = True
+                    # 前轮抬轮前馈：仅 >=10cm 的台阶（小台阶
+                    # 抬轮会失牵引，wp0-1 坡底实测 12s 卡死）
+                    if _rise_edge >= 0.10:
+                        _edge_lift[0:2] = float(np.clip(
+                            (_rise_edge - 0.06) / 0.06, 0.0, 1.0))
+                    else:
+                        _edge_lift[0:2] = 0.0
+                else:
+                    _edge_lift[0:2] = 0.0
             # 终点刹车直入 v_ref（不依赖软代价）：STOP_DX 内目标
             # 速度按剩余距离线性归零——实测软终端代价刹不住，
             # wp3 以 3.2m/s 冲点过冲 1.6m。
@@ -550,10 +742,60 @@ def main():
                 2.0 * (d.xquat[1][0] * d.xquat[1][1]
                        + d.xquat[1][2] * d.xquat[1][3]),
                 1.0 - 2.0 * (d.xquat[1][1] ** 2 + d.xquat[1][2] ** 2)))
-            # 窄脊地形限速 1.0（地形规则保留）：round249 脊末 4.1m/s
-            # 转弯激起 roll -2.83 侧翻实测；1.0 慢骑磕碰幅度减半
+            _rg_hi = float(os.environ.get('S10_ROLL_GATE_HI', '0.34'))
+            _rg_lo = float(os.environ.get('S10_ROLL_GATE_LO', '0.28'))
+            # 1.235 窄脊地形（raw terr>1.2）提前门控 0.22/0.18：
+            # 脊沿磕碰激起 roll 冲量不可逆（round221 实测 -4.2rad/s），
+            # 0.34 晚触发卡死 0.7 侧翻（round246）；统一地形规则，
+            # 非航点特判——开敞平顶 raw≈1.165 不受影响
             if float(np.median(_terr_raw)) > 1.2:
+                _rg_hi = min(_rg_hi, 0.22)
+                _rg_lo = min(_rg_lo, 0.18)
+                # 窄脊段限速 1.0：round249 脊末 4.1m/s 转弯激起
+                # roll -2.83 侧翻实测；1.0 慢骑磕碰幅度减半
                 vx_c = min(float(vx_c), 1.0)
+            # wp7->8 是 1.235 窄脊骑行（脊宽~0.7m，两侧 1.166），
+            # 轮沿磕碰激起 roll 冲量（round221 实测 -4.2rad/s 侧翻）；
+            # 0.22 提前门控在冲量不可逆前爬行保位（round219 该段
+            # 0.22 下 19.6s 通过）；开敞平顶巡航 roll 摆动 ±0.2 会
+            # 误触 0.22 成 drive-crawl 极限环（round219 wp10 后 90s
+            # 不进点），故只在窄脊段收紧
+
+            if abs(_body_roll) > _rg_hi:
+                if not _roll_gate:
+                    _roll_gate_since = t
+                _roll_gate = True
+            elif abs(_body_roll) < _rg_lo:
+                _roll_gate = False
+                _roll_gate_since = None
+            if _roll_gate:
+                # 允许 +/-0.3 慢转向脱困：此前 om=0 让机器人在
+                # 台沿侧倾死锁（wp5 实测 30s 卡死）；roll 力矩
+                # 主要靠 counter-roll 扶正（round121 六级楼梯底
+                # om=0 时原地自旋 roll 2.23 侧翻实测）
+                om_c = float(np.clip(om_c, -0.3, 0.3))
+                vx_c = min(float(vx_c), 0.3)
+                # 死锁脱困：门控持续 >2s => 直线倒车离开台阶边缘。
+                # 台沿锁存期不倒车：跨骑台阶时 roll 恒定超阈值，
+                # 倒车轮子打滑卡死（wp5 实测）；交给抬轮把后轮
+                # 拉上台面恢复水平。
+                if (_roll_gate_since is not None
+                        and t - _roll_gate_since > 2.0
+                        and float(np.max(terr)) - float(np.min(terr))
+                        < 0.08
+                        and stair.stair_ahead_dist is not None
+                        and stair.stair_ahead_dist <= 2.5):
+                    # 高台（平顶 z>1.0）不倒车：倒车在台沿反复
+                    # 打滑把稳态侧倾推成侧翻（round137 平顶实测）；
+                    # 跨骑（轮下高差>=0.08，如平台角窄条）也不倒车
+                    # ——round167 角部倒车-回冲 50s 死循环实测；
+                    # 平直段转向侧倾不倒车（round171 wp3 后倒车 7s
+                    # 浪费——ad=2.4 无台阶可脱困）
+                    vx_c = -0.4
+                    om_c = 0.0
+                    _lip_hold = False
+                    _lip_xy = None
+                    _lip_t0 = None
             # 楼梯后前 1.2m：只直线低速前进，禁止转向，避免平台边缘 yaw 反冲侧翻
             # 楼梯后：低倍率直接瞄当前目标 wp，直到距其足够近才放开
             if (_post_stair_xy is not None and _ahead < len(wp)
@@ -580,13 +822,46 @@ def main():
                 # roll 门控期让位：hold 的 om 覆盖在门控之后，
                 # 门控 om=0 被顶掉持续喂转向（round207 台顶
                 # 交还 roll 0.76 卡 8.5s 实测根因）
-                om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
+                if not _roll_gate:
+                    om_c = float(np.clip(0.5 * _pe, -0.2, 0.2))
             om_c = float(np.clip(om_c, -omcap, omcap))
+            # 下沿/跨骑期 MPPI 的航向代价仍会给大 om（round142 两级
+            # 台阶顶沿 om0.98 转向 roll-1.12 侧翻实测）：DROP 期
+            # cmd 级限 ±0.5
+            if _drop_active:
+                om_c = float(np.clip(om_c, -0.5, 0.5))
+            # 平顶段首横向纠偏：推进后机器人东偏/西偏 >0.8m 且沿程
+            # <1m 时，cmd 级直瞄段起点 wp（guide 级被 MPPI 终点代价
+            # 压过——round242 瞄 wp12 的终点代价仍拉机器人西行撞
+            # x=-4.79 柱侧翻实测）；0.6 慢转 + 1.0 限速防侧倾
+            if (float(body_pos[2]) > 1.2 and line is not None
+                    and stair.mode == 'CRUISE'
+                    and not _roll_gate and next_idx > 0):
+                _seg3 = (np.asarray(line['end'])
+                         - np.asarray(line['start']))
+                _segl3 = max(float(np.linalg.norm(_seg3)), 1e-9)
+                _u3 = _seg3 / _segl3
+                _rel3 = pos2 - np.asarray(line['start'])
+                _proj3 = float(np.dot(_rel3, _u3))
+                _cte3 = float(-_u3[1] * _rel3[0] + _u3[0] * _rel3[1])
+                if ((_proj3 < -1.0
+                     or (0.0 <= _proj3 < 1.0 and abs(_cte3) > 0.8))
+                        and abs(_cte3) > 0.4
+                        and float(np.linalg.norm(
+                            pos2 - np.asarray(line['start'])[:2])) > 2.0):
+                    _ths = float(np.arctan2(
+                        line['start'][1] - body_pos[1],
+                        line['start'][0] - body_pos[0]))
+                    _es = float(np.arctan2(np.sin(_ths - yaw),
+                                           np.cos(_ths - yaw)))
+                    om_c = float(np.clip(2.0 * _es, -0.6, 0.6))
+                    vx_c = min(float(vx_c), 1.0)
+                    _correction += 'SEG0'
             # 台沿锁存期：cmd 级强制正对路径航向（经 MPPI 的弱 guide
             # 被其它代价压过，wp5 实测贴沿航向漂 0.3rad 侧滑）
             # 平顶出口后 2s 内锁存转向也让位（round212 台顶锁存
             # om0.8 转向激起 roll-1.12 侧翻实测）；低台锁存照旧
-            if (_lip_hold
+            if (_lip_hold and not _roll_gate
                     and (_post_stair_t is None
                          or t - _post_stair_t > 2.0)):
                 # 锁存期瞄当前 wp（不是航线航向）：爬升中若漂离航线，
@@ -600,7 +875,7 @@ def main():
                 # 不再提前压速：锁存期 vx 交给 MPPI（跨骑冲量在上游）
             # 锁存释放后 1s 航向保持：上台面瞬间 MPPI 会立刻拉偏
             # 航向（台面顶自旋侧翻实测），先稳 1s 再交还
-            if (_lip_rel_t is not None
+            if (_lip_rel_t is not None and not _roll_gate
                     and t - _lip_rel_t < 1.0
                     and (_post_stair_t is None
                          or t - _post_stair_t > 2.0)):
@@ -612,13 +887,48 @@ def main():
                 vx_c = min(float(vx_c), 1.2)
             elif _lip_rel_t is not None and t - _lip_rel_t >= 1.0:
                 _lip_rel_t = None
+            # 大偏航纠偏：偏离航线 >1.5m 时 cmd 级直指当前 wp
+            # （爬升后沿台壁西滑 90s 死锁实测——MPPI 弱 guide
+            # 压不过平台边腿阻抗扭振）。平顶改瞄航线投影点：瞄 wp 本体
+            # 会直穿障碍墙（round222 wp10 弯道压墙实测），投影点=先
+            # 垂直回航线再沿线走；阈值放宽 0.8（round244 wp9→10 南漂
+            # 0.9m 卡进障碍口袋实测）
+            if (line is not None
+                    and abs(_cte) > (0.8 if float(body_pos[2]) > 1.2
+                                    else 1.2)
+                    and stair.mode == 'CRUISE'
+                    and not _roll_gate
+                    ):
+                if float(body_pos[2]) > 1.2:
+                    _segc = (np.asarray(line['end'])
+                             - np.asarray(line['start']))
+                    _seglc = max(float(np.linalg.norm(_segc)), 1e-9)
+                    _uc = _segc / _seglc
+                    _relc = pos2 - np.asarray(line['start'])
+                    _projc = float(np.clip(float(np.dot(_relc, _uc)),
+                                           0.0, _seglc))
+                    _ptc = (np.asarray(line['start'])
+                            + _uc * _projc)
+                    _thc = float(np.arctan2(_ptc[1] - body_pos[1],
+                                            _ptc[0] - body_pos[0]))
+                else:
+                    _thc = float(np.arctan2(
+                        wp[next_idx, 1] - body_pos[1],
+                        wp[next_idx, 0] - body_pos[0]))
+                _ecc = float(np.arctan2(np.sin(_thc - yaw),
+                                         np.cos(_thc - yaw)))
+                om_c = float(np.clip(2.0 * _ecc, -1.2, 1.2))
+                # 限速只在大偏航（>1.2）时：0.8-1.2 的中等偏差只转向
+                # 不降速（round245 wp9→10 16.7s 实测——反复触 1.0 限速）
+                if abs(_cte) > 1.2:
+                    vx_c = min(float(vx_c), 1.0)
             # TK 阶段（TK1 对准 / TK2 转出）直接执行对准转向：
             # MPPI 的 om 上限被 VMC_OM_CAP=1.0 压住，<1s 预算不够；
             # 低 vx 时 car_omega_limit≈3.0，TK 专用上限 2.0 安全。
             # 2026-08-19 修复：必须让位 roll 门控（此前 TK 直接给 om
             # 会覆盖门控的 om=0，平台边 TK2 侧倾正反馈翻车实测）。
             if ('TK1' in _correction or 'TK2' in _correction) \
-:
+                    and not _roll_gate:
                 _om_tk = float(os.environ.get('S10_TK_OM_MAX', '2.0'))
                 # TK 转向也守侧向加速度上限：2m/s 时 om1.5=3.0>1.8
                 # 打滑致 roll 正反馈（round100 下台后 TK1 转侧翻）
@@ -679,6 +989,11 @@ def main():
             * abs(vx_c),
             -float(os.environ.get('S10_CAR_ROLL_AMP', '0.06')),
             float(os.environ.get('S10_CAR_ROLL_AMP', '0.06'))))
+        # roll 门控期主动反向压弯：门控只限 om/vx，roll 动量仍会
+        # 把机器人推过侧翻点（round116 平顶转向 roll -0.86 实测）；
+        # 目标反向偏置把 CarVMC 内部 roll 环推向扶正方向
+        if _roll_gate:
+            _roll_tar_c = float(np.clip(-2.0 * _body_roll, -0.25, 0.25))
         # 逐轮抬轮前馈（tune4 版恢复）：台阶/台沿由 CarVMC 巡航爬升。
         # RL 单级 12.5cm 未训练（T8 实测 policy 直接摔倒），
         # STAIR 只接管 6 级楼梯。
@@ -708,6 +1023,42 @@ def main():
         _last_lift = _step_lift.copy()
         if _max_lift > 0.05:
             _last_lift_t = t
+        # 卡死脱困（平顶）：5s 位置推进 <0.3m 且指令仍要求前进——
+        # 压墙/压障碍空转自持摇振（round222 wp10 后 2.2m 横墙实测：
+        # 轮速 ±25rad/s 交替、车身零位移）；先倒车 1.2s 离开墙面，
+        # 再朝航线投影点（东行绕过墙端 x>-4.75）0.8m/s 前插，
+        # 4s 后交还 MPPI
+        if _stuck_chk_xy is None:
+            _stuck_chk_xy = np.asarray(pos2, dtype=np.float64).copy()
+            _stuck_chk_t = t
+        if t - _stuck_chk_t >= 5.0:
+            _stuck_moved = float(np.linalg.norm(
+                pos2 - np.asarray(_stuck_chk_xy)))
+            if (_stuck_moved < 0.3 and float(vx_c) >= 0.8
+                    and stair.mode == 'CRUISE'
+                    and not _roll_gate):
+                _stuck_escape_until = t + 4.0
+                print('[STUCK] escape t=%.1f pos=(%.1f,%.1f) moved=%.2f'
+                      % (t, pos2[0], pos2[1], _stuck_moved), flush=True)
+            _stuck_chk_xy = np.asarray(pos2, dtype=np.float64).copy()
+            _stuck_chk_t = t
+        if _stuck_escape_until is not None:
+            if t < _stuck_escape_until:
+                if t < _stuck_escape_until - 2.8:
+                    vx_c = -0.5
+                    om_c = 0.0
+                else:
+                    # 前插相位：固定朝正东（yaw=0）直行——障碍场的
+                    # 横墙/柱都有东端，东行绕过后再交还 MPPI 南转；
+                    # 投影点跟踪在轮滑状态下目标翻转、yaw 3rad 甩动
+                    # 侧翻（round238 第二障碍实测）
+                    vx_c = 0.8
+                    _eee = float(np.arctan2(np.sin(-yaw), np.cos(-yaw)))
+                    om_c = float(np.clip(2.0 * _eee, -0.6, 0.6))
+                prev_u = np.asarray([vx_c, om_c])
+                smppi.sync_applied(prev_u)
+            else:
+                _stuck_escape_until = None
 
         _lift_hold = (t - _last_lift_t
                       < float(os.environ.get('S10_LIFT_HOLD_T', '1.0')))
