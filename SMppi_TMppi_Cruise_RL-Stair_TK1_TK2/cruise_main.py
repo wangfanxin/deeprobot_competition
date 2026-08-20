@@ -595,6 +595,19 @@ def main():
             if 0.05 <= _rise_ahead <= 0.25:
                 _w = float(os.environ.get('S10_VMC_TERRAIN_AHEAD_W', '0.6'))
                 terr = (1.0 - _w) * terr + _w * _ahead
+        # per-wp 落沿预伸（wp15/16 0.38m 台阶）：前方 0.6m 是低侧时，
+        # 把地形参考向低侧混合——前腿提前伸展到位，下沿时车体保持水平
+        # （前腿行程不足 pitch>90° 前翻的根因修复）
+        if (os.environ.get('S10_HG_DROP_PRE', '1') == '1'
+                and int(next_idx) in (15, 16) and stair.mode == 'CRUISE'):
+            _fwd2 = np.asarray(d.xmat[1][[0, 3]], dtype=np.float64)
+            _fwd2 = _fwd2 / max(float(np.linalg.norm(_fwd2)), 1e-9)
+            _hx2 = body_pos[0] + _fwd2[0] * 0.6
+            _hy2 = body_pos[1] + _fwd2[1] * 0.6
+            _ahead2 = perc.height(_hx2, _hy2, t, float(body_pos[2]),
+                                 float(body_pos[2]) - 0.55)
+            if _ahead2 < float(np.max(terr)) - 0.05:
+                terr = 0.4 * terr + 0.6 * _ahead2
         # v595 骑坎找平：任意轮间地形差 >=0.04 时把所有低轮参考抬到
         # 最高轮附近——消除骑坎对角扭振（平台沿逆指令左旋的根因），
         # 同时把后轮拉过立面。
@@ -677,8 +690,10 @@ def main():
                                pos2[1] - wp[15][1])) < 5.0:
                 vx_c = min(vx_c, 1.5)
             if (stair.drop_ahead_dist is not None
-                    and stair.drop_ahead_dist < 1.5):
-                vx_c = min(vx_c, 0.5)
+                    and stair.drop_ahead_dist < 2.5):
+                # 高墙无缺口：强制 3.5m/s 冲跳（整车跨过 0.38m 落沿，
+                # 四轮同时落地 + 预伸腿 + 落点稳定窗）
+                vx_c = 3.5
         if _hg == 16:
             # wp15->16：距 wp15<4m 限 1.5；落点低侧（z<0.55）后 2.5s 直行稳定窗
             # （yaw 万向节翻转后禁止转向，防 r216/r217 的 4.5m/s 硬转 roll 翻）
@@ -688,10 +703,14 @@ def main():
                 if globals()['_land_t'] < -1e8:
                     globals()['_land_t'] = t
                 if t - globals()['_land_t'] < 2.5:
-                    vx_c = min(vx_c, 1.0)
+                    vx_c = min(vx_c, 0.3)
                     om_c = float(np.clip(-2.0 * float(qvel[5]), -0.4, 0.4))
+                    globals()['_landing'] = True
+                else:
+                    globals()['_landing'] = False
             else:
                 globals()['_land_t'] = -1e9
+                globals()['_landing'] = False
             if float(np.hypot(pos2[0] - wp[15][0],
                                pos2[1] - wp[15][1])) < 4.0:
                 vx_c = min(vx_c, 1.5)
@@ -717,11 +736,22 @@ def main():
                    omega=(0.0 if _max_lift > 0.05 else
                           (0.3 if _lift_hold else om_c)),
                    roll_tar=_roll_tar_c,
-                   pitch_tar=0.0,
+                   pitch_tar=(0.45 if (int(next_idx) in (15, 16)
+                              and ((stair.drop_ahead_dist is not None
+                                    and stair.drop_ahead_dist < 2.0)
+                                   or globals().get('_landing', False)))
+                              else 0.0),
+                   att_scale=(2.5 if globals().get('_landing', False)
+                              else 1.0),
                    # round205 实测 70N 反力反而卡死：卸载侧轮被抬起
                    # 离地后 roll 力矩绕接触线失效（roll 0.66 悬停 4.7s），
                    # 回 40N（round201 同值可恢复）
                    step_lift=_step_lift, lift_swing=1.2,
+                   hop=([25.0, 25.0, 0.0, 0.0] if (int(next_idx) in (15, 16)
+                                                   and stair.drop_ahead_dist
+                                                   is not None
+                                                   and stair.drop_ahead_dist < 1.0)
+                                          else None),
                    yaw_scale=1.0 - 0.6 * _max_lift,
                    ridge_dist=99.0,
                    lift_f_scale=(0.3 if _max_lift > 0.05 else 1.0),
